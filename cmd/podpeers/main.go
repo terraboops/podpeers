@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -44,6 +45,19 @@ const (
 )
 
 var version = "dev"
+
+// buildVersion reports the module version for `go install …@version` builds
+// (e.g. a v0.0.0-<date>-<commit> pseudo-version), where no -ldflags version
+// was set.
+func buildVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return version
+}
 
 const usage = `podpeers - map pod network peers from observed sockets
 
@@ -95,7 +109,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "mcp":
 		return cmdMCP(rest, os.Stdin, stdout, stderr)
 	case "version":
-		fmt.Fprintln(stdout, "podpeers", version)
+		fmt.Fprintln(stdout, "podpeers", buildVersion())
 		return exitOK
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)

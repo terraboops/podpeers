@@ -21,7 +21,8 @@ policy will cost them, and deciding what a failure means.
 ## Safety rules (not negotiable)
 
 1. **Never run this against a cluster the user has not chosen for it.** Pass
-   the context explicitly on *every* command, and the kubeconfig file too when
+   the context explicitly on *every* command that talks to a cluster (offline
+   ones such as `helm template` are marked below), and the kubeconfig file too when
    the cluster lives in its own file (kind and k3d clusters often do):
    `--context <ctx> --kubeconfig <path>` for podpeers, kubectl and the script;
    `--kube-context <ctx> --kubeconfig <path>` for helm, **after** the helm
@@ -65,8 +66,23 @@ policy will cost them, and deciding what a failure means.
   started with `--disable-network-policy`. Check rather than assume: on k3s,
   `kubectl get node <node> -o jsonpath='{.metadata.annotations.k3s\.io/node-args}'`
   must not contain `--disable-network-policy`. Anywhere, the definitive test
-  is to apply a deny-all ingress policy in a scratch namespace and confirm a
-  connection to a pod there fails.
+  (it creates and deletes a scratch namespace, so ask the user first) is a
+  connection that works, then fails under a deny-all policy. Add
+  `--context <ctx> [--kubeconfig <path>]` to each command, written out, not
+  hidden in a shell variable (zsh will not split it):
+  ```bash
+  kubectl create namespace netpol-enforcement-check
+  kubectl run target -n netpol-enforcement-check --image=busybox:1.36 --labels=app=target --command -- nc -lk -p 8080 -e cat
+  kubectl wait -n netpol-enforcement-check --for=condition=Ready pod/target
+  IP=$(kubectl get pod target -n netpol-enforcement-check -o jsonpath='{.status.podIP}')
+  # run twice: before and after the deny-all; expect REACHABLE, then BLOCKED
+  kubectl run probe -n netpol-enforcement-check --image=busybox:1.36 --restart=Never --rm -i --quiet --command -- \
+    sh -c "sleep 10; timeout 5 nc -z -w 3 $IP 8080 && echo REACHABLE || echo BLOCKED"
+  printf 'apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata: {name: deny-all}\nspec: {podSelector: {}, policyTypes: [Ingress]}\n' \
+    | kubectl apply -n netpol-enforcement-check -f -
+  kubectl delete namespace netpol-enforcement-check
+  ```
+  REACHABLE both times means the CNI does not enforce policy.
 
 ## Step 2: baseline
 
@@ -86,7 +102,8 @@ suggested policy will (correctly) block it and the test will fail. It writes,
 to `--out` (default `./podpeers-netpol`):
 
 - `baseline.json`: the capture (`podpeers render -format html -o baseline.html baseline.json`
-  to look at it; `baseline.txt` is a text report)
+  to look at it; `baseline.txt` is a text report; `baseline.json.log` is the
+  capture's own log, and `baseline-helm-test.log` the test run with its pods' output)
 - `policy.yaml`: apply-ready suggestions; reasoning and gaps are YAML comments
 - `policy.json`: the same, structured: `{window, gaps, suggestions: [{workload,
   policy, reasons, gaps, refused}]}` (or use the MCP `suggest_policies` tool)
@@ -156,9 +173,12 @@ only if restarting is unacceptable; expect INCONCLUSIVE.
 | 2 | context refused | nothing was touched |
 
 **On OK, still read `after-helm-test.log`.** If the test only passed after a
-retry ("attempt 1 got no answer"), you are seeing the new-pod race described
-in Step 5: tell the user, because their real clients that connect at startup
-have the same exposure.
+retry ("attempt 1 got no answer"), you are probably seeing the new-pod race
+described in Step 5: confirm it there, then tell the user, because their real
+clients that connect once at startup without retrying have the same exposure.
+(`punt!` and `Terminated` lines come from busybox `nc` being killed by the
+test's `timeout`; on their own they mean one attempt timed out, not that the
+test failed. The test's exit status and its own messages decide.)
 
 ## Step 5: telling that a policy broke something
 
@@ -187,10 +207,22 @@ kube-router this was observed as a connection that completed its handshake
 and then hung, so the traffic diff showed nothing while `helm test` timed out.
 To tell the two apart:
 
-- re-run `helm test` once. A race passes the second time; a real block fails
-  again;
-- or run a throwaway pod with the test pod's labels that sleeps ~10s before
-  connecting. If that works and the immediate attempt does not, it is the race.
+- **Read the test log's attempts.** A race fails the *first* attempt and then
+  passes, on every run; a real block fails *every* attempt. (Re-running
+  `helm test` alone proves nothing when the test retries internally, as the
+  recommended one does: race and block both look the same from outside.)
+- **Confirm with a probe pod** that has the test pod's labels, connects
+  immediately, then again after 10s. Race: `immediately: []`, `after-10s: [ping]`.
+  Block: both empty. Run it *between* captures (it carries the release's
+  labels, so a running capture would pick it up); `--rm` deletes it. Add
+  `--context <ctx> [--kubeconfig <path>]` to both commands, written out:
+  ```bash
+  LABELS=$(kubectl get pod <test-pod> -n <ns> --show-labels --no-headers | awk '{print $NF}')
+  kubectl run netpol-race-probe -n <ns> --image=busybox:1.36 --restart=Never --rm -i --quiet \
+    --labels "$LABELS" --command -- sh -c 'try() { r=$( (echo ping; sleep 1) | timeout 4 nc -w 2 <service>.<ns>.svc.cluster.local <port>); echo "$1: [$r]"; }; try immediately; sleep 10; try after-10s'
+  ```
+  (The `echo ping` round trip suits an echo server like the example app;
+  for HTTP use `wget -qO- -T 4 http://<service>:<port>/` instead.)
 
 The fix for a race is in the *test*, not the policy: retry with a bounded
 `timeout` (see `examples/shop/templates/tests/smoke.yaml`).
@@ -219,9 +251,16 @@ the release and `helm test` keeps guarding it:
 2. **Name the templated policies differently from the `podpeers-<workload>`
    ones `verify` applied** (e.g. `{{ .Release.Name }}-web`). Same names make
    `helm upgrade` fail: Helm will not adopt objects it did not create.
-3. Check the template renders exactly what was verified:
-   `helm template <rel> <chart> -n <ns> --set networkPolicy.enabled=true -s templates/networkpolicy.yaml`
-   must have the same `spec`s as `./netpol/policy.yaml`.
+3. Check the template renders exactly what was verified. `helm template` is
+   offline; the `kubectl create --dry-run=client` used to normalise both
+   files takes the usual `--context`/`--kubeconfig`. Comments, names and key
+   order differ, so compare the normalised `spec`s:
+   ```bash
+   specs() { kubectl create --dry-run=client -o json -f "$1" \
+     | jq -S '[(.items // [.])[] | {spec}] | sort_by(.spec.podSelector | tostring)'; }
+   helm template <rel> <chart> -n <ns> --set networkPolicy.enabled=true -s templates/networkpolicy.yaml > rendered.yaml
+   diff <(specs ./netpol/policy.yaml) <(specs rendered.yaml) && echo SPECS IDENTICAL
+   ```
 4. Upgrade the release with the policy enabled, then **remove the
    kubectl-applied copies**, or you are left with duplicates:
    `scripts/netpol-check.sh rollback ... --policy ./netpol/policy.yaml`
@@ -231,7 +270,12 @@ the release and `helm test` keeps guarding it:
    scripts/netpol-check.sh verify --release <rel> --namespace <ns> --context <ctx> [--kubeconfig <path>] \
      --no-apply --baseline ./netpol/baseline.json --out ./netpol/chart
    ```
-   Same verdicts as Step 4.
+   Same verdicts as Step 4. Like every verify, it restarts the workloads (adding
+   kubectl's `restartedAt` annotation to their pod templates, outside Helm)
+   and leaves terminated `podpeers-…` ephemeral containers in the new pods
+   until they are next replaced. Tell the user. The ephemeral containers go
+   with the next rollout; the annotation stays (Helm leaves fields it did not
+   set), which is harmless: it is exactly what `kubectl rollout restart` adds.
 
 ## Querying directly (MCP)
 
