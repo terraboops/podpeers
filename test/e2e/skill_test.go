@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -148,6 +149,11 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		t.Logf("exit=%d\n%s", r.code, r.stdout)
 		if r.code != 0 || !strings.Contains(r.stdout, "verdict: OK") {
 			t.Fatalf("want OK, got exit %d", r.code)
+		}
+		// verify restarts the workloads; pods replaced mid-window must still
+		// resolve to their workload, never to a bare address.
+		if regexp.MustCompile(`(?m)^(new|lost|blocked|preexisting)\s+\d+\.\d+\.\d+\.\d+`).MatchString(r.stdout) {
+			t.Fatal("a replaced pod resolved as a bare IP in the diff")
 		}
 	})
 

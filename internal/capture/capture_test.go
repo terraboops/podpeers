@@ -3,6 +3,7 @@ package capture
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -283,5 +284,35 @@ func TestWorkload(t *testing.T) {
 		if got := Workload(p); got != c.want {
 			t.Errorf("Workload(%v %v) = %q; want %q", c.labels, c.owners, got, c.want)
 		}
+	}
+}
+
+func TestMergeInventoryKeepsPodsReplacedDuringTheWindow(t *testing.T) {
+	start := graph.Inventory{
+		Pods: []graph.Pod{
+			{Namespace: "shop", Name: "web-old", IP: "192.0.2.5", Workload: "Deployment/web"},
+			{Namespace: "shop", Name: "api", IP: "192.0.2.6"},
+			{Namespace: "shop", Name: "gone", IP: "192.0.2.9"}, // IP reused below
+		},
+		Services: []graph.Service{{Namespace: "shop", Name: "old-svc"}},
+		Nodes:    []graph.Node{{Name: "n"}},
+	}
+	end := graph.Inventory{
+		Pods: []graph.Pod{
+			{Namespace: "shop", Name: "web-new", IP: "192.0.2.7", Workload: "Deployment/web"},
+			{Namespace: "shop", Name: "api", IP: "192.0.2.6"},
+			{Namespace: "shop", Name: "reuser", IP: "192.0.2.9"},
+		},
+	}
+	m := mergeInventory(start, end)
+	r := graph.NewResolver(m)
+	if p := r.Resolve(netip.MustParseAddr("192.0.2.5")); p.Name != "web-old" {
+		t.Errorf("replaced pod should still resolve: %+v", p)
+	}
+	if p := r.Resolve(netip.MustParseAddr("192.0.2.9")); p.Name != "reuser" {
+		t.Errorf("reused IP should resolve to the current pod: %+v", p)
+	}
+	if len(m.Pods) != 4 || len(m.Services) != 1 || len(m.Nodes) != 1 {
+		t.Errorf("merged = %+v", m)
 	}
 }

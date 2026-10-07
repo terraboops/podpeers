@@ -251,6 +251,10 @@ func Run(ctx context.Context, cs kubernetes.Interface, nodes []corev1.Node, opts
 		targets = append(targets, t)
 	}
 
+	// Inventory at the start too: pods that are replaced during the window
+	// (rollouts, restarts) would otherwise resolve as bare IPs.
+	startInv := inventory(ctx, cs, list.Items, nodes, opts)
+
 	name := ContainerName(opts.RunID)
 	inject(ctx, cs, targets, name, opts)
 	hardDeadline := time.Now().Add(opts.StartTimeout + opts.Duration + 30*time.Second)
@@ -260,7 +264,7 @@ func Run(ctx context.Context, cs kubernetes.Interface, nodes []corev1.Node, opts
 	obs := collect(ctx, cs, targets, name, opts)
 	end := time.Now().UTC()
 
-	inv := inventory(ctx, cs, list.Items, nodes, opts)
+	inv := mergeInventory(startInv, inventory(ctx, cs, list.Items, nodes, opts))
 	var tpods []graph.Pod
 	for _, t := range targets {
 		gp := toGraphPod(t.pod)
@@ -515,4 +519,38 @@ func Workload(p *corev1.Pod) string {
 		return o.Kind + "/" + o.Name
 	}
 	return "Pod/" + p.Name
+}
+
+// mergeInventory combines the inventories taken at the start and the end of
+// the window. Pods and services present at either time are kept; where both
+// have the same object, or an IP was reused, the end of the window wins.
+func mergeInventory(start, end graph.Inventory) graph.Inventory {
+	out := graph.Inventory{Nodes: end.Nodes}
+	endPods, endIPs := map[string]bool{}, map[string]bool{}
+	for _, p := range end.Pods {
+		endPods[p.ID()] = true
+		if p.IP != "" {
+			endIPs[p.IP] = true
+		}
+	}
+	for _, p := range start.Pods {
+		if !endPods[p.ID()] && (p.IP == "" || !endIPs[p.IP]) {
+			out.Pods = append(out.Pods, p)
+		}
+	}
+	out.Pods = append(out.Pods, end.Pods...)
+	endSvc := map[string]bool{}
+	for _, s := range end.Services {
+		endSvc[s.ID()] = true
+	}
+	for _, s := range start.Services {
+		if !endSvc[s.ID()] {
+			out.Services = append(out.Services, s)
+		}
+	}
+	out.Services = append(out.Services, end.Services...)
+	if len(out.Nodes) == 0 {
+		out.Nodes = start.Nodes
+	}
+	return out
 }
