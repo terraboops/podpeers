@@ -10,7 +10,8 @@ application still works with it. The loop is:
 
 ```
 baseline capture (helm test running)  ->  suggestions  ->  review with the user
-      ->  apply  ->  verify (helm test + capture + diff)  ->  OK, or BROKEN + why  ->  fix or roll back
+      ->  apply  ->  verify (restart + helm test + capture + diff)  ->  OK / BROKEN / INCONCLUSIVE
+      ->  fix or roll back  ->  ship it in the chart and verify that too
 ```
 
 `scripts/netpol-check.sh` (next to this file) does the mechanical steps. Your
@@ -19,55 +20,79 @@ policy will cost them, and deciding what a failure means.
 
 ## Safety rules (not negotiable)
 
-1. **Never run this against a cluster the user has not chosen for it.** Always
-   pass `--context` explicitly; never rely on the current context. Run
-   `podpeers check-context --context <ctx>` first. podpeers refuses anything
-   but a local kind/k3d cluster by default.
+1. **Never run this against a cluster the user has not chosen for it.** Pass
+   the context explicitly on *every* command, and the kubeconfig file too when
+   the cluster lives in its own file (kind and k3d clusters often do):
+   `--context <ctx> --kubeconfig <path>` for podpeers, kubectl and the script;
+   `--kube-context <ctx> --kubeconfig <path>` for helm, **after** the helm
+   subcommand (Helm 4 rejects some flags before it). Without `--kubeconfig`,
+   `$KUBECONFIG` (or `~/.kube/config`) is used and `<ctx>` must exist there;
+   never rely on its current context. Run `podpeers check-context --context
+   <ctx> [--kubeconfig <path>]` first: podpeers refuses anything but a local
+   kind/k3d cluster by default.
 2. **Never add `--allow-context` yourself.** It exists for a human to name a
    non-local cluster they have deliberately chosen. If the only available
    context is non-local, stop and ask; suggest a local kind/k3d copy of the
    release instead.
 3. Capture adds an ephemeral debug container to every pod the selector
-   matches. Say so before the first capture in a session.
+   matches. Say so before the first capture. Kubernetes cannot remove
+   ephemeral containers: a terminated `podpeers-…` entry stays in each probed
+   pod's spec until the pod is replaced (verify's restart replaces them).
 4. Applying a NetworkPolicy changes live traffic. Show the policy (and its
    NOT COVERED list) to the user and get a yes before `verify`, unless they
    have already said to go ahead for this cluster.
 
 ## Step 1: preconditions
 
-- `podpeers version`, `kubectl`, and `helm` are on PATH, and the release
-  exists: `helm status <release> -n <ns> --kube-context <ctx>`.
-- The chart **has a meaningful `helm test`**. If it does not, say so: without
+- **podpeers.** Install it with
+  `go install github.com/terraboops/podpeers/cmd/podpeers@latest`, or in a
+  checkout of the podpeers repo run `make build` (binary at `bin/podpeers`).
+  The script runs `$PODPEERS` if set, otherwise `podpeers` from `PATH`. Check
+  with `podpeers version`. `kubectl` and `helm` must be on `PATH` as well.
+- **The release exists:**
+  `helm status <release> -n <ns> --kube-context <ctx> [--kubeconfig <path>]`.
+- **Which pods to observe.** The script selects
+  `app.kubernetes.io/instance=<release>` (the standard Helm label). If the
+  chart does not set it, pass `--selector <label selector>` to every script
+  command; otherwise the capture matches no pods.
+- **The chart has a meaningful `helm test`.** If it does not, say so: without
   it, verification rests on the traffic diff alone. Offer to write one that
-  exercises the app's front door and holds its connection for a few seconds,
-  like `examples/shop/templates/tests/smoke.yaml` in the podpeers repo does.
-- The CNI enforces NetworkPolicy (kind's default CNI does not; k3s/k3d does;
-  Calico and Cilium do). If it does not, a "verified" policy proves nothing.
-  Say so.
+  exercises the app's front door, holds its connection for a few seconds, and
+  retries with a bounded `timeout`, like
+  `examples/shop/templates/tests/smoke.yaml` in the podpeers repo.
+- **The CNI enforces NetworkPolicy**, or a "verified" policy proves nothing.
+  kind's default CNI does not; Calico and Cilium do; k3s/k3d do *unless*
+  started with `--disable-network-policy`. Check rather than assume: on k3s,
+  `kubectl get node <node> -o jsonpath='{.metadata.annotations.k3s\.io/node-args}'`
+  must not contain `--disable-network-policy`. Anywhere, the definitive test
+  is to apply a deny-all ingress policy in a scratch namespace and confirm a
+  connection to a pod there fails.
 
 ## Step 2: baseline
 
 ```bash
 scripts/netpol-check.sh baseline --release <rel> --namespace <ns> --context <ctx> \
-  [--kubeconfig <path>] [--duration 10m] [--interval 1s] [--out ./netpol]
+  [--kubeconfig <path>] [--selector <sel>] [--duration 40s] [--interval 1s] [--out ./netpol]
 ```
+
+`--duration` defaults to 40s, which is only enough for demos and CI. For a
+real workload, capture across its busiest and rarest operations (deploys,
+cron jobs, failover), with **real traffic flowing** (see Step 3). The
+suggestions say what they did not cover; believe them.
 
 This captures the release while `helm test` runs inside the window. That
 matters: the test pod is a new client, and if its traffic is not observed, the
-suggested policy will (correctly) block it and the test will fail. The script
-then writes:
+suggested policy will (correctly) block it and the test will fail. It writes,
+to `--out` (default `./podpeers-netpol`):
 
-- `baseline.json`: the capture (`podpeers render -format html` to look at it)
+- `baseline.json`: the capture (`podpeers render -format html -o baseline.html baseline.json`
+  to look at it; `baseline.txt` is a text report)
 - `policy.yaml`: apply-ready suggestions; reasoning and gaps are YAML comments
-- `policy.json`: the same, structured (or use the MCP `suggest_policies` tool)
+- `policy.json`: the same, structured: `{window, gaps, suggestions: [{workload,
+  policy, reasons, gaps, refused}]}` (or use the MCP `suggest_policies` tool)
 
 Exit 6 means `helm test` already fails **without** any new policy. Stop: a
 later failure would prove nothing.
-
-**Window length.** The default (40s) is only enough for demos and CI. For a
-real workload, capture across its busiest and rarest operations (deploys,
-cron jobs, failover). The suggestions say what they did not cover; believe
-them.
 
 ## Step 3: review the suggestions with the user
 
@@ -76,12 +101,23 @@ Read `policy.yaml` (or `policy.json`) and present, per workload:
 - **What it allows**: each rule and its evidence ("web -> api tcp/9000, 3
   connections, open at window end").
 - **NOT COVERED**: relay these verbatim; they are the point. In particular:
+  - **`ENTRY POINT WARNING`** lines, which come first: every client seen on
+    that port had already completed (the helm test pod, a Job). If it is the
+    app's front door, the policy admits *only the test* and shuts out real
+    users and the ingress controller, while `verify` still says OK because
+    the test is the one allowed client. Never apply such a policy outside a
+    demo without asking the user who the real clients are; add them as rules
+    commented "not observed", or capture again under real traffic;
   - *the egress the workload would LOSE* (idle dependencies, external
-    addresses, the Kubernetes API if it uses its service account);
+    addresses, the Kubernetes API if it uses its service account, DNS when
+    the workload has no egress at all);
   - *ports it listens on with no observed client* (health checks, metrics
     scrapers), which become closed;
   - *window/interval limits*: short connections and weekly jobs are invisible;
   - rules marked **ASSUMED** (DNS), which were not observed.
+- **Even without a warning, look at every ingress rule on the app's entry
+  point** and ask: are these all the real clients? A quiet window sees only
+  what happened in it.
 - **Refused workloads** (`NO POLICY SUGGESTED`): too little evidence. Do not
   hand-write a guess for them; capture longer, or ask the user.
 - Half-open (`SYN_SENT`) attempts are never turned into allow rules. If any
@@ -93,13 +129,16 @@ egress). Every hand-added rule should get a comment saying it was not observed.
 ## Step 4: apply and verify
 
 ```bash
-scripts/netpol-check.sh verify --release <rel> --namespace <ns> --context <ctx> \
-  --policy ./netpol/policy.yaml --baseline ./netpol/baseline.json [--rollback-on-fail]
+scripts/netpol-check.sh verify --release <rel> --namespace <ns> --context <ctx> [--kubeconfig <path>] \
+  --policy ./netpol/policy.yaml --baseline ./netpol/baseline.json [--out ./netpol] [--rollback-on-fail]
 ```
 
 This dry-runs and applies the policy and waits for the CNI to program it. Then
 it **rollout-restarts the release's workloads**, runs a second capture with
-`helm test` inside it, and diffs against the baseline.
+`helm test` inside it, and diffs against the baseline. Results go next to the
+baseline unless `--out` says otherwise: `verdict.txt`, `diff.txt`,
+`after.json`, and `after-helm-test.log`, which includes the test pods' own
+output.
 
 The restart is essential. CNIs check a policy only when a connection is
 opened, so a connection pool, gRPC channel or database connection established
@@ -107,7 +146,6 @@ opened, so a connection pool, gRPC channel or database connection established
 the restart, a policy that will break the app on its next restart can verify
 "OK". This was observed for real while building this skill. Use `--no-restart`
 only if restarting is unacceptable; expect INCONCLUSIVE.
-`verdict.txt` holds the result.
 
 | exit | verdict | what it means |
 |------|---------|---------------|
@@ -117,22 +155,28 @@ only if restarting is unacceptable; expect INCONCLUSIVE.
 | 7 | INCONCLUSIVE | some flows were only seen on connections older than the policy (`preexisting` lines): the policy was never exercised for them. Restart those workloads and verify again. Never report this as OK |
 | 2 | context refused | nothing was touched |
 
+**On OK, still read `after-helm-test.log`.** If the test only passed after a
+retry ("attempt 1 got no answer"), you are seeing the new-pod race described
+in Step 5: tell the user, because their real clients that connect at startup
+have the same exposure.
+
 ## Step 5: telling that a policy broke something
 
 Use all three signals; any one is enough to call it broken:
 
 1. **`helm test` fails** with the policy and passed in the baseline.
-2. **`blocked` lines in the diff.** A flow that only ever reached `SYN_SENT`
-   after the change is the fingerprint of a NetworkPolicy drop. This is the
-   strongest evidence, and it catches breakage that `helm test` misses
-   (exit 4).
-3. **`lost` lines**: a flow seen in the baseline and absent afterwards, while
-   its observer was still being observed. Weaker: it may just have been idle.
-   Recapture with a longer window before concluding.
+2. **`blocked` lines in the diff.** A flow that never completes a handshake
+   after the change (`SYN_SENT`, or refused) is the fingerprint of a
+   NetworkPolicy drop. This is the strongest evidence, and it catches
+   breakage that `helm test` misses (exit 4).
+3. **`lost` lines**: a flow seen repeatedly in the baseline and absent
+   afterwards, while its observer was still being observed. Weaker: it may
+   just have been idle. Recapture with a longer window before concluding.
 
 `unverifiable` lines mean the pod that saw the flow was not observed the
 second time. `preexisting` lines mean the flow was only seen on connections
-opened before the window, so it predates the policy. Neither says anything
+opened before the policy. `glimpsed` lines are one short connection caught by
+luck in the baseline (typically a DNS lookup). None of these says anything
 about whether the policy allows the flow.
 
 **Rule out the new-pod race before blaming the policy.** CNIs program a
@@ -149,15 +193,14 @@ To tell the two apart:
   connecting. If that works and the immediate attempt does not, it is the race.
 
 The fix for a race is in the *test*, not the policy: retry with a bounded
-`timeout` (see `examples/shop/templates/tests/smoke.yaml`). Tell the user,
-because their real clients that connect at startup have the same exposure.
+`timeout` (see `examples/shop/templates/tests/smoke.yaml`).
 
 When it is broken, name the flow, find which policy and direction should have
 allowed it (`podpeers query`, MCP `peers`), and either add the missing rule
 (with the user) and re-run `verify`, or roll back:
 
 ```bash
-scripts/netpol-check.sh rollback --namespace <ns> --context <ctx> --policy ./netpol/policy.yaml
+scripts/netpol-check.sh rollback --namespace <ns> --context <ctx> [--kubeconfig <path>] --policy ./netpol/policy.yaml
 ```
 
 Never leave a BROKEN policy applied without telling the user.
@@ -167,11 +210,28 @@ Never leave a BROKEN policy applied without telling the user.
 Once `verify` is OK, offer to put the policy into the chart so it ships with
 the release and `helm test` keeps guarding it:
 
-- `templates/networkpolicy.yaml`, gated by `values.networkPolicy.enabled`;
-- replace hard-coded labels with the chart's label helpers, and the namespace
-  with `{{ .Release.Namespace }}`;
-- keep the NOT COVERED notes as comments in the template;
-- keep `helm test` able to reach what it tests: its pod is a client too.
+1. Add `templates/networkpolicy.yaml`, gated by `.Values.networkPolicy.enabled`.
+   Ask the user what the default should be: `false` lets existing installs
+   opt in; `true` ships it everywhere. Replace hard-coded labels with the
+   chart's label helpers and the namespace with `{{ .Release.Namespace }}`;
+   keep the NOT COVERED notes as comments; keep `helm test` able to reach what
+   it tests (its pod is a client too).
+2. **Name the templated policies differently from the `podpeers-<workload>`
+   ones `verify` applied** (e.g. `{{ .Release.Name }}-web`). Same names make
+   `helm upgrade` fail: Helm will not adopt objects it did not create.
+3. Check the template renders exactly what was verified:
+   `helm template <rel> <chart> -n <ns> --set networkPolicy.enabled=true -s templates/networkpolicy.yaml`
+   must have the same `spec`s as `./netpol/policy.yaml`.
+4. Upgrade the release with the policy enabled, then **remove the
+   kubectl-applied copies**, or you are left with duplicates:
+   `scripts/netpol-check.sh rollback ... --policy ./netpol/policy.yaml`
+   (it deletes only the `podpeers-*` objects in that file).
+5. Verify what the chart now ships, without applying anything:
+   ```bash
+   scripts/netpol-check.sh verify --release <rel> --namespace <ns> --context <ctx> [--kubeconfig <path>] \
+     --no-apply --baseline ./netpol/baseline.json --out ./netpol/chart
+   ```
+   Same verdicts as Step 4.
 
 ## Querying directly (MCP)
 

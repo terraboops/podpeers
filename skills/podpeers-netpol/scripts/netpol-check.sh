@@ -22,7 +22,7 @@ set -euo pipefail
 PODPEERS="${PODPEERS:-podpeers}"
 RELEASE="" NS="" CONTEXT="" KCFG="${KUBECONFIG:-}" SELECTOR="" ALLOW=""
 DURATION="40s" INTERVAL="1s" OUT="./podpeers-netpol" POLICY="" BASELINE=""
-SETTLE=8 WARMUP=8 ROLLBACK_ON_FAIL=0 RESTART=1
+SETTLE=8 WARMUP=8 ROLLBACK_ON_FAIL=0 RESTART=1 APPLY=1 OUT_SET=0
 
 die() { echo "netpol-check: $*" >&2; exit 1; }
 say() { echo "netpol-check: $*" >&2; }
@@ -34,6 +34,7 @@ usage() {
 Usage:
   netpol-check.sh baseline --release R --namespace NS --context CTX [options]
   netpol-check.sh verify   --release R --namespace NS --context CTX --policy policy.yaml --baseline baseline.json [options]
+  netpol-check.sh verify   --release R --namespace NS --context CTX --no-apply --baseline baseline.json [options]
   netpol-check.sh rollback --namespace NS --context CTX --policy policy.yaml [options]
 
 Options:
@@ -41,10 +42,13 @@ Options:
   --selector SEL          pods to observe (default: app.kubernetes.io/instance=<release>)
   --duration D            capture window (default 40s; use much longer for real workloads)
   --interval I            sample interval (default 1s)
-  --out DIR               where captures, policy and verdict go (default ./podpeers-netpol)
+  --out DIR               where captures, policy and verdict go (default ./podpeers-netpol;
+                          for verify, the --baseline file's directory)
   --settle SECONDS        wait after applying a policy before verifying (default 8)
   --allow-context NAME    pass through to podpeers for a deliberately approved non-local cluster
   --rollback-on-fail      delete the policy again if verify says BROKEN
+  --no-apply              verify the policy that is ALREADY in the cluster (e.g. shipped by the
+                          chart) instead of applying --policy; --policy is then not needed
   --no-restart            do not restart the release's workloads after applying the policy
                           (established connections are not re-checked by CNIs, so verify
                           may then only be able to say INCONCLUSIVE)
@@ -62,13 +66,14 @@ while [ $# -gt 0 ]; do
     --selector|-l) SELECTOR="$2"; shift 2 ;;
     --duration) DURATION="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
-    --out) OUT="$2"; shift 2 ;;
+    --out) OUT="$2"; OUT_SET=1; shift 2 ;;
     --policy) POLICY="$2"; shift 2 ;;
     --baseline) BASELINE="$2"; shift 2 ;;
     --settle) SETTLE="$2"; shift 2 ;;
     --allow-context) ALLOW="$2"; shift 2 ;;
     --rollback-on-fail) ROLLBACK_ON_FAIL=1; shift ;;
     --no-restart) RESTART=0; shift ;;
+    --no-apply) APPLY=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -84,7 +89,8 @@ if [ -n "$KCFG" ]; then K+=(--kubeconfig "$KCFG"); H+=(--kubeconfig "$KCFG"); P+
 if [ -n "$ALLOW" ]; then P+=(--allow-context "$ALLOW"); fi
 
 kc() { kubectl "${K[@]}" "$@"; }
-hl() { helm "${H[@]}" "$@"; }
+# Helm 4 rejects some global flags before the subcommand, so put them after it.
+hl() { local sub="$1"; shift; helm "$sub" "${H[@]}" "$@"; }
 
 guard() {
   if ! "$PODPEERS" check-context "${P[@]}" >/dev/null; then
@@ -105,7 +111,8 @@ capture_with_test() {
     --duration "$DURATION" --interval "$INTERVAL" -o "$out" --summary none 2>"$out.log" &
   pid=$!
   sleep "$WARMUP"   # let the samplers start, so the test's connections are seen
-  if hl test "$RELEASE" -n "$NS" --timeout 2m >"$log" 2>&1; then TEST_OK=1; else TEST_OK=0; fi
+  # --logs keeps the test pods' output, so retries show up even when it passes.
+  if hl test "$RELEASE" -n "$NS" --timeout 2m --logs >"$log" 2>&1; then TEST_OK=1; else TEST_OK=0; fi
   CAPTURE_CODE=0
   wait "$pid" || CAPTURE_CODE=$?
   case "$CAPTURE_CODE" in
@@ -136,14 +143,21 @@ case "$CMD" in
 
   verify)
     [ -n "$RELEASE" ] || die "--release is required"
-    [ -f "$POLICY" ] || die "--policy file not found: $POLICY"
     [ -f "$BASELINE" ] || die "--baseline file not found: $BASELINE"
+    [ "$OUT_SET" = 1 ] || OUT="$(dirname "$BASELINE")"
     mkdir -p "$OUT"
-    say "verify: server-side dry run of $POLICY"
-    kc apply -n "$NS" --dry-run=server -f "$POLICY" >/dev/null
-    kc apply -n "$NS" -f "$POLICY"
-    say "waiting ${SETTLE}s for the CNI to program the policy"
-    sleep "$SETTLE"
+    if [ "$APPLY" = 1 ]; then
+      [ -f "$POLICY" ] || die "--policy file not found: $POLICY (or use --no-apply to verify the policy already in the cluster)"
+      say "verify: server-side dry run of $POLICY"
+      kc apply -n "$NS" --dry-run=server -f "$POLICY" >/dev/null
+      kc apply -n "$NS" -f "$POLICY"
+      say "waiting ${SETTLE}s for the CNI to program the policy"
+      sleep "$SETTLE"
+    else
+      [ "$ROLLBACK_ON_FAIL" = 0 ] || die "--rollback-on-fail needs --policy: with --no-apply there is nothing this script applied to roll back"
+      say "verify: --no-apply, checking the NetworkPolicies already in $NS:"
+      kc get networkpolicy -n "$NS" -o name >&2
+    fi
     # The policy is in force from here: any pod not on this list can only
     # have connected under it. (Pod identity, not timestamps: immune to clock
     # skew between this machine and the cluster.)
@@ -176,8 +190,8 @@ case "$CMD" in
     fi
     {
       echo "verdict: $VERDICT"
-      echo "policy:  $POLICY"
-      echo "helm test: $([ "$TEST_OK" = 1 ] && echo passed || echo FAILED) (log: $OUT/after-helm-test.log)"
+      if [ "$APPLY" = 1 ]; then echo "policy:  $POLICY"; else echo "policy:  already in the cluster (--no-apply)"; fi
+      echo "helm test: $([ "$TEST_OK" = 1 ] && echo passed || echo FAILED) (log, including the test pods' output: $OUT/after-helm-test.log)"
       echo
       echo "traffic diff (baseline -> with policy):"
       cat "$OUT/diff.txt"

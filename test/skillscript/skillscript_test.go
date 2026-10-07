@@ -78,9 +78,10 @@ func TestScriptRefusesBeforeTouchingAnything(t *testing.T) {
 	// Policy and baseline files deliberately do not exist: refusal must come
 	// before any other check, so the exit code is 2, not a file error.
 	cases := map[string][]string{
-		"baseline": {"baseline", "--release", "shop"},
-		"verify":   {"verify", "--release", "shop", "--policy", "missing.yaml", "--baseline", "missing.json"},
-		"rollback": {"rollback", "--policy", "missing.yaml"},
+		"baseline":        {"baseline", "--release", "shop"},
+		"verify":          {"verify", "--release", "shop", "--policy", "missing.yaml", "--baseline", "missing.json"},
+		"rollback":        {"rollback", "--policy", "missing.yaml"},
+		"verify-no-apply": {"verify", "--release", "shop", "--no-apply", "--baseline", "missing.json"},
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {

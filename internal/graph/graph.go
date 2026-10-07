@@ -83,7 +83,11 @@ type Pod struct {
 	Workload string `json:"workload,omitempty"`
 	// StartTime is when the pod started. Any connection involving a pod
 	// that started after a policy change was necessarily made under it.
-	StartTime time.Time  `json:"startTime,omitzero"`
+	StartTime time.Time `json:"startTime,omitzero"`
+	// Phase is the pod phase when the inventory was taken (Running,
+	// Succeeded, ...). A client that had already completed is usually a test
+	// or a job, not one of the workload's real clients.
+	Phase     string     `json:"phase,omitempty"`
 	Probe     Probe      `json:"probe"`
 	Listening []Listener `json:"listening,omitempty"`
 }

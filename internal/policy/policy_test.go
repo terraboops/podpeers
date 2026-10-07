@@ -419,3 +419,31 @@ func TestObservedDNSIsWidenedNotDuplicated(t *testing.T) {
 		}
 	}
 }
+
+func TestEntryPointOnlySeenFromCompletedPods(t *testing.T) {
+	// web's only client on 8080 is a helm test pod that has completed: the
+	// policy would admit nothing but the test. That must be called out.
+	r := shop()
+	r.Pods[1].Phase = "Succeeded" // edge/gateway-x, web's only inbound client
+	web := find(t, Suggest(r, Options{}), "Deployment/web")
+	if !hasGap(web, "ENTRY POINT WARNING: ingress on tcp/8080") || !hasGap(web, "only from edge/gateway-x") || !hasGap(web, "SHUTS THEM OUT") {
+		t.Fatalf("gaps = %v", web.Gaps)
+	}
+	// A running client on the same port means real traffic was seen: no warning.
+	r.Pods[1].Phase = "Running"
+	if web := find(t, Suggest(r, Options{}), "Deployment/web"); hasGap(web, "ENTRY POINT WARNING") {
+		t.Fatalf("running client must not trigger the warning: %v", web.Gaps)
+	}
+	// Mixed clients (one completed, one running) on a port: no warning.
+	r.Pods[1].Phase = "Succeeded"
+	r.Pods = append(r.Pods, graph.Pod{Namespace: "edge", Name: "lb", Workload: "Deployment/lb", Labels: map[string]string{"app": "lb"}, Phase: "Running", Probe: graph.Probe{Status: graph.ProbeNotTargeted}})
+	r.Edges = append(r.Edges, edge("shop/web-a", graph.Inbound, podPeer("edge", "lb"), 8080))
+	if web := find(t, Suggest(r, Options{}), "Deployment/web"); hasGap(web, "ENTRY POINT WARNING") {
+		t.Fatalf("a running client was also seen: %v", web.Gaps)
+	}
+	// Captures without phase information (older files) stay silent rather than guess.
+	r = shop()
+	if web := find(t, Suggest(r, Options{}), "Deployment/web"); hasGap(web, "ENTRY POINT WARNING") {
+		t.Fatal("no phase information: no warning")
+	}
+}

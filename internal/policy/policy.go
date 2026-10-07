@@ -333,6 +333,7 @@ func (b *builder) suggest(pods []graph.Pod, o Options) Suggestion {
 		s.Gaps = append(s.Gaps, g)
 	}
 	usedListeners := map[port]bool{}
+	portClients := map[port][]graph.Peer{}
 	egressCount := 0
 
 	for _, e := range edges {
@@ -352,6 +353,7 @@ func (b *builder) suggest(pods []graph.Pod, o Options) Suggestion {
 		p := port{e.Protocol, fmt.Sprint(e.Port)}
 		if e.Direction == graph.Inbound {
 			usedListeners[p] = true
+			portClients[p] = append(portClients[p], e.Peer)
 			switch e.Peer.Kind {
 			case graph.PeerPod:
 				peer, desc, g := b.podPeer(e.Peer.ID(), s.Namespace)
@@ -504,6 +506,29 @@ func (b *builder) suggest(pods []graph.Pod, o Options) Suggestion {
 		}
 	}
 	sort.Strings(unmatched)
+	// The front-door trap: if every client seen on a port was a pod that had
+	// already completed (a helm test pod, a Job), the workload's real clients
+	// were never observed, and this policy would admit only the test.
+	var testOnly []string
+	for p, clients := range portClients {
+		completed := []string{}
+		for _, c := range clients {
+			cp, ok := b.pods[c.ID()]
+			if c.Kind != graph.PeerPod || !ok || (cp.Phase != "Succeeded" && cp.Phase != "Failed") {
+				completed = nil
+				break
+			}
+			completed = append(completed, c.ID())
+		}
+		if len(completed) > 0 {
+			sort.Strings(completed)
+			testOnly = append(testOnly, fmt.Sprintf("%s (only from %s)", p, strings.Join(uniqueStrings(completed), ", ")))
+		}
+	}
+	sort.Strings(testOnly)
+	for _, t := range testOnly {
+		gap(fmt.Sprintf("ENTRY POINT WARNING: ingress on %s. Every client seen there had already completed by the end of the window: a test pod or a Job, not real traffic. If this port is the app's entry point, its real clients (ingress controller, other services, users) were NOT observed and this policy SHUTS THEM OUT. Add them deliberately, or capture under real traffic.", t))
+	}
 	if len(unmatched) > 0 {
 		gap(fmt.Sprintf("Listens on %s but no client was observed there: ingress to those ports will be DROPPED for everyone (health checks from other pods, metrics scrapers, rare callers).",
 			strings.Join(unmatched, ", ")))
@@ -663,6 +688,16 @@ func (rep Report) Ready() []*netv1.NetworkPolicy {
 	for _, s := range rep.Suggestions {
 		if s.Policy != nil {
 			out = append(out, s.Policy)
+		}
+	}
+	return out
+}
+
+func uniqueStrings(in []string) []string {
+	out := in[:0]
+	for i, s := range in {
+		if i == 0 || s != in[i-1] {
+			out = append(out, s)
 		}
 	}
 	return out

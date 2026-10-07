@@ -494,6 +494,7 @@ func toGraphPod(p *corev1.Pod) graph.Pod {
 	if p.Status.StartTime != nil {
 		gp.StartTime = p.Status.StartTime.UTC()
 	}
+	gp.Phase = string(p.Status.Phase)
 	for k, v := range p.Labels {
 		// Controller bookkeeping labels add noise without helping policy.
 		if k == "pod-template-hash" || k == "controller-revision-hash" || k == "pod-template-generation" {

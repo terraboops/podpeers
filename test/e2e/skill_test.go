@@ -133,6 +133,16 @@ func TestSkillHelmWorkflow(t *testing.T) {
 				t.Fatalf("%s refused: %s", s.Workload, s.Refused)
 			}
 			if s.Workload == "Deployment/shop-web" {
+				// The only client of web:8080 in the window was the helm test
+				// pod, which completed: suggest must warn that the policy
+				// would admit nothing but the test.
+				warned := false
+				for _, g := range s.Gaps {
+					warned = warned || (strings.Contains(g, "ENTRY POINT WARNING: ingress on tcp/8080") && strings.Contains(g, "shop-smoke"))
+				}
+				if !warned {
+					t.Errorf("no entry-point warning for web:8080 seen only from the completed test pod: %v", s.Gaps)
+				}
 				var api, dns int
 				for _, rule := range s.Policy.Spec.Egress {
 					sel := rule.To[0].PodSelector.MatchLabels
@@ -173,6 +183,23 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		// resolve to their workload, never to a bare address.
 		if regexp.MustCompile(`(?m)^(new|lost|blocked|preexisting)\s+\d+\.\d+\.\d+\.\d+`).MatchString(r.stdout) {
 			t.Fatal("a replaced pod resolved as a bare IP in the diff")
+		}
+	})
+
+	t.Run("verify --no-apply checks the policy already in the cluster", func(t *testing.T) {
+		// The good policy is still applied from the previous subtest: this is
+		// how the skill verifies a policy the chart ships.
+		r := skill(t, "verify", "--release", "shop", "--no-apply", "--baseline", baseline, "--duration", "30s", "--out", filepath.Join(work, "no-apply"))
+		t.Logf("exit=%d\n%s", r.code, r.stdout)
+		if r.code != 0 || !strings.Contains(r.stdout, "verdict: OK") || !strings.Contains(r.stdout, "already in the cluster (--no-apply)") {
+			t.Fatalf("want OK without applying anything, got exit %d", r.code)
+		}
+		if strings.Contains(r.stdout, "created") || strings.Contains(r.stdout, "configured") {
+			t.Error("--no-apply applied something")
+		}
+		log, _ := os.ReadFile(filepath.Join(work, "no-apply", "after-helm-test.log"))
+		if !strings.Contains(string(log), "smoke: front door answered") {
+			t.Errorf("helm test log should include the test pod's own output (--logs):\n%s", log)
 		}
 	})
 
