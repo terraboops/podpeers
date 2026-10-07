@@ -33,7 +33,9 @@ turns that into:
   got through.
 - 🛡️ **NetworkPolicy suggestions**: ready-to-`kubectl apply` YAML that allows
   exactly what was observed. Every rule says *why* it exists, and every
-  policy says what it does **not** cover.
+  policy says what it does **not** cover. That includes an `ENTRY POINT
+  WARNING` when a port's only observed clients were test pods or Jobs, which
+  means the real clients were never seen.
 - ✅ **Verification**: apply a policy, re-observe, and get **OK / BROKEN /
   INCONCLUSIVE**, including breakage your `helm test` doesn't exercise.
 - 🔎 **GraphQL**, an **interactive HTML graph**, **Graphviz**, an **MCP
