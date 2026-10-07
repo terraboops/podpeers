@@ -24,16 +24,16 @@
   ],
   "edges": [
     {"pod": "edge/gateway", "direction": "outbound", "peer": {"kind": "service", "namespace": "shop", "name": "web", "ip": "192.0.2.201"},
-     "port": 8080, "protocol": "tcp", "connections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": true},
+     "port": 8080, "protocol": "tcp", "connections": 1, "newConnections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": true},
     {"pod": "shop/api", "direction": "inbound", "peer": {"kind": "pod", "namespace": "shop", "name": "batch", "ip": "192.0.2.14"},
-     "port": 9000, "protocol": "tcp", "connections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:13:40Z", "samples": 5, "open": false},
+     "port": 9000, "protocol": "tcp", "connections": 1, "newConnections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:13:40Z", "samples": 5, "open": false},
     {"pod": "shop/api", "direction": "inbound", "peer": {"kind": "pod", "namespace": "shop", "name": "web", "ip": "192.0.2.11"},
-     "port": 9000, "protocol": "tcp", "connections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": true},
+     "port": 9000, "protocol": "tcp", "connections": 1, "newConnections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": true},
     {"pod": "shop/api", "direction": "outbound", "peer": {"kind": "external", "ip": "203.0.113.9"},
-     "port": 443, "protocol": "tcp", "connections": 3, "firstSeen": "2023-11-14T22:13:25Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 9, "open": true},
+     "port": 443, "protocol": "tcp", "connections": 3, "newConnections": 2, "firstSeen": "2023-11-14T22:13:25Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 9, "open": true},
     {"pod": "shop/web", "direction": "inbound", "peer": {"kind": "pod", "namespace": "edge", "name": "gateway", "ip": "192.0.2.12"},
-     "port": 8080, "protocol": "tcp", "connections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": true},
+     "port": 8080, "protocol": "tcp", "connections": 1, "newConnections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": true},
     {"pod": "shop/web", "direction": "outbound", "peer": {"kind": "service", "namespace": "shop", "name": "api", "ip": "192.0.2.200"},
-     "port": 9000, "protocol": "tcp", "connections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": true}
+     "port": 9000, "protocol": "tcp", "connections": 1, "newConnections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": true}
   ]
 }

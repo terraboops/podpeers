@@ -292,3 +292,20 @@ func TestLoadRejectsGarbage(t *testing.T) {
 		t.Error("missing file should fail")
 	}
 }
+
+func TestNewConnections(t *testing.T) {
+	r := NewResolver(inv)
+	samples := []procnet.Sample{
+		sample(0, sock(procnet.TCP, "192.0.2.11:40001", "192.0.2.200:9000", procnet.Established)), // predates the window
+		sample(5, sock(procnet.TCP, "192.0.2.11:40001", "192.0.2.200:9000", procnet.Established),
+			sock(procnet.TCP, "192.0.2.11:40002", "192.0.2.200:9000", procnet.Established)), // opened during it
+	}
+	_, es := Analyze("shop/web", samples, r)
+	if es[0].Connections != 2 || es[0].NewConnections != 1 {
+		t.Fatalf("%+v", es[0])
+	}
+	_, es = Analyze("shop/web", samples[:1], r)
+	if es[0].NewConnections != 0 {
+		t.Fatalf("a single sample has nothing new: %+v", es[0])
+	}
+}

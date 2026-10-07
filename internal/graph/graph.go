@@ -80,7 +80,10 @@ type Pod struct {
 	// Workload is the controller that owns the pod, "Kind/name" (a pod owned by
 	// a ReplicaSet reports its Deployment), or "Pod/<name>" for a bare pod. It is
 	// stable across pod restarts, unlike the pod name.
-	Workload  string     `json:"workload,omitempty"`
+	Workload string `json:"workload,omitempty"`
+	// StartTime is when the pod started. Any connection involving a pod
+	// that started after a policy change was necessarily made under it.
+	StartTime time.Time  `json:"startTime,omitzero"`
 	Probe     Probe      `json:"probe"`
 	Listening []Listener `json:"listening,omitempty"`
 }
@@ -167,6 +170,12 @@ type Edge struct {
 	// Open is true when a connection on this edge was ESTABLISHED in the pod's
 	// final sample. False means it closed during the window.
 	Open bool `json:"open"`
+	// NewConnections counts connections first seen after the pod's first
+	// sample, i.e. opened during the window. Connections already open at the
+	// first sample predate the window, and so predate anything (such as a
+	// NetworkPolicy change) that happened just before it: CNIs do not
+	// re-evaluate established connections.
+	NewConnections int `json:"newConnections"`
 	// FailedConnections counts connections that never completed a handshake
 	// (only ever SYN_SENT, SYN_RECV, or CLOSE after a refused connect).
 	FailedConnections int `json:"failedConnections,omitempty"`
@@ -289,6 +298,7 @@ func Analyze(pod string, samples []procnet.Sample, res *Resolver) ([]Listener, [
 	type agg struct {
 		edge        Edge
 		conns       map[connKey]bool // value: the connection completed a handshake
+		fresh       map[connKey]bool // first seen after the first sample
 		seen        map[int]bool
 		established bool // some connection was seen ESTABLISHED (or UDP)
 	}
@@ -314,11 +324,15 @@ func Analyze(pod string, samples []procnet.Sample, res *Resolver) ([]Listener, [
 					edge: Edge{Pod: pod, Direction: ek.dir, Peer: res.Resolve(ek.ip), Port: ek.port,
 						Protocol: string(k.Protocol), FirstSeen: s.Time},
 					conns: map[connKey]bool{},
+					fresh: map[connKey]bool{},
 					seen:  map[int]bool{},
 				}
 				edges[ek] = a
 			}
 			ck := connKey{k.Protocol, k.Local, k.Remote}
+			if _, known := a.conns[ck]; !known && i > 0 {
+				a.fresh[ck] = true
+			}
 			a.conns[ck] = a.conns[ck] || k.Protocol == procnet.UDP || handshakeDone(k.State)
 			a.seen[i] = true
 			if s.Time.After(a.edge.LastSeen) {
@@ -349,6 +363,7 @@ func Analyze(pod string, samples []procnet.Sample, res *Resolver) ([]Listener, [
 	var outE []Edge
 	for _, a := range edges {
 		a.edge.Connections = len(a.conns)
+		a.edge.NewConnections = len(a.fresh)
 		for _, ok := range a.conns {
 			if !ok {
 				a.edge.FailedConnections++
@@ -469,13 +484,14 @@ type Flow struct {
 	Open       bool
 	Attempted  bool
 	ObservedOn string // pod whose sockets showed it
+	New        int    // connections opened during the window
 }
 
 // Flows lists every edge as a client->server flow.
 func (r Result) Flows() []Flow {
 	var out []Flow
 	for _, e := range r.Edges {
-		f := Flow{Port: e.Port, Protocol: e.Protocol, Open: e.Open, Attempted: e.Attempted, ObservedOn: e.Pod}
+		f := Flow{Port: e.Port, Protocol: e.Protocol, Open: e.Open, Attempted: e.Attempted, ObservedOn: e.Pod, New: e.NewConnections}
 		if e.Direction == Outbound {
 			f.From, f.To = e.Pod, e.Peer.ID()
 		} else {

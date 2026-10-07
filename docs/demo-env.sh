@@ -13,3 +13,14 @@ users: [{name: me, user: {token: not-a-real-token}}]
 contexts: [{name: prod-eu, context: {cluster: prod, user: me}}]
 current-context: prod-eu
 KC
+# The deliberately broken policy for the last scene: drop web's egress to api.
+make_broken() {
+  python3 - <<'PY'
+import yaml
+docs = [d for d in yaml.safe_load_all(open('run/policy.yaml')) if d]
+for d in docs:
+    if d['metadata']['name'] == 'podpeers-shop-web':
+        d['spec']['egress'] = d['spec']['egress'][1:]
+yaml.safe_dump_all(docs, open('run/broken.yaml', 'w'))
+PY
+}

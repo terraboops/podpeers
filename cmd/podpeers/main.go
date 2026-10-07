@@ -38,6 +38,9 @@ const (
 	exitRefused = 2 // the safety guard refused the target cluster
 	exitPartial = 3 // capture written, but some targeted pods could not be observed
 	exitBroken  = 4 // diff: traffic that worked before is blocked or missing
+	// diff: no breakage seen, but some flows were only observed on
+	// connections that predate the change, so the change was not exercised.
+	exitInconclusive = 5
 )
 
 var version = "dev"
@@ -51,7 +54,7 @@ Usage:
   podpeers query   peers.json '{ pods { id peers { id kind } } }'
   podpeers serve   [-addr 127.0.0.1:8080] peers.json
   podpeers suggest [-n NS] [-workload Kind/name] [-dns auto|always|never] [-format yaml|json] peers.json
-  podpeers diff    before.json after.json
+  podpeers diff    [-changed-at RFC3339] before.json after.json
   podpeers mcp     peers.json            (MCP server on stdio; read-only)
   podpeers version
 
@@ -490,6 +493,7 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "machine-readable output")
+	changedAt := fs.String("changed-at", "", "RFC 3339 time the change under test took effect; connections of pods started after it count as made under it")
 	if err := fs.Parse(args); err != nil {
 		return exitError
 	}
@@ -507,15 +511,27 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "podpeers: %v\n", err)
 		return exitError
 	}
-	d := diff.Compare(before, after)
+	var o diff.Options
+	if *changedAt != "" {
+		t, err := time.Parse(time.RFC3339, *changedAt)
+		if err != nil {
+			fmt.Fprintf(stderr, "podpeers: -changed-at: %v\n", err)
+			return exitError
+		}
+		o.ChangedAt = t
+	}
+	d := diff.CompareWith(before, after, o)
 	if *asJSON {
-		b, _ := json.MarshalIndent(map[string]any{"broken": d.Broken(), "changes": d.Changes, "unverifiable": d.Unverifiable}, "", "  ")
+		b, _ := json.MarshalIndent(map[string]any{"broken": d.Broken(), "inconclusive": d.Inconclusive(), "changes": d.Changes, "unverifiable": d.Unverifiable}, "", "  ")
 		fmt.Fprintln(stdout, string(b))
 	} else {
 		d.Text(stdout)
 	}
 	if d.Broken() {
 		return exitBroken
+	}
+	if d.Inconclusive() {
+		return exitInconclusive
 	}
 	return exitOK
 }

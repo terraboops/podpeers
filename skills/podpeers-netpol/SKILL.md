@@ -97,8 +97,16 @@ scripts/netpol-check.sh verify --release <rel> --namespace <ns> --context <ctx> 
   --policy ./netpol/policy.yaml --baseline ./netpol/baseline.json [--rollback-on-fail]
 ```
 
-This dry-runs and applies the policy, waits for the CNI to program it, then runs
-a second capture with `helm test` inside it, and diffs against the baseline.
+This dry-runs and applies the policy and waits for the CNI to program it. Then
+it **rollout-restarts the release's workloads**, runs a second capture with
+`helm test` inside it, and diffs against the baseline.
+
+The restart is essential. CNIs check a policy only when a connection is
+opened, so a connection pool, gRPC channel or database connection established
+*before* the policy keeps working under a policy that would block it. Without
+the restart, a policy that will break the app on its next restart can verify
+"OK". This was observed for real while building this skill. Use `--no-restart`
+only if restarting is unacceptable; expect INCONCLUSIVE.
 `verdict.txt` holds the result.
 
 | exit | verdict | what it means |
@@ -106,6 +114,7 @@ a second capture with `helm test` inside it, and diffs against the baseline.
 | 0 | OK | helm test passed **and** no flow was blocked or lost |
 | 5 | BROKEN: helm test failed | the user-visible path is broken; read `after-helm-test.log` and `diff.txt` |
 | 4 | BROKEN: helm test passed, traffic blocked/lost | the test does not exercise what broke; the diff names the flow |
+| 7 | INCONCLUSIVE | some flows were only seen on connections older than the policy (`preexisting` lines): the policy was never exercised for them. Restart those workloads and verify again. Never report this as OK |
 | 2 | context refused | nothing was touched |
 
 ## Step 5: telling that a policy broke something
@@ -122,7 +131,9 @@ Use all three signals; any one is enough to call it broken:
    Recapture with a longer window before concluding.
 
 `unverifiable` lines mean the pod that saw the flow was not observed the
-second time. They say nothing either way.
+second time. `preexisting` lines mean the flow was only seen on connections
+opened before the window, so it predates the policy. Neither says anything
+about whether the policy allows the flow.
 
 **Rule out the new-pod race before blaming the policy.** CNIs program a
 policy's allow-list for a *newly created* pod asynchronously. A client pod

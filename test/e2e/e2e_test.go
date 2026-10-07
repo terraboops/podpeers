@@ -378,6 +378,43 @@ func TestE2E(t *testing.T) {
 		t.Logf("MCP peers response: %.300s...", lines[1])
 	})
 
+	t.Run("connections older than a policy are reported as inconclusive, not OK", func(t *testing.T) {
+		// web holds one connection to api for its whole life. A policy that
+		// denies all of web's egress does not cut it (CNIs check policy when a
+		// connection opens), so the flow keeps "working" while any reconnect
+		// would fail. The diff must say so instead of reporting OK.
+		pol := filepath.Join(t.TempDir(), "deny-web-egress.yaml")
+		os.WriteFile(pol, []byte(`apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: e2e-deny-web-egress, namespace: pp-app}
+spec:
+  podSelector: {matchLabels: {app: web}}
+  policyTypes: [Egress]
+  egress: []
+`), 0o644)
+		kubectl(t, "apply", "-f", pol)
+		defer kubectl(t, "delete", "-f", pol, "--ignore-not-found")
+		time.Sleep(8 * time.Second)
+
+		probe, _ := exec.Command("kubectl", "--kubeconfig", kubeconfig, "--context", kubeCtx, "exec", "-n", "pp-app", "web", "-c", "main", "--",
+			"sh", "-c", "timeout 6 nc -z -w 4 api 9000 && echo NEW-CONNECT-OK || echo NEW-CONNECT-BLOCKED").CombinedOutput()
+		t.Logf("a new connection from web under the policy: %s", strings.TrimSpace(string(probe)))
+		if !strings.Contains(string(probe), "NEW-CONNECT-BLOCKED") {
+			t.Fatal("policy is not enforced for new connections; this test needs an enforcing CNI")
+		}
+
+		after := filepath.Join(outDir, "e2e-after-deny.json")
+		r := podpeers(ctx, t, "capture", "-n", "pp-app", "-l", "app=web", "--duration", "8s", "--interval", "1s", "-o", after, "--summary", "none")
+		if r.code != 0 {
+			t.Fatalf("capture: %s", r.stderr)
+		}
+		d := podpeers(ctx, t, "diff", filepath.Join(outDir, "e2e-capture.json"), after)
+		t.Logf("diff exit=%d\n%s", d.code, d.stdout)
+		if d.code != 5 || !strings.Contains(d.stdout, "preexisting pp-app/Pod/web -> svc/pp-app/api tcp/9000") || !strings.Contains(d.stdout, "INCONCLUSIVE") {
+			t.Fatalf("want INCONCLUSIVE (exit 5) naming web -> api, got exit %d", d.code)
+		}
+	})
+
 	t.Run("debug container that cannot start is reported, not waited on forever", func(t *testing.T) {
 		out := filepath.Join(t.TempDir(), "bad-image.json")
 		start := time.Now()

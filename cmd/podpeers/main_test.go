@@ -312,8 +312,8 @@ func TestDiffCLI(t *testing.T) {
 		t.Fatalf("exit %d out %s", code, out)
 	}
 	b, _ := os.ReadFile(fixture)
-	broken := strings.Replace(string(b), `"port": 8080, "protocol": "tcp", "connections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": true}`,
-		`"port": 8080, "protocol": "tcp", "connections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": false, "attempted": true}`, 1)
+	broken := strings.Replace(string(b), `"port": 8080, "protocol": "tcp", "connections": 1, "newConnections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": true}`,
+		`"port": 8080, "protocol": "tcp", "connections": 1, "newConnections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": false, "attempted": true}`, 1)
 	if broken == string(b) {
 		t.Fatal("fixture edit did not apply")
 	}
@@ -326,6 +326,19 @@ func TestDiffCLI(t *testing.T) {
 	code, out, _ = runCLI("diff", "-json", fixture, after)
 	if code != exitBroken || !strings.Contains(out, `"broken": true`) {
 		t.Fatalf("json: %s", out)
+	}
+	stale := strings.ReplaceAll(string(b), `"newConnections": 1,`, `"newConnections": 0,`)
+	stale = strings.ReplaceAll(stale, `"newConnections": 2,`, `"newConnections": 0,`)
+	stalePath := filepath.Join(t.TempDir(), "stale.json")
+	os.WriteFile(stalePath, []byte(stale), 0o644)
+	if code, out, _ := runCLI("diff", fixture, stalePath); code != exitInconclusive || !strings.Contains(out, "INCONCLUSIVE") {
+		t.Fatalf("pre-existing only: exit %d out %s", code, out)
+	}
+	if code, _, _ := runCLI("diff", "-changed-at", "yesterday", fixture, stalePath); code != exitError {
+		t.Error("bad -changed-at should fail")
+	}
+	if code, _, _ := runCLI("diff", "-changed-at", "2000-01-01T00:00:00Z", fixture, stalePath); code != exitInconclusive {
+		t.Error("fixture pods have no start time; still inconclusive")
 	}
 	if code, _, _ := runCLI("diff", fixture); code != exitError {
 		t.Error("one file should fail")

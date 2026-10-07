@@ -483,6 +483,9 @@ func shortErr(err error) string {
 func toGraphPod(p *corev1.Pod) graph.Pod {
 	gp := graph.Pod{Namespace: p.Namespace, Name: p.Name, IP: p.Status.PodIP, Node: p.Spec.NodeName,
 		HostNetwork: p.Spec.HostNetwork, Workload: Workload(p)}
+	if p.Status.StartTime != nil {
+		gp.StartTime = p.Status.StartTime.UTC()
+	}
 	for k, v := range p.Labels {
 		// Controller bookkeeping labels add noise without helping policy.
 		if k == "pod-template-hash" || k == "controller-revision-hash" || k == "pod-template-generation" {

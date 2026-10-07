@@ -3,8 +3,10 @@
 #
 #   baseline  capture a Helm release's traffic while `helm test` runs, then
 #             write NetworkPolicy suggestions for it
-#   verify    apply a policy, re-run `helm test` under a second capture, and
-#             diff against the baseline: OK, or BROKEN with the reason
+#   verify    apply a policy, restart the release's workloads so every
+#             connection is made under it, re-run `helm test` under a second
+#             capture, and diff against the baseline: OK, BROKEN (why), or
+#             INCONCLUSIVE
 #   rollback  delete the policy again
 #
 # Every cluster call names --context explicitly, and the script stops before
@@ -13,13 +15,14 @@
 #
 # Exit codes: 0 OK, 1 usage/runtime error, 2 context refused,
 #             4 BROKEN (traffic blocked or lost), 5 BROKEN (helm test failed),
-#             6 baseline unusable (helm test already failing without a policy).
+#             6 baseline unusable (helm test already failing without a policy),
+#             7 INCONCLUSIVE (flows only seen on connections older than the policy).
 set -euo pipefail
 
 PODPEERS="${PODPEERS:-podpeers}"
 RELEASE="" NS="" CONTEXT="" KCFG="${KUBECONFIG:-}" SELECTOR="" ALLOW=""
 DURATION="40s" INTERVAL="1s" OUT="./podpeers-netpol" POLICY="" BASELINE=""
-SETTLE=8 WARMUP=8 ROLLBACK_ON_FAIL=0
+SETTLE=8 WARMUP=8 ROLLBACK_ON_FAIL=0 RESTART=1
 
 die() { echo "netpol-check: $*" >&2; exit 1; }
 say() { echo "netpol-check: $*" >&2; }
@@ -42,6 +45,9 @@ Options:
   --settle SECONDS        wait after applying a policy before verifying (default 8)
   --allow-context NAME    pass through to podpeers for a deliberately approved non-local cluster
   --rollback-on-fail      delete the policy again if verify says BROKEN
+  --no-restart            do not restart the release's workloads after applying the policy
+                          (established connections are not re-checked by CNIs, so verify
+                          may then only be able to say INCONCLUSIVE)
 EOF
 }
 
@@ -62,6 +68,7 @@ while [ $# -gt 0 ]; do
     --settle) SETTLE="$2"; shift 2 ;;
     --allow-context) ALLOW="$2"; shift 2 ;;
     --rollback-on-fail) ROLLBACK_ON_FAIL=1; shift ;;
+    --no-restart) RESTART=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -135,16 +142,34 @@ case "$CMD" in
     kc apply -n "$NS" -f "$POLICY"
     say "waiting ${SETTLE}s for the CNI to program the policy"
     sleep "$SETTLE"
+    # From here on the policy is in force: pods started after this moment can
+    # only have connected under it. (Assumes this machine's clock roughly
+    # matches the cluster's.)
+    CHANGED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [ "$RESTART" = 1 ]; then
+      # CNIs only evaluate a policy when a connection is opened; connections
+      # established before it keep working. Restart so every client reconnects
+      # under the policy, which also exercises start-up connections.
+      say "restarting workloads matching $SELECTOR so every connection is made under the policy"
+      for kind in deployment statefulset daemonset; do
+        for obj in $(kc get "$kind" -n "$NS" -l "$SELECTOR" -o name); do
+          kc rollout restart -n "$NS" "$obj" >/dev/null
+          kc rollout status -n "$NS" "$obj" --timeout 5m >/dev/null
+        done
+      done
+    fi
     capture_with_test "$OUT/after.json" "$OUT/after-helm-test.log"
     DIFF_CODE=0
-    "$PODPEERS" diff "$BASELINE" "$OUT/after.json" >"$OUT/diff.txt" || DIFF_CODE=$?
-    [ "$DIFF_CODE" = 0 ] || [ "$DIFF_CODE" = 4 ] || die "diff failed (exit $DIFF_CODE)"
+    "$PODPEERS" diff -changed-at "$CHANGED_AT" "$BASELINE" "$OUT/after.json" >"$OUT/diff.txt" || DIFF_CODE=$?
+    case "$DIFF_CODE" in 0|4|5) ;; *) die "diff failed (exit $DIFF_CODE)" ;; esac
 
     VERDICT="OK" CODE=0
     if [ "$TEST_OK" != 1 ]; then
       VERDICT="BROKEN: helm test failed with the policy in place" CODE=5
     elif [ "$DIFF_CODE" = 4 ]; then
       VERDICT="BROKEN: helm test passed, but traffic the app relied on is now blocked or missing" CODE=4
+    elif [ "$DIFF_CODE" = 5 ]; then
+      VERDICT="INCONCLUSIVE: helm test passed, but some flows were only seen on connections opened before the policy" CODE=7
     fi
     {
       echo "verdict: $VERDICT"

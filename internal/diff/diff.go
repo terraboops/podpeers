@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"time"
 
 	"github.com/terraboops/podpeers/internal/graph"
 )
@@ -19,6 +20,11 @@ const (
 	Blocked = "blocked" // after: only ever half-open (SYN_SENT). The strongest signal of a policy drop.
 	Lost    = "lost"    // seen before, absent after, although the observing workload was observed after
 	New     = "new"     // absent before, established after
+	// Preexisting: seen after, but only on connections that were already open
+	// when the after-window began. They predate the policy change, and CNIs
+	// do not re-evaluate established connections, so they prove nothing about
+	// whether the policy allows this flow.
+	Preexisting = "preexisting"
 )
 
 type Change struct {
@@ -41,6 +47,17 @@ type Result struct {
 	Unverifiable []string `json:"unverifiable,omitempty"`
 }
 
+// Inconclusive reports whether some flow was only seen on connections that
+// predate the after-window, so the policy was never exercised for it.
+func (r Result) Inconclusive() bool {
+	for _, c := range r.Changes {
+		if c.Kind == Preexisting {
+			return true
+		}
+	}
+	return false
+}
+
 // Broken reports whether anything was blocked or lost.
 func (r Result) Broken() bool {
 	for _, c := range r.Changes {
@@ -59,14 +76,27 @@ type key struct {
 type flowInfo struct {
 	established bool // at least one observation got past the handshake
 	attempted   bool // at least one observation was handshake-only
+	newConns    int  // connections opened during the window
 	observers   map[string]bool
 }
 
+// Options refine a comparison.
+type Options struct {
+	// ChangedAt is when the change under test (a NetworkPolicy) took effect.
+	// A connection involving a pod that started after it was necessarily
+	// opened under the change, even if it was already open when the window
+	// began. Zero means unknown: only connections opened during the window
+	// count as exercising the change.
+	ChangedAt time.Time
+}
+
 // workloadFlows aggregates a capture's flows by workload endpoints.
-func workloadFlows(r graph.Result) (map[key]*flowInfo, map[string]bool) {
+func workloadFlows(r graph.Result, o Options) (map[key]*flowInfo, map[string]bool) {
 	wl := map[string]string{}
 	observed := map[string]bool{}
+	started := map[string]time.Time{}
 	for _, p := range r.Pods {
+		started[p.ID()] = p.StartTime
 		wl[p.ID()] = p.WorkloadID()
 		if p.Probe.Status == graph.ProbeObserved {
 			observed[p.WorkloadID()] = true
@@ -91,15 +121,22 @@ func workloadFlows(r graph.Result) (map[key]*flowInfo, map[string]bool) {
 		} else {
 			fi.established = true
 		}
+		fi.newConns += f.New
+		if !o.ChangedAt.IsZero() && (started[f.From].After(o.ChangedAt) || started[f.To].After(o.ChangedAt)) {
+			fi.newConns++ // an endpoint pod started under the change
+		}
 		fi.observers[name(f.ObservedOn)] = true
 	}
 	return out, observed
 }
 
 // Compare reports what changed from before to after.
-func Compare(before, after graph.Result) Result {
-	bf, _ := workloadFlows(before)
-	af, aObserved := workloadFlows(after)
+func Compare(before, after graph.Result) Result { return CompareWith(before, after, Options{}) }
+
+// CompareWith is Compare with options.
+func CompareWith(before, after graph.Result, o Options) Result {
+	bf, _ := workloadFlows(before, Options{})
+	af, aObserved := workloadFlows(after, o)
 	var res Result
 	for k, a := range af {
 		b := bf[k]
@@ -112,6 +149,9 @@ func Compare(before, after graph.Result) Result {
 			res.Changes = append(res.Changes, Change{Blocked, k.from, k.to, k.proto, k.port, detail})
 		case b == nil || !b.established:
 			res.Changes = append(res.Changes, Change{New, k.from, k.to, k.proto, k.port, "not seen before"})
+		case a.newConns == 0:
+			res.Changes = append(res.Changes, Change{Preexisting, k.from, k.to, k.proto, k.port,
+				"only connections already open before the window; the policy was never exercised for this flow"})
 		}
 	}
 	for k, b := range bf {
@@ -134,7 +174,7 @@ func Compare(before, after graph.Result) Result {
 		res.Changes = append(res.Changes, Change{Lost, k.from, k.to, k.proto, k.port,
 			"seen before, not at all after (blocked, or simply idle during the second window)"})
 	}
-	order := map[string]int{Blocked: 0, Lost: 1, New: 2}
+	order := map[string]int{Blocked: 0, Lost: 1, Preexisting: 2, New: 3}
 	sort.Slice(res.Changes, func(i, j int) bool {
 		a, b := res.Changes[i], res.Changes[j]
 		if a.Kind != b.Kind {
@@ -163,9 +203,13 @@ func (r Result) Text(w io.Writer) {
 	for _, u := range r.Unverifiable {
 		fmt.Fprintf(w, "unverifiable %s  (its observer was not observed in the second capture)\n", u)
 	}
-	if r.Broken() {
+	switch {
+	case r.Broken():
 		fmt.Fprintln(w, "\nVERDICT: BROKEN - traffic that worked before is blocked or missing")
-	} else {
+	case r.Inconclusive():
+		fmt.Fprintln(w, "\nVERDICT: INCONCLUSIVE - some flows were only seen on connections opened before the policy;"+
+			" restart those workloads so they reconnect under it, then capture again")
+	default:
 		fmt.Fprintln(w, "\nVERDICT: OK - nothing blocked or lost")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/terraboops/podpeers/internal/graph"
 )
@@ -18,12 +19,12 @@ func pod(name, workload string, observed bool) graph.Pod {
 
 func out(pod, svc string, port uint16, attempted bool) graph.Edge {
 	return graph.Edge{Pod: "shop/" + pod, Direction: graph.Outbound, Protocol: "tcp", Port: port,
-		Peer: graph.Peer{Kind: graph.PeerService, Namespace: "shop", Name: svc}, Attempted: attempted, Open: !attempted}
+		Peer: graph.Peer{Kind: graph.PeerService, Namespace: "shop", Name: svc}, Attempted: attempted, Open: !attempted, NewConnections: 1}
 }
 
 func in(pod, from string, port uint16) graph.Edge {
 	return graph.Edge{Pod: "shop/" + pod, Direction: graph.Inbound, Protocol: "tcp", Port: port,
-		Peer: graph.Peer{Kind: graph.PeerPod, Namespace: "shop", Name: from}, Open: true}
+		Peer: graph.Peer{Kind: graph.PeerPod, Namespace: "shop", Name: from}, Open: true, NewConnections: 1}
 }
 
 func TestCompareSurvivesPodRestarts(t *testing.T) {
@@ -121,5 +122,65 @@ func TestAttemptedBeforeIsNotLost(t *testing.T) {
 	after := graph.Result{Pods: []graph.Pod{pod("web-a", "Deployment/web", true)}}
 	if r := Compare(before, after); len(r.Changes) != 0 {
 		t.Fatalf("%+v", r.Changes)
+	}
+}
+
+func TestPreexistingConnectionsAreInconclusive(t *testing.T) {
+	// After a policy change, a flow whose only connections were already open
+	// when the window began proves nothing: CNIs do not re-evaluate them.
+	before := graph.Result{
+		Pods:  []graph.Pod{pod("web-a", "Deployment/web", true)},
+		Edges: []graph.Edge{out("web-a", "api", 9000, false)},
+	}
+	carried := out("web-a", "api", 9000, false)
+	carried.NewConnections = 0
+	after := graph.Result{Pods: []graph.Pod{pod("web-a", "Deployment/web", true)}, Edges: []graph.Edge{carried}}
+	r := Compare(before, after)
+	if r.Broken() || !r.Inconclusive() || len(r.Changes) != 1 || r.Changes[0].Kind != Preexisting {
+		t.Fatalf("%+v", r)
+	}
+	var b bytes.Buffer
+	r.Text(&b)
+	if !strings.Contains(b.String(), "VERDICT: INCONCLUSIVE") {
+		t.Fatal(b.String())
+	}
+	// A blocked flow still wins over an inconclusive one.
+	blocked := out("web-a", "cache", 6379, true)
+	before.Edges = append(before.Edges, out("web-a", "cache", 6379, false))
+	after.Edges = append(after.Edges, blocked)
+	if r := Compare(before, after); !r.Broken() || !r.Inconclusive() {
+		t.Fatalf("%+v", r)
+	}
+	b.Reset()
+	Compare(before, after).Text(&b)
+	if !strings.Contains(b.String(), "VERDICT: BROKEN") {
+		t.Fatal(b.String())
+	}
+}
+
+func TestChangedAtCountsRestartedPods(t *testing.T) {
+	// The only connection is older than the window, but the pod holding it
+	// started after the policy took effect: it was made under the policy.
+	changed := time.Unix(1700000000, 0).UTC()
+	before := graph.Result{
+		Pods:  []graph.Pod{pod("web-a", "Deployment/web", true)},
+		Edges: []graph.Edge{out("web-a", "api", 9000, false)},
+	}
+	carried := out("web-b", "api", 9000, false)
+	carried.NewConnections = 0
+	restarted := pod("web-b", "Deployment/web", true)
+	restarted.StartTime = changed.Add(time.Minute)
+	after := graph.Result{Pods: []graph.Pod{restarted}, Edges: []graph.Edge{carried}}
+
+	if r := Compare(before, after); !r.Inconclusive() {
+		t.Fatal("without ChangedAt the flow cannot be proven exercised")
+	}
+	if r := CompareWith(before, after, Options{ChangedAt: changed}); r.Inconclusive() || r.Broken() || len(r.Changes) != 0 {
+		t.Fatalf("pod started after the change: %+v", r.Changes)
+	}
+	restarted.StartTime = changed.Add(-time.Minute)
+	after.Pods = []graph.Pod{restarted}
+	if r := CompareWith(before, after, Options{ChangedAt: changed}); !r.Inconclusive() {
+		t.Fatal("pod started before the change is still inconclusive")
 	}
 }
