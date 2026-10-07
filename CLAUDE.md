@@ -43,6 +43,7 @@ Read this before changing anything in this repo.
 make vet test           # always
 make docs               # after touching any Markdown diagram (renders them like GitHub does)
 make e2e                # for anything touching capture, policy, diff, the skill or its script
+make mutants-e2e        # after changing a protection or its test: each mutant must still be killed
 ```
 
 Trunk-based: commit to `main`; branch only to carry a pull request. A change

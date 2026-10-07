@@ -1,0 +1,23 @@
+# Mutant 04-debug-cannot-start: breaks the protection for "a pod whose debug container cannot start".
+# Bug introduced: a debug container that never starts is treated as finished instead of failed.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/capture/
+# unit-run: TestProgress
+# unit-expect: Progress = 
+# e2e-run: TestE2E/debug_container
+# e2e-expect: loner probe = 
+diff --git a/internal/capture/capture.go b/internal/capture/capture.go
+index cc5b70b..8752558 100644
+--- a/internal/capture/capture.go
++++ b/internal/capture/capture.go
+@@ -206,7 +206,7 @@ func Progress(p *corev1.Pod, name string, injectedAt, now time.Time, startTimeou
+ 		}
+ 	}
+ 	if now.Sub(injectedAt) > startTimeout {
+-		return Failed, fmt.Sprintf("debug container did not start within %s (%s)", startTimeout, reason)
++		return Finished, ""
+ 	}
+ 	return Waiting, reason
+ }

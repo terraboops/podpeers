@@ -300,6 +300,16 @@ Named cases:
 CI runs both suites on every push. The e2e suite runs on a k3d cluster on the
 runner.
 
+**The tests have teeth, and that's checked too.** Each named negative case,
+and the safety guard, has a mutant in [`hack/mutants/`](hack/mutants): a
+one-line patch that breaks exactly that protection. `make mutants-e2e` applies
+each one in a scratch worktree and requires the unit **and** real-cluster tests
+to fail **for the expected reason**; it also checks that they pass unmutated.
+CI runs it on every push. Writing the mutants found one test that caught a bug
+only by accident (ignoring the label selector injected into `kube-system`
+pods). That test now checks the cluster-wide invariant directly: no pod
+outside the selector is touched.
+
 ## Limits, honestly
 
 - Sampling, not packet capture (see FAQ).

@@ -1,0 +1,23 @@
+# Mutant 01-no-peers: breaks the protection for "a pod with no peers at all".
+# Bug introduced: suggest stops refusing a workload with no observed traffic, emitting a deny-all guess.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/policy/
+# unit-run: TestRefusals
+# unit-expect: no traffic.*refused=\"\"|TestRefusals/no_traffic
+# e2e-run: TestE2E/(capture_matches|suggestions)
+# e2e-expect: Pod/loner = "policy"
+diff --git a/internal/policy/policy.go b/internal/policy/policy.go
+index cfce047..ea3b92c 100644
+--- a/internal/policy/policy.go
++++ b/internal/policy/policy.go
+@@ -491,7 +491,7 @@ func (b *builder) suggest(pods []graph.Pod, o Options) Suggestion {
+ 		s.Reasons = append(s.Reasons, reason(fmt.Sprintf("egress[%d]", i), "egress", r))
+ 	}
+ 
+-	if len(np.Spec.Ingress) == 0 && len(np.Spec.Egress) == 0 && !o.AllowEmpty {
++	if false && len(np.Spec.Ingress) == 0 && len(np.Spec.Egress) == 0 && !o.AllowEmpty {
+ 		s.Refused = "no traffic at all was observed for this workload. The resulting policy would deny everything, and a quiet window is not evidence that it never talks to anything. Capture for longer (or pass --allow-empty to emit deny-all deliberately)."
+ 		return s
+ 	}

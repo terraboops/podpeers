@@ -16,12 +16,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: hygiene (no real IPs or credentials in a public repo)
-        run: ./hack/hygiene.sh
+      - name: install OCR for the image hygiene check
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr ffmpeg >/dev/null
+      - name: hygiene (no real IPs or credentials in a public repo, text and images)
+        run: HYGIENE_IMAGES=1 ./hack/hygiene.sh
       - name: vet and gofmt
         run: make vet
       - name: unit tests
         run: go test -race -count=1 ./...
+      - name: mutants (each negative case's protection, broken, must fail the unit tests)
+        run: ./hack/mutants.sh
       - name: shell syntax
         run: bash -n hack/e2e-cluster.sh skills/podpeers-netpol/scripts/netpol-check.sh
       - name: build
@@ -45,7 +49,7 @@ jobs:
     # cluster script writes to .e2e/, and refuses any other context.
     runs-on: ubuntu-latest
     needs: unit
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -56,12 +60,16 @@ jobs:
         run: curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
       - name: end-to-end against a real local cluster
         run: make e2e
+      - name: mutants against the real cluster (the e2e tests must fail when each protection is broken)
+        run: ./hack/mutants.sh --e2e
       - name: keep the observed output
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-output
-          path: .e2e/out/
+          path: |
+            .e2e/out/
+            .e2e/mutants/
       - name: tear down
         if: always()
         run: ./hack/e2e-cluster.sh down || true

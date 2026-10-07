@@ -1,4 +1,4 @@
-.PHONY: build test vet docs e2e e2e-cluster e2e-down clean
+.PHONY: build test vet docs mutants mutants-e2e e2e e2e-cluster e2e-down clean
 
 build:
 	go build -o bin/podpeers ./cmd/podpeers
@@ -10,6 +10,14 @@ vet:
 	go vet ./... && go vet -tags e2e ./test/e2e/
 	./hack/hygiene.sh
 	@test -z "$$(gofmt -l .)" || (echo "gofmt needed:"; gofmt -l .; exit 1)
+
+# Break each negative case's protection (hack/mutants/*.patch) and require
+# the tests to fail for the right reason.
+mutants:
+	./hack/mutants.sh
+
+mutants-e2e: e2e-cluster
+	./hack/mutants.sh --e2e
 
 # Renders every Mermaid diagram in the Markdown (needs node; set
 # PUPPETEER_EXECUTABLE_PATH to a local Chrome to skip the browser download).

@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -234,6 +235,31 @@ func TestE2E(t *testing.T) {
 
 		r := <-done
 		t.Logf("podpeers capture exit=%d\n%s", r.code, r.stderr)
+
+		// The safety invariant comes first, whatever the exit code: this run's
+		// debug container must exist only in pods the selector matched, across
+		// the whole cluster (kube-system included).
+		m := regexp.MustCompile(`added (podpeers-[a-z0-9]+)`).FindStringSubmatch(r.stderr)
+		if m == nil {
+			t.Fatal("could not find this run's debug container name in the output")
+		}
+		runContainer := m[1]
+		all := kubectl(t, "get", "pods", "-A", "-o",
+			`jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name} {.metadata.labels.podpeers-e2e} {.spec.ephemeralContainers[*].name}{"\n"}{end}`)
+		touched := 0
+		for _, line := range strings.Split(strings.TrimSpace(all), "\n") {
+			f := strings.Fields(line)
+			if len(f) == 0 || !strings.Contains(line, runContainer) {
+				continue
+			}
+			touched++
+			if len(f) < 2 || f[1] != "target" {
+				t.Errorf("pod outside the selector was modified by this run: %s", f[0])
+			}
+		}
+		if touched != 5 {
+			t.Errorf("this run modified %d pods; want exactly the 5 running targets", touched)
+		}
 		if r.code != 0 {
 			t.Fatalf("capture exit %d", r.code)
 		}

@@ -1,0 +1,23 @@
+# Mutant 02-closed-in-window: breaks the protection for "a connection that closes during the window".
+# Bug introduced: an off-by-one (i <= last instead of i == last) makes an edge open if it was ESTABLISHED in any sample, not the final one.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/graph/
+# unit-run: TestAnalyze
+# unit-expect: outbound edge = |TestAnalyzeConnectionClosedButLingering
+# e2e-run: TestE2E/capture_matches
+# e2e-expect: inbound pp-app/brief tcp/9000 (open|closed)[\s\S]*want|pp-app/brief edges:
+diff --git a/internal/graph/graph.go b/internal/graph/graph.go
+index 5b04a52..ff03ed0 100644
+--- a/internal/graph/graph.go
++++ b/internal/graph/graph.go
+@@ -341,7 +341,7 @@ func Analyze(pod string, samples []procnet.Sample, res *Resolver) ([]Listener, [
+ 			if k.Protocol == procnet.UDP || k.State == procnet.Established {
+ 				a.established = true
+ 			}
+-			if i == last && (k.State == procnet.Established || k.Protocol == procnet.UDP) {
++			if i <= last && (k.State == procnet.Established || k.Protocol == procnet.UDP) {
+ 				a.edge.Open = true
+ 			}
+ 		}

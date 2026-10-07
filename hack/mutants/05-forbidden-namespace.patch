@@ -1,0 +1,23 @@
+# Mutant 05-forbidden-namespace: breaks the protection for "a namespace where the credentials are not permitted".
+# Bug introduced: the error from adding the ephemeral container is ignored.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/capture/
+# unit-run: TestRunOrchestration
+# unit-expect: vault = 
+# e2e-run: TestE2E/namespace_where
+# e2e-expect: vault probe = 
+diff --git a/internal/capture/capture.go b/internal/capture/capture.go
+index cc5b70b..c99cc98 100644
+--- a/internal/capture/capture.go
++++ b/internal/capture/capture.go
+@@ -307,7 +307,7 @@ func inject(ctx context.Context, cs kubernetes.Interface, targets []*target, nam
+ 				return err
+ 			})
+ 			t.injectedAt = time.Now()
+-			if err != nil {
++			if false && err != nil {
+ 				t.done = true
+ 				t.probe = graph.Probe{Status: graph.ProbeFailed, Reason: "adding debug container: " + describeErr(err)}
+ 				opts.Logf("  fail %s: %s", t.id(), t.probe.Reason)

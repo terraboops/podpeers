@@ -15,5 +15,33 @@ secrets=$(echo "$files" | xargs grep -nHE '(client-key-data|client-certificate-d
   | grep -v '^hack/hygiene.sh:' || true)
 if [ -n "$secrets" ]; then echo "credential-looking content:"; echo "$secrets"; fail=1; fi
 
+# Images: text inside a GIF or PNG is invisible to grep, so OCR every frame
+# (2 per second) and apply the same IP rule. A demo recording once showed a
+# local cluster's pod IP this way. CI installs tesseract and ffmpeg; locally
+# the check is skipped with a warning if they are missing, or forced with
+# HYGIENE_IMAGES=1. Extra image files can be passed as arguments.
+images="$(echo "$files" | grep -iE '\.(gif|png|jpe?g)$' || true)"
+[ $# -gt 0 ] && images="$*"
+if [ -n "$images" ]; then
+  if command -v tesseract >/dev/null && command -v ffmpeg >/dev/null; then
+    ocr="$(mktemp -d)"
+    for img in $images; do
+      rm -f "$ocr"/*.png
+      ffmpeg -v error -i "$img" -vf "fps=2,scale=iw*2:-1" "$ocr/f%04d.png" 2>/dev/null \
+        || ffmpeg -v error -i "$img" -vf "scale=iw*2:-1" "$ocr/f0001.png"
+      hits=$(for f in "$ocr"/*.png; do tesseract "$f" - 2>/dev/null; done \
+        | grep -oE '\b[0-9]{1,3}[.,][0-9]{1,3}[.,][0-9]{1,3}[.,][0-9]{1,3}\b' \
+        | grep -vE '^(192[.,]0[.,]2[.,]|198[.,]51[.,]100[.,]|203[.,]0[.,]113[.,]|127[.,]|0[.,]0[.,]0[.,]0)' | sort -u || true)
+      if [ -n "$hits" ]; then echo "non-documentation IPv4 rendered in $img:"; echo "$hits"; fail=1; fi
+    done
+    rm -rf "$ocr"
+    echo "hygiene: OCR-checked $(echo "$images" | wc -w | tr -d ' ') image(s)"
+  elif [ "${HYGIENE_IMAGES:-}" = 1 ]; then
+    echo "HYGIENE_IMAGES=1 but tesseract/ffmpeg are not installed"; fail=1
+  else
+    echo "hygiene: WARNING: tesseract/ffmpeg not installed; images were NOT checked"
+  fi
+fi
+
 [ "$fail" = 0 ] && echo "hygiene: ok"
 exit "$fail"

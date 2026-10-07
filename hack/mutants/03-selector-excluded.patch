@@ -1,0 +1,23 @@
+# Mutant 03-selector-excluded: breaks the protection for "a pod the selector excludes".
+# Bug introduced: capture lists target pods without the label selector.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/capture/
+# unit-run: TestRunOrchestration
+# unit-expect: excluded and pending must be untouched|appeared as a target
+# e2e-run: TestE2E/capture_matches
+# e2e-expect: pod outside the selector was modified by this run
+diff --git a/internal/capture/capture.go b/internal/capture/capture.go
+index cc5b70b..a30eca9 100644
+--- a/internal/capture/capture.go
++++ b/internal/capture/capture.go
+@@ -230,7 +230,7 @@ func Run(ctx context.Context, cs kubernetes.Interface, nodes []corev1.Node, opts
+ 		return graph.Result{}, err
+ 	}
+ 	start := time.Now().UTC()
+-	list, err := cs.CoreV1().Pods(opts.listNamespace()).List(ctx, metav1.ListOptions{LabelSelector: opts.LabelSelector})
++	list, err := cs.CoreV1().Pods(opts.listNamespace()).List(ctx, metav1.ListOptions{})
+ 	if err != nil {
+ 		return graph.Result{}, fmt.Errorf("listing target pods: %w", err)
+ 	}
