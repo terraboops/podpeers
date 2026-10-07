@@ -162,6 +162,7 @@ podpeers diff before.json after.json   # exit 0 OK · 4 BROKEN · 5 INCONCLUSIVE
 | `lost` | seen before, gone after, while its observer was still observed |
 | `preexisting` | only seen on connections opened *before* the policy, which the CNI never re-checks. **Proves nothing.** |
 | `new` | not seen before |
+| `glimpsed` | absent after, but before it was one short connection in one sample (a DNS lookup): sampling noise, not breakage |
 
 **INCONCLUSIVE** exists because of something we hit for real while building
 this: a policy that blocked every new connection verified "OK", because the

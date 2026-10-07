@@ -133,12 +133,31 @@ func TestSkillHelmWorkflow(t *testing.T) {
 				t.Fatalf("%s refused: %s", s.Workload, s.Refused)
 			}
 			if s.Workload == "Deployment/shop-web" {
-				eg := s.Policy.Spec.Egress
-				if len(eg) != 2 || eg[0].Ports[0].Port.String() != "api" {
-					t.Errorf("web egress should target the named port 'api' behind service port 80: %+v", eg)
+				var api, dns int
+				for _, rule := range s.Policy.Spec.Egress {
+					sel := rule.To[0].PodSelector.MatchLabels
+					switch {
+					case sel["app.kubernetes.io/component"] == "api":
+						api++
+						if rule.Ports[0].Port.String() != "api" {
+							t.Errorf("web egress should target the named port 'api' behind service port 80: %+v", rule)
+						}
+					case sel["k8s-app"] == "kube-dns":
+						dns++
+						if len(rule.Ports) != 2 {
+							t.Errorf("DNS rule should cover udp and tcp 53: %+v", rule.Ports)
+						}
+					}
 				}
-				if !s.Reasons[len(s.Reasons)-1].Assumed {
-					t.Error("DNS rule must be marked as assumed")
+				if api != 1 || dns != 1 || len(s.Policy.Spec.Egress) != 2 {
+					t.Errorf("web egress = %+v", s.Policy.Spec.Egress)
+				}
+				flagged := false
+				for _, r := range s.Reasons {
+					flagged = flagged || r.Assumed || strings.Contains(strings.Join(r.Evidence, " "), "ASSUMED")
+				}
+				if !flagged {
+					t.Error("whatever part of DNS was not observed must be flagged ASSUMED")
 				}
 			}
 		}

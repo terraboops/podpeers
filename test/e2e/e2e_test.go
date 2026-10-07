@@ -126,10 +126,12 @@ func ephemeral(t *testing.T, ns, pod string) []string {
 }
 
 // edgeSet renders a pod's edges as sorted "dir peer proto/port open|closed" lines.
+// DNS lookups are sub-second UDP exchanges that a sample catches only by
+// luck, so edges to the cluster DNS service are left out of exact comparisons.
 func edgeSet(r graph.Result, pod string) []string {
 	var out []string
 	for _, e := range r.Edges {
-		if e.Pod != pod {
+		if e.Pod != pod || e.Peer.ID() == "svc/kube-system/kube-dns" {
 			continue
 		}
 		st := "open"
@@ -396,9 +398,12 @@ spec:
 		defer kubectl(t, "delete", "-f", pol, "--ignore-not-found")
 		time.Sleep(8 * time.Second)
 
+		// Probe the ClusterIP, not the name: DNS is blocked too, and a failed
+		// lookup would make the probe pass for the wrong reason.
+		apiIP := strings.TrimSpace(kubectl(t, "get", "svc", "-n", "pp-app", "api", "-o", "jsonpath={.spec.clusterIP}"))
 		probe, _ := exec.Command("kubectl", "--kubeconfig", kubeconfig, "--context", kubeCtx, "exec", "-n", "pp-app", "web", "-c", "main", "--",
-			"sh", "-c", "timeout 6 nc -z -w 4 api 9000 && echo NEW-CONNECT-OK || echo NEW-CONNECT-BLOCKED").CombinedOutput()
-		t.Logf("a new connection from web under the policy: %s", strings.TrimSpace(string(probe)))
+			"sh", "-c", "timeout 6 nc -z -w 4 "+apiIP+" 9000 && echo NEW-CONNECT-OK || echo NEW-CONNECT-BLOCKED").CombinedOutput()
+		t.Logf("a new TCP connection from web to the api ClusterIP under the policy: %s", strings.TrimSpace(string(probe)))
 		if !strings.Contains(string(probe), "NEW-CONNECT-BLOCKED") {
 			t.Fatal("policy is not enforced for new connections; this test needs an enforcing CNI")
 		}

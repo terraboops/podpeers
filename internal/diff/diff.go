@@ -25,6 +25,10 @@ const (
 	// do not re-evaluate established connections, so they prove nothing about
 	// whether the policy allows this flow.
 	Preexisting = "preexisting"
+	// Glimpsed: absent after, but before it was only a single short
+	// connection caught in a single sample (a DNS lookup, a one-off call).
+	// Its absence is expected sampling noise, not evidence of a block.
+	Glimpsed = "glimpsed"
 )
 
 type Change struct {
@@ -77,6 +81,8 @@ type flowInfo struct {
 	established bool // at least one observation got past the handshake
 	attempted   bool // at least one observation was handshake-only
 	newConns    int  // connections opened during the window
+	samples     int  // most samples any observer saw it in
+	conns       int  // connections across observers
 	observers   map[string]bool
 }
 
@@ -122,6 +128,10 @@ func workloadFlows(r graph.Result, o Options) (map[key]*flowInfo, map[string]boo
 			fi.established = true
 		}
 		fi.newConns += f.New
+		fi.conns += f.Conns
+		if f.Samples > fi.samples {
+			fi.samples = f.Samples
+		}
 		if !o.ChangedAt.IsZero() && (started[f.From].After(o.ChangedAt) || started[f.To].After(o.ChangedAt)) {
 			fi.newConns++ // an endpoint pod started under the change
 		}
@@ -171,10 +181,15 @@ func CompareWith(before, after graph.Result, o Options) Result {
 			res.Unverifiable = append(res.Unverifiable, fmt.Sprintf("%s -> %s %s/%d", k.from, k.to, k.proto, k.port))
 			continue
 		}
+		if b.samples < 2 && b.conns < 2 {
+			res.Changes = append(res.Changes, Change{Glimpsed, k.from, k.to, k.proto, k.port,
+				"absent after, but before it was one short connection in one sample; sampling noise, not evidence of a block"})
+			continue
+		}
 		res.Changes = append(res.Changes, Change{Lost, k.from, k.to, k.proto, k.port,
 			"seen before, not at all after (blocked, or simply idle during the second window)"})
 	}
-	order := map[string]int{Blocked: 0, Lost: 1, Preexisting: 2, New: 3}
+	order := map[string]int{Blocked: 0, Lost: 1, Preexisting: 2, New: 3, Glimpsed: 4}
 	sort.Slice(res.Changes, func(i, j int) bool {
 		a, b := res.Changes[i], res.Changes[j]
 		if a.Kind != b.Kind {

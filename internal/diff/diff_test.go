@@ -19,12 +19,12 @@ func pod(name, workload string, observed bool) graph.Pod {
 
 func out(pod, svc string, port uint16, attempted bool) graph.Edge {
 	return graph.Edge{Pod: "shop/" + pod, Direction: graph.Outbound, Protocol: "tcp", Port: port,
-		Peer: graph.Peer{Kind: graph.PeerService, Namespace: "shop", Name: svc}, Attempted: attempted, Open: !attempted, NewConnections: 1}
+		Peer: graph.Peer{Kind: graph.PeerService, Namespace: "shop", Name: svc}, Attempted: attempted, Open: !attempted, NewConnections: 1, Connections: 1, Samples: 5}
 }
 
 func in(pod, from string, port uint16) graph.Edge {
 	return graph.Edge{Pod: "shop/" + pod, Direction: graph.Inbound, Protocol: "tcp", Port: port,
-		Peer: graph.Peer{Kind: graph.PeerPod, Namespace: "shop", Name: from}, Open: true, NewConnections: 1}
+		Peer: graph.Peer{Kind: graph.PeerPod, Namespace: "shop", Name: from}, Open: true, NewConnections: 1, Connections: 1, Samples: 5}
 }
 
 func TestCompareSurvivesPodRestarts(t *testing.T) {
@@ -182,5 +182,23 @@ func TestChangedAtCountsRestartedPods(t *testing.T) {
 	after.Pods = []graph.Pod{restarted}
 	if r := CompareWith(before, after, Options{ChangedAt: changed}); !r.Inconclusive() {
 		t.Fatal("pod started before the change is still inconclusive")
+	}
+}
+
+func TestGlimpsedFlowsAreNoise(t *testing.T) {
+	// One DNS lookup caught in one sample before, nothing after: not a block.
+	dns := graph.Edge{Pod: "shop/web-a", Direction: graph.Outbound, Protocol: "udp", Port: 53,
+		Peer: graph.Peer{Kind: graph.PeerService, Namespace: "kube-system", Name: "kube-dns"}, Connections: 1, Samples: 1, NewConnections: 1}
+	before := graph.Result{Pods: []graph.Pod{pod("web-a", "Deployment/web", true)}, Edges: []graph.Edge{dns}}
+	after := graph.Result{Pods: []graph.Pod{pod("web-b", "Deployment/web", true)}}
+	r := Compare(before, after)
+	if r.Broken() || len(r.Changes) != 1 || r.Changes[0].Kind != Glimpsed {
+		t.Fatalf("%+v", r)
+	}
+	// Seen twice before: its absence is a real loss.
+	dns.Samples = 2
+	before.Edges = []graph.Edge{dns}
+	if r := Compare(before, after); !r.Broken() {
+		t.Fatalf("recurring flow gone should be lost: %+v", r)
 	}
 }

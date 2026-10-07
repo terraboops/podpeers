@@ -432,12 +432,32 @@ func (b *builder) suggest(pods []graph.Pod, o Options) Suggestion {
 	// DNS: lookups are short UDP exchanges that sampling rarely catches.
 	wantDNS := o.DNS == DNSAlways || (o.DNS == DNSAuto && egressCount > 0)
 	if wantDNS {
-		peer := netv1.NetworkPolicyPeer{NamespaceSelector: nsSelector(b.kubeDNSNS),
-			PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"k8s-app": "kube-dns"}}}
-		desc := "cluster DNS (pods k8s-app=kube-dns in kube-system)"
-		key := "dns"
-		add(egress, &egressOrder, key, peer, desc, port{"udp", "53"}, "", true)
-		add(egress, &egressOrder, key, peer, desc, port{"tcp", "53"}, "", true)
+		// If DNS was observed (via the kube-dns service), widen that rule to
+		// both protocols instead of adding a second, overlapping one.
+		observed := ""
+		for _, k := range egressOrder {
+			r := egress[k]
+			if r.peer.PodSelector != nil && len(r.peer.PodSelector.MatchLabels) == 1 &&
+				r.peer.PodSelector.MatchLabels["k8s-app"] == "kube-dns" &&
+				r.peer.NamespaceSelector != nil && r.peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == b.kubeDNSNS {
+				observed = k
+			}
+		}
+		if observed != "" {
+			r := egress[observed]
+			for _, p := range []port{{"udp", "53"}, {"tcp", "53"}} {
+				if !r.ports[p] {
+					r.ports[p] = true
+					r.evidence = append(r.evidence, fmt.Sprintf("%s ASSUMED, not observed: DNS falls back to TCP for large answers", p))
+				}
+			}
+		} else {
+			peer := netv1.NetworkPolicyPeer{NamespaceSelector: nsSelector(b.kubeDNSNS),
+				PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"k8s-app": "kube-dns"}}}
+			desc := "cluster DNS (pods k8s-app=kube-dns in kube-system)"
+			add(egress, &egressOrder, "dns", peer, desc, port{"udp", "53"}, "", true)
+			add(egress, &egressOrder, "dns", peer, desc, port{"tcp", "53"}, "", true)
+		}
 	} else if egressCount > 0 {
 		gap("DNS egress was not added (--dns=never) and DNS lookups are rarely observable; name resolution will fail under this policy unless another policy allows it.")
 	}

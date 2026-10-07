@@ -485,13 +485,15 @@ type Flow struct {
 	Attempted  bool
 	ObservedOn string // pod whose sockets showed it
 	New        int    // connections opened during the window
+	Samples    int    // samples in which the flow was present
+	Conns      int    // distinct connections
 }
 
 // Flows lists every edge as a client->server flow.
 func (r Result) Flows() []Flow {
 	var out []Flow
 	for _, e := range r.Edges {
-		f := Flow{Port: e.Port, Protocol: e.Protocol, Open: e.Open, Attempted: e.Attempted, ObservedOn: e.Pod, New: e.NewConnections}
+		f := Flow{Port: e.Port, Protocol: e.Protocol, Open: e.Open, Attempted: e.Attempted, ObservedOn: e.Pod, New: e.NewConnections, Samples: e.Samples, Conns: e.Connections}
 		if e.Direction == Outbound {
 			f.From, f.To = e.Pod, e.Peer.ID()
 		} else {

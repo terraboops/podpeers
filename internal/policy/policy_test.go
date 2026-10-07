@@ -392,3 +392,30 @@ func TestCommonLabels(t *testing.T) {
 		t.Fatal("empty")
 	}
 }
+
+func TestObservedDNSIsWidenedNotDuplicated(t *testing.T) {
+	r := shop()
+	r.Services = append(r.Services, graph.Service{Namespace: "kube-system", Name: "kube-dns",
+		Selector: map[string]string{"k8s-app": "kube-dns"}, Ports: []graph.ServicePort{{Protocol: "udp", Port: 53, TargetPort: "53"}}})
+	dns := edge("shop/web-a", graph.Outbound, svcPeer("kube-system", "kube-dns"), 53)
+	dns.Protocol = "udp"
+	r.Edges = append([]graph.Edge{dns}, r.Edges...)
+	web := find(t, Suggest(r, Options{}), "Deployment/web")
+	n := 0
+	for _, e := range web.Policy.Spec.Egress {
+		if e.To[0].PodSelector.MatchLabels["k8s-app"] == "kube-dns" {
+			n++
+			if len(e.Ports) != 2 {
+				t.Errorf("observed DNS rule should cover udp and tcp: %+v", e.Ports)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("want exactly one DNS rule, got %d: %+v", n, web.Policy.Spec.Egress)
+	}
+	for _, r := range web.Reasons {
+		if strings.Contains(r.Peer, "kube-dns") && (r.Assumed || !strings.Contains(strings.Join(r.Evidence, " "), "tcp/53 ASSUMED")) {
+			t.Errorf("observed DNS rule should cite the observation and flag tcp as assumed: %+v", r)
+		}
+	}
+}
