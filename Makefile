@@ -1,4 +1,4 @@
-.PHONY: build test vet e2e e2e-cluster e2e-down clean
+.PHONY: build test vet docs e2e e2e-cluster e2e-down clean
 
 build:
 	go build -o bin/podpeers ./cmd/podpeers
@@ -10,6 +10,11 @@ vet:
 	go vet ./... && go vet -tags e2e ./test/e2e/
 	./hack/hygiene.sh
 	@test -z "$$(gofmt -l .)" || (echo "gofmt needed:"; gofmt -l .; exit 1)
+
+# Renders every Mermaid diagram in the Markdown (needs node; set
+# PUPPETEER_EXECUTABLE_PATH to a local Chrome to skip the browser download).
+docs:
+	./hack/check-docs.sh
 
 # Creates (or reuses) the throwaway local k3d cluster, then runs the real-cluster
 # suite against it. The cluster's kubeconfig lives in .e2e/ and is never merged

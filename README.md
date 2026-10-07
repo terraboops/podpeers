@@ -100,17 +100,24 @@ Both outputs are real, from the end-to-end suite.
 
 ```mermaid
 flowchart LR
-  you["podpeers<br/>(your kubectl creds)"] -- "1 · add ephemeral container<br/>(nobody, no caps, exits by itself)" --> pod
-  subgraph pod["each selected pod (one network namespace)"]
+  cli["podpeers<br/>(your kubectl credentials)"]
+  subgraph target["each selected pod (one network namespace)"]
     app["app container"]
-    dbg["podpeers sampler<br/>cat /proc/net/tcp* every N s"]
+    sampler["podpeers sampler<br/>reads /proc/net/tcp* every few seconds"]
   end
-  dbg -- "2 · samples via container logs" --> you
-  you -- "3 · resolve IPs → pods / services / nodes" --> graph[("peer graph<br/>peers.json")]
-  graph --> render["text · HTML · DOT"]
-  graph --> gql["GraphQL · MCP"]
-  graph --> suggest["NetworkPolicy<br/>+ reasoning + gaps"]
-  suggest --> verify["apply → restart → re-observe → diff<br/>OK · BROKEN · INCONCLUSIVE"]
+  peermap[("peer map<br/>peers.json")]
+  views["text · HTML graph · DOT"]
+  query["GraphQL · MCP"]
+  suggest["NetworkPolicy<br/>with reasoning and gaps"]
+  verify["verify: apply, restart, re-observe, diff<br/>OK · BROKEN · INCONCLUSIVE"]
+
+  cli -->|"1. add ephemeral container<br/>(non-root, no capabilities, exits by itself)"| sampler
+  sampler -->|"2. samples via container logs"| cli
+  cli -->|"3. resolve IPs to pods, services, nodes"| peermap
+  peermap --> views
+  peermap --> query
+  peermap --> suggest
+  suggest --> verify
 ```
 
 - **Direction** comes from the pod's own listening sockets: a connection to a

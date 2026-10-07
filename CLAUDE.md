@@ -41,6 +41,7 @@ Read this before changing anything in this repo.
 
 ```bash
 make vet test           # always
+make docs               # after touching any Markdown diagram (renders them like GitHub does)
 make e2e                # for anything touching capture, policy, diff, the skill or its script
 ```
 

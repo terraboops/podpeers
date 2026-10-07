@@ -27,6 +27,18 @@ jobs:
       - name: build
         run: make build
 
+  docs:
+    # Render every Mermaid diagram in the Markdown with the same library
+    # GitHub uses; a diagram that does not parse fails the build.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: render mermaid diagrams
+        run: ./hack/check-docs.sh
+
   e2e:
     # A real, throwaway, single-node k3d cluster on the runner. Nothing here
     # can reach any other cluster: the suite only uses the kubeconfig the
