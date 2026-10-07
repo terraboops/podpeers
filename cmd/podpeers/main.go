@@ -63,7 +63,7 @@ const usage = `podpeers - map pod network peers from observed sockets
 
 Usage:
   podpeers capture -l SELECTOR [-n NS | -A] [--duration 60s] [--interval 5s] [-o peers.json]
-  podpeers check-context [--context NAME] [--allow-context NAME]
+  podpeers check-context [--kubeconfig PATH] [--context NAME] [--allow-context NAME]
   podpeers render  [-format text|dot|html|json] [-o FILE] peers.json
   podpeers query   peers.json '{ pods { id peers { id kind } } }'
   podpeers serve   [-addr 127.0.0.1:8080] peers.json

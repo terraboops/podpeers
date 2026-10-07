@@ -48,15 +48,20 @@ policy will cost them, and deciding what a failure means.
 - **podpeers.** Install it with
   `go install github.com/terraboops/podpeers/cmd/podpeers@latest`, or in a
   checkout of the podpeers repo run `make build` (binary at `bin/podpeers`).
-  The script runs `$PODPEERS` if set, otherwise `podpeers` from `PATH`. Check
-  with `podpeers version`. `kubectl` and `helm` must be on `PATH` as well.
+  `go install` puts the binary in `$GOBIN` (default `~/go/bin`), which may not
+  be on `PATH`. The script runs `$PODPEERS` if set, otherwise `podpeers` from
+  `PATH`. Check with `podpeers version`. `kubectl` and `helm` must be on `PATH` as well.
 - **The release exists:**
   `helm status <release> -n <ns> --kube-context <ctx> [--kubeconfig <path>]`.
 - **Which pods to observe.** The script selects
   `app.kubernetes.io/instance=<release>` (the standard Helm label). If the
   chart does not set it, pass `--selector <label selector>` to every script
-  command; otherwise the capture matches no pods.
-- **The chart has a meaningful `helm test`.** If it does not, say so: without
+  command; otherwise the capture matches no pods. Check:
+  `kubectl get pods -n <ns> -l app.kubernetes.io/instance=<release> --context <ctx> [--kubeconfig <path>]`
+  must list the release's pods.
+- **The chart has a meaningful `helm test`**: `helm get hooks <release> -n <ns>
+  --kube-context <ctx> [--kubeconfig <path>]` shows its test pods
+  (`helm.sh/hook: test`). If it has none, say so: without
   it, verification rests on the traffic diff alone. Offer to write one that
   exercises the app's front door, holds its connection for a few seconds, and
   retries with a bounded `timeout`, like
@@ -212,17 +217,29 @@ To tell the two apart:
   `helm test` alone proves nothing when the test retries internally, as the
   recommended one does: race and block both look the same from outside.)
 - **Confirm with a probe pod** that has the test pod's labels, connects
-  immediately, then again after 10s. Race: `immediately: []`, `after-10s: [ping]`.
-  Block: both empty. Run it *between* captures (it carries the release's
-  labels, so a running capture would pick it up); `--rm` deletes it. Add
-  `--context <ctx> [--kubeconfig <path>]` to both commands, written out:
+  immediately, then again after 10s. Race: blocked immediately, reachable
+  after 10s. Block: blocked both times. Run it *between* captures (it carries
+  the release's labels, so a running capture would pick it up), and delete it
+  afterwards. The pod is deleted with an explicit `kubectl delete` rather than
+  `kubectl run --rm`: some agent sandboxes refuse `--rm` next to a
+  `sh -c` script. Add `--context <ctx> [--kubeconfig <path>]` to every
+  command, written out. Pick the probe that matches the app:
   ```bash
   LABELS=$(kubectl get pod <test-pod> -n <ns> --show-labels --no-headers | awk '{print $NF}')
-  kubectl run netpol-race-probe -n <ns> --image=busybox:1.36 --restart=Never --rm -i --quiet \
-    --labels "$LABELS" --command -- sh -c 'try() { r=$( (echo ping; sleep 1) | timeout 4 nc -w 2 <service>.<ns>.svc.cluster.local <port>); echo "$1: [$r]"; }; try immediately; sleep 10; try after-10s'
+
+  # TCP echo server (like the example app): a reply means reachable
+  kubectl run netpol-race-probe -n <ns> --image=busybox:1.36 --restart=Never -i --quiet \
+    --labels "$LABELS" --command -- sh -c 'try() { r=$( (echo ping; sleep 1) | timeout 4 nc -w 2 <service>.<ns>.svc.cluster.local <port>); [ -n "$r" ] && echo "$1: REACHABLE" || echo "$1: BLOCKED"; }; try immediately; sleep 10; try after-10s'
+
+  # HTTP app: ANY HTTP response, including 404 or 401, means the network
+  # path is open; only "refused" or "timed out" means blocked
+  kubectl run netpol-race-probe -n <ns> --image=busybox:1.36 --restart=Never -i --quiet \
+    --labels "$LABELS" --command -- sh -c 'URL=http://<service>.<ns>.svc.cluster.local:<port>/; try() { out=$(wget -q -O /dev/null -T 4 "$URL" 2>&1); case "$?:$out" in 0:*) echo "$1: REACHABLE";; *"server returned error"*) echo "$1: REACHABLE (${out#wget: })";; *) echo "$1: BLOCKED (${out#wget: })";; esac; }; try immediately; sleep 10; try after-10s'
+
+  kubectl delete pod netpol-race-probe -n <ns>
   ```
-  (The `echo ping` round trip suits an echo server like the example app;
-  for HTTP use `wget -qO- -T 4 http://<service>:<port>/` instead.)
+  (Do not judge an HTTP probe by whether a body came back: a reachable app
+  answering 404 on `/` returns no body.)
 
 The fix for a race is in the *test*, not the policy: retry with a bounded
 `timeout` (see `examples/shop/templates/tests/smoke.yaml`).
@@ -247,24 +264,36 @@ the release and `helm test` keeps guarding it:
    opt in; `true` ships it everywhere. Replace hard-coded labels with the
    chart's label helpers and the namespace with `{{ .Release.Namespace }}`;
    keep the NOT COVERED notes as comments; keep `helm test` able to reach what
-   it tests (its pod is a client too).
+   it tests (its pod is a client too). Its labels must come from the same
+   helpers as the policy's selectors: render the chart under another release
+   name and namespace (`helm template other <chart> -n elsewhere --set networkPolicy.enabled=true`)
+   and check the test pod still matches the policy's `from` selector.
 2. **Name the templated policies differently from the `podpeers-<workload>`
    ones `verify` applied** (e.g. `{{ .Release.Name }}-web`). Same names make
    `helm upgrade` fail: Helm will not adopt objects it did not create.
 3. Check the template renders exactly what was verified. `helm template` is
    offline; the `kubectl create --dry-run=client` used to normalise both
-   files takes the usual `--context`/`--kubeconfig`. Comments, names and key
-   order differ, so compare the normalised `spec`s:
+   files takes the usual `--context`/`--kubeconfig`. Comments, names, key
+   order and the order of the policies differ, so compare the normalised,
+   sorted `spec`s (`-s` matters: kubectl prints one JSON object per policy):
    ```bash
    specs() { kubectl create --dry-run=client -o json -f "$1" \
-     | jq -S '[(.items // [.])[] | {spec}] | sort_by(.spec.podSelector | tostring)'; }
+     | jq -S -s '[.[] | (.items // [.])[] | {spec}] | sort_by(.spec.podSelector | tostring)'; }
    helm template <rel> <chart> -n <ns> --set networkPolicy.enabled=true -s templates/networkpolicy.yaml > rendered.yaml
    diff <(specs ./netpol/policy.yaml) <(specs rendered.yaml) && echo SPECS IDENTICAL
    ```
 4. Upgrade the release with the policy enabled, then **remove the
-   kubectl-applied copies**, or you are left with duplicates:
-   `scripts/netpol-check.sh rollback ... --policy ./netpol/policy.yaml`
-   (it deletes only the `podpeers-*` objects in that file).
+   kubectl-applied copies**, or you are left with duplicates (rollback deletes
+   only the `podpeers-*` objects in that file):
+   ```bash
+   helm upgrade <rel> <chart> -n <ns> --kube-context <ctx> [--kubeconfig <path>] --reuse-values \
+     --set networkPolicy.enabled=true --wait
+   scripts/netpol-check.sh rollback --namespace <ns> --context <ctx> [--kubeconfig <path>] --policy ./netpol/policy.yaml
+   ```
+   If the chart's default is `false`, warn the user: a later `helm upgrade`
+   that passes *any* values (`--set`/`-f`) without `--reuse-values` resets
+   `networkPolicy.enabled` to `false` and silently removes the policy. (An
+   upgrade that passes no values at all keeps the previous ones.)
 5. Verify what the chart now ships, without applying anything:
    ```bash
    scripts/netpol-check.sh verify --release <rel> --namespace <ns> --context <ctx> [--kubeconfig <path>] \
