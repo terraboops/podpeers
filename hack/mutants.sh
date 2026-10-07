@@ -32,8 +32,12 @@ fi
 idx="$(mktemp)"
 cp "$(git rev-parse --git-path index)" "$idx"
 GIT_INDEX_FILE="$idx" git add -A
-SNAP="$(git commit-tree "$(GIT_INDEX_FILE="$idx" git write-tree)" -p HEAD -m "mutants snapshot")"
+# The snapshot commit never leaves this machine; give it a fixed identity so
+# it works where git has none configured (CI runners).
+SNAP="$(GIT_AUTHOR_NAME=mutants GIT_AUTHOR_EMAIL=mutants@localhost GIT_COMMITTER_NAME=mutants \
+  GIT_COMMITTER_EMAIL=mutants@localhost git commit-tree "$(GIT_INDEX_FILE="$idx" git write-tree)" -p HEAD -m "mutants snapshot")"
 rm -f "$idx"
+[ -n "$SNAP" ] || { echo "could not snapshot the working tree" >&2; exit 1; }
 
 field() { sed -n "s/^# $1: //p" "$2"; }
 
