@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -188,7 +189,9 @@ func TestBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Schema != Schema || res.Selector != sel || res.Window != win {
+	wantWin := win
+	wantWin.SamplesMin, wantWin.SamplesMax = 1, 1 // shop/api is the only observed pod
+	if res.Schema != Schema || res.Selector != sel || res.Window != wantWin {
 		t.Errorf("header = %+v %+v %+v", res.Schema, res.Selector, res.Window)
 	}
 	ids := []string{}
@@ -307,5 +310,102 @@ func TestNewConnections(t *testing.T) {
 	_, es = Analyze("shop/web", samples[:1], r)
 	if es[0].NewConnections != 0 {
 		t.Fatalf("a single sample has nothing new: %+v", es[0])
+	}
+}
+
+func TestDualStackPodResolvesByEveryIP(t *testing.T) {
+	// The pod's primary IP is IPv4; its IPv6 address is only in IPs. A peer
+	// using the IPv6 address must still resolve to the pod, not "external".
+	r := NewResolver(Inventory{Pods: []Pod{{Namespace: "shop", Name: "api", IP: "192.0.2.10", IPs: []string{"2001:db8::10"}}}})
+	for _, ip := range []string{"192.0.2.10", "2001:db8::10"} {
+		if p := r.Resolve(netip.MustParseAddr(ip)); p.Kind != PeerPod || p.Name != "api" {
+			t.Errorf("Resolve(%s) = %+v; want pod shop/api", ip, p)
+		}
+	}
+}
+
+func TestIPv6AndUDPSurviveTheWholePipeline(t *testing.T) {
+	// From the sampler's raw text to Build: an IPv6 TCP connection between
+	// two dual-stack pods and a connected UDP socket must both become edges.
+	raw := "@@podpeers v1\n@@sample 1700000000\n@@file tcp\n@@file tcp6\n" +
+		// [2001:db8::10]:9000 <- [2001:db8::11]:50000 ESTABLISHED, plus the listener
+		"0: 00000000000000000000000000000000:2328 00000000000000000000000000000000:0000 0A 0:0 0:0 0 0 0 1\n" +
+		"1: B80D0120000000000000000010000000:2328 B80D0120000000000000000011000000:C350 01 0:0 0:0 0 0 0 2\n" +
+		"@@file udp\n" +
+		// 192.0.2.10:41000 -> 192.0.2.200:53, a connected UDP socket
+		"0: 0A0200C0:A028 C80200C0:0035 01 0:0 0:0 0 0 0 3\n" +
+		"@@file udp6\n@@end\n"
+	out, err := procnet.ParseSamplerOutput(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv := Inventory{
+		Pods: []Pod{
+			{Namespace: "shop", Name: "api", IP: "192.0.2.10", IPs: []string{"2001:db8::10"}},
+			{Namespace: "shop", Name: "web", IP: "192.0.2.11", IPs: []string{"2001:db8::11"}},
+		},
+		Services: []Service{{Namespace: "kube-system", Name: "kube-dns", ClusterIPs: []string{"192.0.2.200"}}},
+	}
+	targets := []Pod{{Namespace: "shop", Name: "api", IP: "192.0.2.10", IPs: []string{"2001:db8::10"}, Probe: Probe{Status: ProbeObserved, Samples: 1, Complete: true}}}
+	res, err := Build(Selector{}, Window{Interval: "5s"}, inv, targets, []Observation{{Pod: "shop/api", Samples: out.Samples}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, e := range res.Edges {
+		got[fmt.Sprintf("%s %s %s/%d", e.Direction, e.Peer.ID(), e.Protocol, e.Port)] = true
+	}
+	for _, want := range []string{"inbound shop/web tcp/9000", "outbound svc/kube-system/kube-dns udp/53"} {
+		if !got[want] {
+			t.Errorf("missing edge %q in %v", want, got)
+		}
+	}
+}
+
+func TestLimitsStateThisCapturesNumbers(t *testing.T) {
+	r := Result{
+		Window: Window{Start: t0, End: t0.Add(time.Minute), Interval: "5s", SamplesMin: 12, SamplesMax: 13},
+		Pods: []Pod{{Namespace: "kube-system", Name: "dns", Listening: []Listener{{Protocol: "udp", Address: "0.0.0.0", Port: 53}},
+			Probe: Probe{Status: ProbeObserved}}},
+	}
+	l := strings.Join(ComputeLimits(r), "\n")
+	for _, want := range []string{
+		"one sample every 5s over 1m0s (12 to 13 samples per pod)",
+		"closed FIRST",
+		"for UDP the interval (5s) IS the memory",
+		"No history",
+		"CONNECTED socket",
+		"In this capture that applies to: kube-system/dns udp/53.",
+		"ClusterIP",
+		"Cross-node traffic is seen",
+	} {
+		if !strings.Contains(l, want) {
+			t.Errorf("limits missing %q:\n%s", want, l)
+		}
+	}
+	res, _ := Build(Selector{}, Window{Interval: "5s"}, inv, nil, nil)
+	if len(res.Limits) == 0 {
+		t.Error("Build must attach limits to every capture")
+	}
+}
+
+func TestConnectedUDPServerIsInbound(t *testing.T) {
+	r := NewResolver(inv)
+	// Server on 5353 connected to its client's ephemeral port 41000, with no
+	// unconnected listener left: inbound from web on udp/5353.
+	srv := []procnet.Sample{sample(0, sock(procnet.UDP, "192.0.2.10:5353", "192.0.2.11:41000", procnet.Established))}
+	_, es := Analyze("shop/api", srv, r)
+	if len(es) != 1 || es[0].Direction != Inbound || es[0].Port != 5353 || es[0].Peer.Name != "web" {
+		t.Fatalf("connected UDP server: %+v", es)
+	}
+	// The client end (ephemeral local, well-known remote) stays outbound.
+	cli := []procnet.Sample{sample(0, sock(procnet.UDP, "192.0.2.11:41000", "192.0.2.200:53", procnet.Established))}
+	if _, es := Analyze("shop/web", cli, r); es[0].Direction != Outbound || es[0].Port != 53 {
+		t.Fatalf("UDP client: %+v", es)
+	}
+	// TCP is never guessed: without a listener it stays outbound.
+	tcp := []procnet.Sample{sample(0, sock(procnet.TCP, "192.0.2.10:5353", "192.0.2.11:41000", procnet.Established))}
+	if _, es := Analyze("shop/api", tcp, r); es[0].Direction != Outbound {
+		t.Fatalf("TCP must not use the UDP heuristic: %+v", es)
 	}
 }

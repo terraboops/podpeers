@@ -141,3 +141,17 @@ func TestHTMLHasWorkloadAndPodViews(t *testing.T) {
 		}
 	}
 }
+
+func TestEveryViewStatesWhatTheCaptureCouldNotSee(t *testing.T) {
+	// The fixture predates the limits field: they must be computed for it.
+	r := fixture(t)
+	var text, page bytes.Buffer
+	Text(&text, r)
+	HTML(&page, r, "")
+	if !strings.Contains(text.String(), "WHAT THIS CAPTURE COULD NOT SEE:") || !strings.Contains(text.String(), "one sample every 5s") {
+		t.Errorf("text report lacks limits:\n%s", text.String())
+	}
+	if !strings.Contains(page.String(), `"limits":[`) || !strings.Contains(page.String(), "What this capture could not see") {
+		t.Error("HTML page lacks limits")
+	}
+}

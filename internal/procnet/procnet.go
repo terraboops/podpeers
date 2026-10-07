@@ -178,34 +178,60 @@ type Sample struct {
 }
 
 // Framing markers written by SamplerScript and consumed by ParseSamplerOutput.
+// v1 (whole-second `date` timestamps, one `cat` per table) is still parsed;
+// SamplerScript writes v2.
 const (
-	markerHeader = "@@podpeers v1"
-	markerSample = "@@sample "
-	markerFile   = "@@file "
-	markerEnd    = "@@end"
+	markerHeaderV1 = "@@podpeers v1"
+	markerHeader   = "@@podpeers v2"
+	markerAnchor   = "@@anchor "
+	markerSample   = "@@sample "
+	markerFile     = "@@file "
+	markerEnd      = "@@end"
 )
+
+// MinInterval is the shortest sample interval podpeers accepts. Each sample
+// costs two process starts in the debug container (cat and sleep); much
+// below this the sampler would mostly measure itself.
+const MinInterval = 100 * time.Millisecond
 
 // SamplerScript returns the POSIX sh program the debug container runs. It takes
 // a snapshot of the socket tables every interval until duration has elapsed,
 // then exits on its own, so an interrupted operator never leaves a sampler
 // running past the window. It needs only sh, cat, date and sleep.
+//
+// Per sample it starts two processes: one cat over all four tables (each
+// table is recognised by its own header line) and one sleep. Times come from
+// /proc/uptime (10ms resolution), read with the shell builtin `read`, and are
+// anchored to wall-clock time once with `date`. Sub-second intervals are
+// passed to sleep as decimal seconds; callers validate them first (see
+// MinInterval).
 func SamplerScript(duration, interval time.Duration) string {
-	d := int(duration.Round(time.Second) / time.Second)
-	iv := int(interval.Round(time.Second) / time.Second)
-	if iv < 1 {
-		iv = 1
-	}
+	durCS := int64(duration / (10 * time.Millisecond))
+	sleep := strconv.FormatFloat(interval.Seconds(), 'f', -1, 64)
 	return fmt.Sprintf(`echo '%s'
-end=$(( $(date +%%s) + %d ))
+read up0 rest < /proc/uptime
+echo "%s$(date +%%s) $up0"
+end=$(( ${up0%%.*}${up0#*.} + %d ))
 while :; do
-  now=$(date +%%s)
-  echo "%s$now"
-  for f in tcp tcp6 udp udp6; do echo "%s$f"; cat /proc/net/$f 2>/dev/null; done
-  [ "$now" -ge "$end" ] && break
-  sleep %d
+  read up rest < /proc/uptime
+  echo "%s$up"
+  cat /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6 2>/dev/null
+  [ "${up%%.*}${up#*.}" -ge "$end" ] && break
+  sleep %s
 done
 echo '%s'
-`, markerHeader, d, markerSample, markerFile, iv, markerEnd)
+`, markerHeader, markerAnchor, durCS, markerSample, sleep, markerEnd)
+}
+
+// tableProtocol classifies a /proc/net socket-table header line. The kernel
+// prints "... inode ref pointer drops" for UDP tables and "... inode" for TCP
+// ones, in both address families, so one cat over all four files can be split
+// without markers, even when a file (say tcp6, with IPv6 disabled) is absent.
+func tableProtocol(header string) Protocol {
+	if strings.Contains(header, "drops") {
+		return UDP
+	}
+	return TCP
 }
 
 // SamplerOutput is the decoded log of one debug container.
@@ -222,7 +248,10 @@ func ParseSamplerOutput(r io.Reader) (SamplerOutput, error) {
 	var out SamplerOutput
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	sawHeader := false
+	version := 0
+	var anchorWall int64
+	var anchorUp float64
+	haveAnchor := false
 	var cur *Sample
 	var proto Protocol
 	flush := func() {
@@ -233,17 +262,42 @@ func ParseSamplerOutput(r io.Reader) (SamplerOutput, error) {
 	}
 	for sc.Scan() {
 		line := sc.Text()
+		t := strings.TrimSpace(line)
 		switch {
+		case line == markerHeaderV1:
+			version = 1
 		case line == markerHeader:
-			sawHeader = true
+			version = 2
+		case strings.HasPrefix(line, markerAnchor):
+			f := strings.Fields(line[len(markerAnchor):])
+			if len(f) != 2 {
+				return out, fmt.Errorf("procnet: bad anchor %q", line)
+			}
+			w, err1 := strconv.ParseInt(f[0], 10, 64)
+			u, err2 := strconv.ParseFloat(f[1], 64)
+			if err1 != nil || err2 != nil {
+				return out, fmt.Errorf("procnet: bad anchor %q", line)
+			}
+			anchorWall, anchorUp, haveAnchor = w, u, true
 		case strings.HasPrefix(line, markerSample):
 			flush()
-			sec, err := strconv.ParseInt(strings.TrimSpace(line[len(markerSample):]), 10, 64)
-			if err != nil {
-				return out, fmt.Errorf("procnet: bad sample marker %q", line)
-			}
-			cur = &Sample{Time: time.Unix(sec, 0).UTC()}
+			v := strings.TrimSpace(line[len(markerSample):])
 			proto = ""
+			if version == 1 {
+				sec, err := strconv.ParseInt(v, 10, 64)
+				if err != nil {
+					return out, fmt.Errorf("procnet: bad sample marker %q", line)
+				}
+				cur = &Sample{Time: time.Unix(sec, 0).UTC()}
+				continue
+			}
+			up, err := strconv.ParseFloat(v, 64)
+			if err != nil || !haveAnchor {
+				return out, fmt.Errorf("procnet: bad sample marker %q (anchor seen: %v)", line, haveAnchor)
+			}
+			// uptime is exact to 10ms; round away float noise.
+			off := time.Duration((up-anchorUp)*1000+0.5) * time.Millisecond
+			cur = &Sample{Time: time.Unix(anchorWall, 0).UTC().Add(off)}
 		case strings.HasPrefix(line, markerFile):
 			switch name := strings.TrimSpace(line[len(markerFile):]); name {
 			case "tcp", "tcp6":
@@ -256,9 +310,12 @@ func ParseSamplerOutput(r io.Reader) (SamplerOutput, error) {
 		case line == markerEnd:
 			flush()
 			out.Complete = true
+		case strings.HasPrefix(t, "sl "):
+			if version == 2 {
+				proto = tableProtocol(t)
+			}
 		default:
-			t := strings.TrimSpace(line)
-			if cur == nil || proto == "" || t == "" || strings.HasPrefix(t, "sl ") {
+			if cur == nil || proto == "" || t == "" {
 				continue
 			}
 			s, err := ParseRow(proto, t)
@@ -272,7 +329,7 @@ func ParseSamplerOutput(r io.Reader) (SamplerOutput, error) {
 	if err := sc.Err(); err != nil {
 		return out, err
 	}
-	if !sawHeader {
+	if version == 0 {
 		return out, fmt.Errorf("procnet: no podpeers header in sampler output")
 	}
 	// A sample that was cut off mid-table is incomplete; drop it unless the end

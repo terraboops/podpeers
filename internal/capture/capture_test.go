@@ -26,9 +26,13 @@ func TestValidate(t *testing.T) {
 		t.Fatalf("valid options rejected: %v", err)
 	}
 	cases := map[string]Options{
-		"zero duration":     {Duration: 0, Interval: time.Second, LabelSelector: "app"},
-		"interval > window": {Duration: time.Second, Interval: 5 * time.Second, LabelSelector: "app"},
-		"no selector":       {Duration: 30 * time.Second, Interval: time.Second},
+		"zero duration":      {Duration: 0, Interval: time.Second, LabelSelector: "app"},
+		"interval > window":  {Duration: time.Second, Interval: 5 * time.Second, LabelSelector: "app"},
+		"no selector":        {Duration: 30 * time.Second, Interval: time.Second},
+		"interval too short": {Duration: 30 * time.Second, Interval: 50 * time.Millisecond, LabelSelector: "app"},
+		"zero interval":      {Duration: 30 * time.Second, Interval: 0, LabelSelector: "app"},
+		"sub-ms interval":    {Duration: 30 * time.Second, Interval: 100*time.Millisecond + 500*time.Microsecond, LabelSelector: "app"},
+		"sub-10ms duration":  {Duration: 30*time.Second + 5*time.Millisecond, Interval: time.Second, LabelSelector: "app"},
 	}
 	for name, o := range cases {
 		if err := o.Validate(); err == nil {
@@ -69,7 +73,7 @@ func TestDebugContainerIsRestrictedAndSelfTerminating(t *testing.T) {
 		t.Error("no process-namespace targeting is needed for /proc/net")
 	}
 	script := strings.Join(c.Command, " ")
-	if !strings.Contains(script, "+ 30 ))") || !strings.Contains(script, "sleep 5") || !strings.Contains(script, "break") {
+	if !strings.Contains(script, "+ 3000 ))") || !strings.Contains(script, "sleep 5") || !strings.Contains(script, "break") {
 		t.Fatalf("sampler must stop by itself after the window: %s", script)
 	}
 }
@@ -319,5 +323,20 @@ func TestMergeInventoryKeepsPodsReplacedDuringTheWindow(t *testing.T) {
 	}
 	if len(m.Pods) != 4 || len(m.Services) != 1 || len(m.Nodes) != 1 {
 		t.Errorf("merged = %+v", m)
+	}
+}
+
+func TestSubSecondIntervalsAreAccepted(t *testing.T) {
+	for _, iv := range []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 1500 * time.Millisecond} {
+		o := Options{Duration: 30 * time.Second, Interval: iv, LabelSelector: "app"}
+		if err := o.Validate(); err != nil {
+			t.Errorf("%s rejected: %v", iv, err)
+		}
+	}
+	if c := SamplingCost(100 * time.Millisecond); !strings.HasPrefix(c, "20 process starts per second") {
+		t.Errorf("cost at 100ms = %q", c)
+	}
+	if c := SamplingCost(time.Second); !strings.HasPrefix(c, "2 process starts per second") {
+		t.Errorf("cost at 1s = %q", c)
 	}
 }

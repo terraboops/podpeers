@@ -163,7 +163,7 @@ func TestReportGaps(t *testing.T) {
 		}
 	}
 	rep = Suggest(shop(), Options{MinWindow: time.Minute})
-	if strings.Contains(strings.Join(rep.Gaps, "\n"), "shorter than") {
+	if strings.Contains(strings.Join(rep.Gaps, "\n"), "The window (") {
 		t.Error("long enough window should not warn")
 	}
 }
@@ -445,5 +445,21 @@ func TestEntryPointOnlySeenFromCompletedPods(t *testing.T) {
 	r = shop()
 	if web := find(t, Suggest(r, Options{}), "Deployment/web"); hasGap(web, "ENTRY POINT WARNING") {
 		t.Fatal("no phase information: no warning")
+	}
+}
+
+func TestReportCarriesCaptureLimitsAndUDPListeners(t *testing.T) {
+	r := shop()
+	r.Pods[0].Listening = append(r.Pods[0].Listening, graph.Listener{Protocol: "udp", Address: "0.0.0.0", Port: 5353})
+	rep := Suggest(r, Options{})
+	joined := strings.Join(rep.Gaps, "\n")
+	for _, want := range []string{"This is sampling, not capture", "CONNECTED socket", "ClusterIP", "No history"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("report gaps missing capture limit %q", want)
+		}
+	}
+	api := find(t, rep, "Deployment/api")
+	if !hasGap(api, "Listens on udp/5353: an unconnected UDP socket records no peer") || hasGap(api, "Listens on udp/5353 but no client") {
+		t.Errorf("UDP listener gap wrong: %v", api.Gaps)
 	}
 }

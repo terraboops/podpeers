@@ -142,3 +142,10 @@ func TestVariables(t *testing.T) {
 		t.Fatal(string(b))
 	}
 }
+
+func TestLimitsQuery(t *testing.T) {
+	got := run(t, schema(t), `{ limits }`)
+	if !strings.Contains(got, "sampling, not capture") || !strings.Contains(got, "CONNECTED socket") {
+		t.Fatal(got)
+	}
+}

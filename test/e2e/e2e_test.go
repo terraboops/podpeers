@@ -177,6 +177,7 @@ func TestE2E(t *testing.T) {
 	kubectl(t, "wait", "-n", "pp-edge", "--for=condition=Ready", "--timeout=60s", "pod/gateway")
 	kubectl(t, "wait", "-n", "pp-locked", "--for=condition=Ready", "--timeout=60s", "pod/vault")
 	kubectl(t, "wait", "-n", "pp-strict", "--for=condition=Ready", "--timeout=60s", "pod/vaultd", "pod/auditor")
+	kubectl(t, "wait", "-n", "pp-udp", "--for=condition=Ready", "--timeout=60s", "pod/udp-echo", "pod/dnsd", "pod/udp-client")
 	time.Sleep(3 * time.Second) // let the clients' connections establish
 
 	t.Run("guard refuses a non-local context name, even for a reachable local cluster", func(t *testing.T) {
@@ -296,6 +297,15 @@ func TestE2E(t *testing.T) {
 			"outbound svc/pp-app/api tcp/9000 closed")
 		expectEdges(t, res, "pp-edge/gateway",
 			"outbound svc/pp-app/web tcp/8080 open")
+		// gateway -> web crosses nodes; both ends saw it.
+		nodes := map[string]string{}
+		for _, p := range res.Pods {
+			nodes[p.ID()] = p.Node
+		}
+		t.Logf("cross-node: pp-edge/gateway on %s, pp-app/web on %s", nodes["pp-edge/gateway"], nodes["pp-app/web"])
+		if nodes["pp-edge/gateway"] == "" || nodes["pp-edge/gateway"] == nodes["pp-app/web"] {
+			t.Errorf("gateway and web must be on different nodes for this to prove cross-node capture: %v", nodes)
+		}
 		expectEdges(t, res, "pp-app/loner") // a pod with no peers at all
 
 		// The selector-excluded pod and the pending pod were never touched.
@@ -444,6 +454,67 @@ spec:
 		t.Logf("diff exit=%d\n%s", d.code, d.stdout)
 		if d.code != 5 || !strings.Contains(d.stdout, "preexisting pp-app/Pod/web -> svc/pp-app/api tcp/9000") || !strings.Contains(d.stdout, "INCONCLUSIVE") {
 			t.Fatalf("want INCONCLUSIVE (exit 5) naming web -> api, got exit %d", d.code)
+		}
+	})
+
+	t.Run("UDP: connected sockets are seen, an unconnected server's clients only from the client side", func(t *testing.T) {
+		out := filepath.Join(outDir, "e2e-udp.json")
+		r := podpeers(ctx, t, "capture", "-n", "pp-udp", "-l", "podpeers-e2e=udp", "--duration", "6s", "--interval", "1s", "-o", out)
+		t.Logf("exit=%d\n%s", r.code, r.stderr)
+		if r.code != 0 {
+			t.Fatalf("capture exit %d", r.code)
+		}
+		res := load(t, out)
+		expectEdges(t, res, "pp-udp/udp-client",
+			"outbound svc/pp-udp/udp-echo udp/5353 open",
+			"outbound svc/pp-udp/dnsd udp/5354 open")
+		// busybox nc -u -l connect()s to its client: the server side names it.
+		expectEdges(t, res, "pp-udp/udp-echo", "inbound pp-udp/udp-client udp/5353 open")
+		// dnsd's socket is unconnected: /proc has no peer, so no edge at all,
+		// only the listener. This is the inherent UDP blind spot.
+		expectEdges(t, res, "pp-udp/dnsd")
+		listens := false
+		for _, p := range res.Pods {
+			if p.ID() == "pp-udp/dnsd" {
+				for _, l := range p.Listening {
+					listens = listens || (l.Protocol == "udp" && l.Port == 5354)
+				}
+			}
+		}
+		if !listens {
+			t.Error("dnsd's unconnected UDP listener on 5354 should be recorded")
+		}
+		if !strings.Contains(strings.Join(res.Limits, " "), "pp-udp/dnsd udp/5354") {
+			t.Errorf("limits should name dnsd's unconnected UDP port: %v", res.Limits)
+		}
+	})
+
+	t.Run("sub-second interval is honoured, timed and costed, not rounded", func(t *testing.T) {
+		out := filepath.Join(outDir, "e2e-subsecond.json")
+		r := podpeers(ctx, t, "capture", "-n", "pp-udp", "-l", "app=udp-client", "--duration", "4s", "--interval", "200ms", "-o", out)
+		t.Logf("exit=%d\n%s", r.code, r.stderr)
+		if r.code != 0 {
+			t.Fatalf("capture exit %d", r.code)
+		}
+		for _, want := range []string{"WARNING: --interval 200ms costs about 10 process starts per second", "sampling every 200ms for 4s: about 21 samples per pod"} {
+			if !strings.Contains(r.stderr, want) {
+				t.Errorf("stderr missing %q", want)
+			}
+		}
+		res := load(t, out)
+		if res.Window.Interval != "200ms" {
+			t.Errorf("window interval = %q; want 200ms (not rounded)", res.Window.Interval)
+		}
+		p, _ := probeOf(res, "pp-udp/udp-client")
+		t.Logf("samples taken at 200ms over 4s: %d", p.Samples)
+		// 4s / 200ms + 1 = 21. Too few means the interval was rounded up
+		// (1s gives 5); too many means it collapsed and the sampler spun.
+		if p.Samples < 15 || p.Samples > 25 {
+			t.Errorf("want about 21 samples at 200ms over 4s, got %d (a rounded 1s interval gives 5; a collapsed 0s interval spins)", p.Samples)
+		}
+		bad := podpeers(ctx, t, "capture", "-n", "pp-udp", "-l", "app=udp-client", "--duration", "4s", "--interval", "50ms")
+		if bad.code != 1 || !strings.Contains(bad.stderr, "below the 100ms minimum") {
+			t.Errorf("50ms must be refused loudly, got exit %d: %s", bad.code, bad.stderr)
 		}
 	})
 

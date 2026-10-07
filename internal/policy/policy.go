@@ -243,6 +243,11 @@ func Suggest(r graph.Result, o Options) Report {
 			dur, r.Window.Start.UTC().Format(time.RFC3339), r.Window.End.UTC().Format(time.RFC3339), r.Window.Interval),
 		"Pods that were not captured get no policy and stay unrestricted; nothing here is a namespace-wide default-deny.",
 		"How strictly policies are enforced (and whether kubelet health probes from the node are subject to them) depends on your CNI; test before relying on it.")
+	limits := r.Limits
+	if len(limits) == 0 {
+		limits = graph.ComputeLimits(r)
+	}
+	rep.Gaps = append(rep.Gaps, limits...)
 	if dur < o.MinWindow {
 		rep.Gaps = append(rep.Gaps, fmt.Sprintf(
 			"The window (%s) is shorter than %s: nightly, weekly and failover-only traffic was almost certainly not seen. Capture for longer, or across the busiest and the rarest operations, before enforcing.",
@@ -529,9 +534,21 @@ func (b *builder) suggest(pods []graph.Pod, o Options) Suggestion {
 	for _, t := range testOnly {
 		gap(fmt.Sprintf("ENTRY POINT WARNING: ingress on %s. Every client seen there had already completed by the end of the window: a test pod or a Job, not real traffic. If this port is the app's entry point, its real clients (ingress controller, other services, users) were NOT observed and this policy SHUTS THEM OUT. Add them deliberately, or capture under real traffic.", t))
 	}
-	if len(unmatched) > 0 {
+	var tcpUnmatched, udpListen []string
+	for _, l := range unmatched {
+		if strings.HasPrefix(l, "udp/") {
+			udpListen = append(udpListen, l)
+		} else {
+			tcpUnmatched = append(tcpUnmatched, l)
+		}
+	}
+	if len(tcpUnmatched) > 0 {
 		gap(fmt.Sprintf("Listens on %s but no client was observed there: ingress to those ports will be DROPPED for everyone (health checks from other pods, metrics scrapers, rare callers).",
-			strings.Join(unmatched, ", ")))
+			strings.Join(tcpUnmatched, ", ")))
+	}
+	if len(udpListen) > 0 {
+		gap(fmt.Sprintf("Listens on %s: an unconnected UDP socket records no peer in /proc, so its clients CANNOT be observed from this side. Unless a client was captured from its own side, this policy DROPS all UDP to those ports. Add the clients deliberately.",
+			strings.Join(udpListen, ", ")))
 	}
 	if len(np.Spec.Ingress) == 0 {
 		gap("No inbound traffic was observed: this policy denies ALL ingress to the workload.")

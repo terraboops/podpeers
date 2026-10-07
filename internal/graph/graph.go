@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/terraboops/podpeers/internal/procnet"
@@ -57,12 +58,20 @@ type Result struct {
 	Pods     []Pod     `json:"pods"`
 	Services []Service `json:"services"`
 	Edges    []Edge    `json:"edges"`
+	// Limits states, with this capture's own numbers, what it could NOT have
+	// seen. Socket sampling is not packet capture; every consumer (report,
+	// UI, GraphQL, MCP, policy suggestions) shows these.
+	Limits []string `json:"limits"`
 }
 
 type Window struct {
 	Start    time.Time `json:"start"`
 	End      time.Time `json:"end"`
 	Interval string    `json:"interval"`
+	// SamplesMin and SamplesMax are the fewest and most samples any observed
+	// pod got: the capture's real resolution.
+	SamplesMin int `json:"samplesMin,omitempty"`
+	SamplesMax int `json:"samplesMax,omitempty"`
 }
 
 type Selector struct {
@@ -71,9 +80,11 @@ type Selector struct {
 }
 
 type Pod struct {
-	Namespace   string            `json:"namespace"`
-	Name        string            `json:"name"`
-	IP          string            `json:"ip,omitempty"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	IP        string `json:"ip,omitempty"`
+	// IPs are all of the pod's addresses (both families on dual-stack).
+	IPs         []string          `json:"ips,omitempty"`
 	Node        string            `json:"node,omitempty"`
 	Labels      map[string]string `json:"labels,omitempty"`
 	HostNetwork bool              `json:"hostNetwork,omitempty"`
@@ -226,11 +237,15 @@ func NewResolver(inv Inventory) *Resolver {
 		nodes:    map[netip.Addr]string{},
 	}
 	for _, p := range inv.Pods {
-		if p.HostNetwork || p.IP == "" {
+		if p.HostNetwork {
 			continue
 		}
-		if a, err := netip.ParseAddr(p.IP); err == nil {
-			r.pods[a.Unmap()] = p
+		// Index every address: on dual-stack clusters the IPv6 one is not
+		// the primary IP, and indexing only that left IPv6 peers "external".
+		for _, ip := range append([]string{p.IP}, p.IPs...) {
+			if a, err := netip.ParseAddr(ip); err == nil {
+				r.pods[a.Unmap()] = p
+			}
 		}
 	}
 	for _, s := range inv.Services {
@@ -317,7 +332,7 @@ func Analyze(pod string, samples []procnet.Sample, res *Resolver) ([]Listener, [
 				continue
 			}
 			ek := edgeKey{proto: k.Protocol, ip: k.Remote.Addr().Unmap()}
-			if listening[listenKey{k.Protocol, k.Local.Port()}] {
+			if listening[listenKey{k.Protocol, k.Local.Port()}] || udpServerSide(k) {
 				ek.dir, ek.port = Inbound, k.Local.Port()
 			} else {
 				ek.dir, ek.port = Outbound, k.Remote.Port()
@@ -463,6 +478,16 @@ func Build(sel Selector, win Window, inv Inventory, targets []Pod, obs []Observa
 			usedSvc[e.Peer.Namespace+"/"+e.Peer.Name] = true
 		}
 	}
+	for _, id := range order {
+		if p := byID[id]; p.Probe.Status == ProbeObserved {
+			if win.SamplesMin == 0 || p.Probe.Samples < win.SamplesMin {
+				win.SamplesMin = p.Probe.Samples
+			}
+			if p.Probe.Samples > win.SamplesMax {
+				win.SamplesMax = p.Probe.Samples
+			}
+		}
+	}
 	out := Result{Schema: Schema, Window: win, Selector: sel, Edges: edges}
 	sort.Strings(order)
 	for _, id := range order {
@@ -475,6 +500,7 @@ func Build(sel Selector, win Window, inv Inventory, targets []Pod, obs []Observa
 	}
 	sort.Slice(out.Services, func(i, j int) bool { return out.Services[i].ID() < out.Services[j].ID() })
 	SortEdges(out.Edges)
+	out.Limits = ComputeLimits(out)
 	return out, nil
 }
 
@@ -528,4 +554,61 @@ func LoadFile(path string) (Result, error) {
 	}
 	defer f.Close()
 	return Load(f)
+}
+
+// ComputeLimits states what a capture could not have seen, using its own
+// numbers. These are properties of reading /proc/net by sampling, not bugs:
+// a user who assumes a capture is complete will write a policy that breaks
+// their cluster.
+func ComputeLimits(r Result) []string {
+	interval := r.Window.Interval
+	if interval == "" {
+		interval = "the sample interval"
+	}
+	dur := r.Window.End.Sub(r.Window.Start).Round(time.Second)
+	res := fmt.Sprintf("Resolution: one sample every %s over %s", interval, dur)
+	switch {
+	case r.Window.SamplesMax > 0 && r.Window.SamplesMin != r.Window.SamplesMax:
+		res += fmt.Sprintf(" (%d to %d samples per pod)", r.Window.SamplesMin, r.Window.SamplesMax)
+	case r.Window.SamplesMax > 0:
+		res += fmt.Sprintf(" (%d samples per pod)", r.Window.SamplesMax)
+	}
+	res += " (timestamps to 10ms). This is sampling, not capture: a socket is seen only if it exists at a sample instant, and no interval catches everything."
+	tcp := fmt.Sprintf("TCP memory is longer than the interval, but only on one side: a connection closed normally stays in TIME_WAIT for 60s on the side that closed FIRST, so if that side was sampled, even a connection lasting milliseconds is seen. The other side keeps nothing. A connection that was reset (RST) never enters TIME_WAIT, and under heavy connection churn the kernel can drop or reuse TIME_WAIT entries early (net.ipv4.tcp_max_tw_buckets, tcp_tw_reuse); those are seen only if they spanned a sample (about %s apart).", interval)
+	var udp []string
+	for _, p := range r.Pods {
+		for _, l := range p.Listening {
+			if l.Protocol == "udp" {
+				udp = append(udp, fmt.Sprintf("%s udp/%d", p.ID(), l.Port))
+			}
+		}
+	}
+	udpLine := fmt.Sprintf("UDP has no TIME_WAIT: a UDP flow is seen only while a socket for it exists at a sample instant, so for UDP the interval (%s) IS the memory. And /proc/net/udp shows a peer only for a CONNECTED socket: unconnected UDP (DNS servers, QUIC, syslog, most UDP servers) records a local port and no peer, so who talked to it cannot be known; a client that sends without connecting is equally invisible.", interval)
+	if len(udp) > 0 {
+		udpLine += " In this capture that applies to: " + strings.Join(udp, ", ") + "."
+	}
+	return []string{
+		res,
+		tcp,
+		"No history: /proc/net shows only what exists at the moment of a sample. A connection that ended before the window began, or that only happens daily, weekly or on failover, left nothing to read.",
+		udpLine,
+		"Services: through a ClusterIP, kube-proxy rewrites the destination after the socket is created, so the client's socket shows the service's virtual IP. The client side therefore names a service, not the pod that answered; only the server side (if it was sampled) names the client pod. Cross-node traffic is seen like any other.",
+		"Only sampled pods: a connection is seen only from the pods the selector matched. If one end was outside the selector, only the matched end's view exists (and the TIME_WAIT memory may be on the other end); if neither end was matched, it is not seen at all.",
+	}
+}
+
+// Linux's default ephemeral port range (net.ipv4.ip_local_port_range).
+const ephemeralLow, ephemeralHigh = 32768, 60999
+
+func isEphemeral(p uint16) bool { return p >= ephemeralLow && p <= ephemeralHigh }
+
+// udpServerSide reports whether a connected UDP socket with no listener on
+// its local port is most likely the server end. A UDP server that connect()s
+// to its client (as busybox `nc -u -l` does) leaves no unconnected listener
+// behind, so the listening-port rule alone would call it outbound, towards
+// the client's random port. When the remote port is ephemeral and the local
+// one is not, the peer is the client. TCP needs no such guess: an accepted
+// socket always has its LISTEN socket beside it.
+func udpServerSide(k procnet.Socket) bool {
+	return k.Protocol == procnet.UDP && isEphemeral(k.Remote.Port()) && !isEphemeral(k.Local.Port())
 }

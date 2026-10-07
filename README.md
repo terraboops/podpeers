@@ -251,11 +251,13 @@ use it for observation; podpeers' suggest/verify loop still applies.
 
 ## FAQ
 
-**Isn't sampling going to miss things?** Yes, and podpeers says so in every
-suggestion. A connection that opens and closes between two samples is
-invisible, although the closing side's 60-second `TIME_WAIT` often catches
-short HTTP calls. Use a short `--interval`, a long `--duration`, and run your
-rarest operations inside the window. Where evidence is thin, `suggest`
+**Isn't sampling going to miss things?** Yes, and every capture says exactly
+what (see [Limits](#limits-honestly)). **The window matters more than the
+interval**: a peer contacted once an hour is missed by a short window at any
+interval. The defaults are a 5-minute window sampled every second. `--interval`
+goes down to 100ms (podpeers prints the CPU cost below 1s), which mostly helps
+UDP: TCP already has the closing side's 60-second `TIME_WAIT`, UDP has
+nothing. Run your rarest operations inside the window. Where evidence is thin, `suggest`
 **refuses** rather than guesses: no pod observed, too few samples, no stable
 labels, hostNetwork pods, or no traffic at all.
 
@@ -316,7 +318,29 @@ outside the selector is touched.
 
 ## Limits, honestly
 
-- Sampling, not packet capture (see FAQ).
+podpeers samples socket tables; it does not capture packets. Every capture
+says what it could not see, with its own numbers, and
+[docs/method.md](docs/method.md) explains each limit with measurements. The
+four that matter most for writing policy:
+
+1. **Unconnected UDP has no peer.** `/proc/net/udp` shows a remote address
+   only for a *connected* socket. DNS servers, QUIC and syslog use
+   unconnected sockets, so their clients are unknowable from the server's
+   side. That is how the kernel interface works, not a bug.
+2. **It is a sample, not a capture.** A connection that opens and closes
+   between two samples is seen only through TCP's 60-second `TIME_WAIT`,
+   which exists **only on the side that closed first**, never after a reset,
+   and **never for UDP**. For UDP the interval is the memory.
+3. **Services hide the pod.** Through a ClusterIP, kube-proxy rewrites the
+   destination after the socket is created: the client's socket shows the
+   service, not the pod behind it. Cross-node traffic *is* visible; only the
+   peer's identity can be a service rather than a pod.
+4. **No history.** `/proc/net` has only the present. A connection that closed
+   before the window, or traffic that only happens weekly, left nothing.
+
+And the smaller ones:
+
+- Only the selected pods are sampled.
 - hostNetwork pods are skipped: their sockets are the node's.
 - Peers in namespaces you can't list resolve as plain addresses.
 - Assumes little-endian nodes (amd64/arm64).

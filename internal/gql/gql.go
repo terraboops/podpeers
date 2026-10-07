@@ -154,9 +154,11 @@ func NewSchema(r graph.Result) (graphql.Schema, error) {
 		"selector":   {Type: graphql.NewList(labelT), Resolve: func(p graphql.ResolveParams) (any, error) { return labels(p.Source.(graph.Service).Selector), nil }},
 	}})
 	windowT := graphql.NewObject(graphql.ObjectConfig{Name: "Window", Fields: graphql.Fields{
-		"start":    timeField(func(s any) time.Time { return s.(graph.Window).Start }),
-		"end":      timeField(func(s any) time.Time { return s.(graph.Window).End }),
-		"interval": {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Window).Interval, nil }},
+		"start":      timeField(func(s any) time.Time { return s.(graph.Window).Start }),
+		"end":        timeField(func(s any) time.Time { return s.(graph.Window).End }),
+		"interval":   {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Window).Interval, nil }},
+		"samplesMin": {Type: graphql.Int, Description: "fewest samples any observed pod got", Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Window).SamplesMin, nil }},
+		"samplesMax": {Type: graphql.Int, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Window).SamplesMax, nil }},
 	}})
 
 	var podT, peerT, edgeT *graphql.Object
@@ -243,6 +245,13 @@ func NewSchema(r graph.Result) (graphql.Schema, error) {
 
 	query := graphql.NewObject(graphql.ObjectConfig{Name: "Query", Fields: graphql.Fields{
 		"window": {Type: windowT, Resolve: func(graphql.ResolveParams) (any, error) { return r.Window, nil }},
+		"limits": {Type: graphql.NewList(graphql.String), Description: "what this capture could NOT have seen (sampling resolution, unconnected UDP, ClusterIP rewriting, no history)",
+			Resolve: func(graphql.ResolveParams) (any, error) {
+				if len(r.Limits) > 0 {
+					return r.Limits, nil
+				}
+				return graph.ComputeLimits(r), nil
+			}},
 		"pods": {Type: graphql.NewList(podT),
 			Args: graphql.FieldConfigArgument{
 				"namespace": {Type: graphql.String},

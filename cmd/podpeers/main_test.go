@@ -142,7 +142,7 @@ func TestCaptureFlagValidationHappensFirst(t *testing.T) {
 		{"capture"}, // no selector
 		{"capture", "-l", "app", "-n", "x", "-A"},    // -n with -A
 		{"capture", "-l", "app", "--duration", "0s"}, // empty window
-		{"capture", "-l", "app", "--interval", "2m"}, // interval > window
+		{"capture", "-l", "app", "--interval", "6m"}, // interval > window
 		{"capture", "-l", "app", "stray-positional"}, // typo guard
 		{"capture", "--no-such-flag"},                // unknown flag
 	}

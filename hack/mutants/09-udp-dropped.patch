@@ -1,0 +1,21 @@
+# Mutant 09-udp-dropped: breaks the protection for "UDP flows reach the graph".
+# Bug introduced: the graph silently skips UDP sockets, as a TCP-only analysis would.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/graph/
+# unit-run: TestAnalyzeUDP|TestIPv6AndUDPSurviveTheWholePipeline|TestConnectedUDPServerIsInbound
+# unit-expect: edges = |missing edge|connected UDP server
+# e2e-run: TestE2E/UDP
+# e2e-expect: pp-udp/udp-client edges:
+--- a/internal/graph/graph.go
++++ b/internal/graph/graph.go
+@@ -325,7 +325,7 @@
+ 	last := len(samples) - 1
+ 	for i, s := range samples {
+ 		for _, k := range s.Sockets {
+-			if k.IsListener() || !k.HasRemote() {
++			if k.IsListener() || !k.HasRemote() || k.Protocol == procnet.UDP {
+ 				continue
+ 			}
+ 			if k.Remote.Addr().IsLoopback() || k.Local.Addr().IsLoopback() {

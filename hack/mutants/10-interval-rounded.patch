@@ -1,0 +1,21 @@
+# Mutant 10-interval-rounded: breaks the protection for "sub-second sampling intervals".
+# Bug introduced: the sampler rounds the interval to whole seconds and clamps it to at least 1s (the original silent bug: 200ms and 100ms both become 1s).
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/procnet/
+# unit-run: TestSamplerScript
+# unit-expect: missing \"sleep 0\.2
+# e2e-run: TestE2E/sub-second
+# e2e-expect: want about 21 samples at 200ms
+--- a/internal/procnet/procnet.go
++++ b/internal/procnet/procnet.go
+@@ -207,7 +207,7 @@
+ // MinInterval).
+ func SamplerScript(duration, interval time.Duration) string {
+ 	durCS := int64(duration / (10 * time.Millisecond))
+-	sleep := strconv.FormatFloat(interval.Seconds(), 'f', -1, 64)
++	sleep := strconv.Itoa(max(1, int(interval.Round(time.Second)/time.Second)))
+ 	return fmt.Sprintf(`echo '%s'
+ read up0 rest < /proc/uptime
+ echo "%s$(date +%%s) $up0"

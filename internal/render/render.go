@@ -95,7 +95,20 @@ func Text(w io.Writer, r graph.Result) error {
 	}
 	fmt.Fprintf(w, "pods: %d observed, %d failed, %d skipped, %d peer-only; %d edges\n",
 		counts[graph.ProbeObserved], counts[graph.ProbeFailed], counts[graph.ProbeSkipped], counts[graph.ProbeNotTargeted], len(r.Edges))
+	fmt.Fprintln(w, "\nWHAT THIS CAPTURE COULD NOT SEE:")
+	for _, l := range limitsOf(r) {
+		fmt.Fprintf(w, "  - %s\n", l)
+	}
 	return nil
+}
+
+// limitsOf returns the capture's limits, computing them for captures written
+// before they were recorded.
+func limitsOf(r graph.Result) []string {
+	if len(r.Limits) > 0 {
+		return r.Limits
+	}
+	return graph.ComputeLimits(r)
 }
 
 // DOT writes a Graphviz digraph with one cluster per namespace. Flows observed
@@ -177,6 +190,7 @@ var pageTemplate string
 // HTML writes a self-contained interactive page (no network fetches). When
 // graphqlPath is non-empty the page also shows a query console that posts to it.
 func HTML(w io.Writer, r graph.Result, graphqlPath string) error {
+	r.Limits = limitsOf(r)
 	data, err := json.Marshal(r) // escapes <, > and & so it is safe inside <script>
 	if err != nil {
 		return err

@@ -9,6 +9,8 @@ set -euo pipefail
 
 CLUSTER="${PODPEERS_E2E_CLUSTER:-podpeers-e2e}"
 API_PORT="${PODPEERS_E2E_API_PORT:-6551}"
+# One agent besides the server, so the suite can prove cross-node traffic.
+AGENTS="${PODPEERS_E2E_AGENTS:-1}"
 K3S_IMAGE="${PODPEERS_E2E_K3S_IMAGE:-rancher/k3s:v1.31.5-k3s1}"
 DEBUG_IMAGE="${PODPEERS_E2E_DEBUG_IMAGE:-busybox:1.36}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,7 +21,7 @@ up() {
   if ! k3d cluster list -o json | grep -q "\"name\":\"$CLUSTER\""; then
     k3d cluster create "$CLUSTER" \
       --image "$K3S_IMAGE" \
-      --servers 1 --agents 0 --no-lb \
+      --servers 1 --agents "$AGENTS" --no-lb \
       --api-port "127.0.0.1:$API_PORT" \
       --k3s-arg '--disable=traefik@server:0' \
       --k3s-arg '--disable=servicelb@server:0' \
@@ -32,7 +34,9 @@ up() {
   chmod 600 "$KCFG"
   # Make the workload and debug images available without the node pulling them.
   # (k3d image import trips over multi-arch digests on some docker setups; pull in-node instead)
-  docker exec "k3d-$CLUSTER-server-0" crictl pull "docker.io/library/$DEBUG_IMAGE" >/dev/null
+  for node in $(k3d node list -o json | grep -o "\"name\":\"k3d-$CLUSTER-[a-z]*-[0-9]*\"" | cut -d'"' -f4); do
+    docker exec "$node" crictl pull "docker.io/library/$DEBUG_IMAGE" >/dev/null
+  done
   local ctx
   ctx="$(kubectl --kubeconfig "$KCFG" config current-context)"
   if [[ "$ctx" != "k3d-$CLUSTER" ]]; then

@@ -31,6 +31,22 @@ import (
 	"github.com/terraboops/podpeers/internal/procnet"
 )
 
+// Defaults. The interval matters less than it looks for TCP, because a
+// connection closed normally stays in TIME_WAIT for 60s on the side that
+// closed first; for UDP the interval is the only memory. The window matters
+// more than either: a peer contacted once an hour is missed by a short window
+// at any interval. See docs/method.md.
+const (
+	DefaultInterval = time.Second
+	DefaultDuration = 5 * time.Minute
+)
+
+// SamplingCost describes the process starts a capture adds per probed pod.
+func SamplingCost(interval time.Duration) string {
+	perSec := 2 * float64(time.Second) / float64(interval)
+	return fmt.Sprintf("%.3g process starts per second (one cat, one sleep per sample) in each probed pod's debug container, on that pod's node", perSec)
+}
+
 // Options configure a capture.
 type Options struct {
 	Namespace     string // "" with AllNamespaces=false means "default"
@@ -48,7 +64,7 @@ type Options struct {
 
 func (o *Options) defaults() {
 	if o.Interval <= 0 {
-		o.Interval = 5 * time.Second
+		o.Interval = DefaultInterval
 	}
 	if o.StartTimeout <= 0 {
 		o.StartTimeout = 60 * time.Second
@@ -92,6 +108,15 @@ func (o Options) listNamespace() string {
 func (o Options) Validate() error {
 	if o.Duration <= 0 {
 		return errors.New("duration must be positive")
+	}
+	if o.Interval < procnet.MinInterval {
+		return fmt.Errorf("interval %s is below the %s minimum: each sample starts two processes in the debug container, and shorter intervals would mostly measure the sampler itself", o.Interval, procnet.MinInterval)
+	}
+	if o.Interval%time.Millisecond != 0 {
+		return fmt.Errorf("interval %s must be a whole number of milliseconds", o.Interval)
+	}
+	if o.Duration%(10*time.Millisecond) != 0 {
+		return fmt.Errorf("duration %s must be a whole number of 10ms (the resolution of /proc/uptime)", o.Duration)
 	}
 	if o.Interval > o.Duration {
 		return fmt.Errorf("interval %s is longer than the %s window", o.Interval, o.Duration)
@@ -238,6 +263,7 @@ func Run(ctx context.Context, cs kubernetes.Interface, nodes []corev1.Node, opts
 		return graph.Result{}, fmt.Errorf("selector %q matched no pods in %s", opts.LabelSelector, nsLabel(opts))
 	}
 	opts.Logf("selector %q matched %d pod(s) in %s", opts.LabelSelector, len(list.Items), nsLabel(opts))
+	opts.Logf("sampling every %s for %s: about %d samples per pod", opts.Interval, opts.Duration, int(opts.Duration/opts.Interval)+1)
 
 	var targets []*target
 	for i := range list.Items {
@@ -495,6 +521,11 @@ func toGraphPod(p *corev1.Pod) graph.Pod {
 		gp.StartTime = p.Status.StartTime.UTC()
 	}
 	gp.Phase = string(p.Status.Phase)
+	for _, ip := range p.Status.PodIPs {
+		if ip.IP != "" && ip.IP != p.Status.PodIP {
+			gp.IPs = append(gp.IPs, ip.IP)
+		}
+	}
 	for k, v := range p.Labels {
 		// Controller bookkeeping labels add noise without helping policy.
 		if k == "pod-template-hash" || k == "controller-revision-hash" || k == "pod-template-generation" {

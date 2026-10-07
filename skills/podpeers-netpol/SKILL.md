@@ -135,7 +135,12 @@ Read `policy.yaml` (or `policy.json`) and present, per workload:
     the workload has no egress at all);
   - *ports it listens on with no observed client* (health checks, metrics
     scrapers), which become closed;
-  - *window/interval limits*: short connections and weekly jobs are invisible;
+  - *UDP listeners*: an unconnected UDP socket (DNS, QUIC, syslog) records
+    no peer, so its clients were invisible from that side; unless they were
+    captured from their own side, the policy drops all UDP to that port;
+  - *window/interval limits*: short connections and weekly jobs are invisible
+    (the report's "could not see" list states this capture's numbers; see
+    `docs/method.md` in the podpeers repo);
   - rules marked **ASSUMED** (DNS), which were not observed.
 - **Even without a warning, look at every ingress rule on the app's entry
   point** and ask: are these all the real clients? A quiet window sees only

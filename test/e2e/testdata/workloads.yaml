@@ -58,6 +58,7 @@ metadata:
   labels: {app: web, podpeers-e2e: target}
 spec:
   terminationGracePeriodSeconds: 1
+  nodeSelector: {kubernetes.io/hostname: k3d-podpeers-e2e-server-0}
   containers:
   - name: main
     image: busybox:1.36
@@ -136,6 +137,8 @@ metadata:
   labels: {app: gateway, podpeers-e2e: target}
 spec:
   terminationGracePeriodSeconds: 1
+  # gateway and web run on different nodes: their flow is cross-node.
+  nodeSelector: {kubernetes.io/hostname: k3d-podpeers-e2e-agent-0}
   containers:
   - name: main
     image: busybox:1.36
@@ -235,3 +238,67 @@ spec:
     imagePullPolicy: IfNotPresent
     command: ["sh", "-c", "until nc -z -w 2 vaultd 9000; do sleep 1; done; sleep 86400 | nc vaultd 9000"]
     securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+---
+# UDP, across nodes. udp-echo is busybox `nc -u -l`, which connect()s to its
+# client, so /proc shows the peer on both ends. dnsd is a real unconnected UDP
+# server: /proc records its port and NO peer, so its clients can only be seen
+# from the client side. That difference is what the test asserts.
+apiVersion: v1
+kind: Namespace
+metadata: {name: pp-udp}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: udp-echo
+  namespace: pp-udp
+  labels: {app: udp-echo, podpeers-e2e: udp}
+spec:
+  terminationGracePeriodSeconds: 1
+  nodeSelector: {kubernetes.io/hostname: k3d-podpeers-e2e-server-0}
+  containers:
+  - name: main
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+    command: ["sh", "-c", "while true; do nc -u -l -p 5353 > /dev/null; done"]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: udp-echo, namespace: pp-udp}
+spec: {selector: {app: udp-echo}, ports: [{port: 5353, targetPort: 5353, protocol: UDP}]}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dnsd
+  namespace: pp-udp
+  labels: {app: dnsd, podpeers-e2e: udp}
+spec:
+  terminationGracePeriodSeconds: 1
+  nodeSelector: {kubernetes.io/hostname: k3d-podpeers-e2e-server-0}
+  containers:
+  - name: main
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+    command: ["dnsd", "-p", "5354"]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: dnsd, namespace: pp-udp}
+spec: {selector: {app: dnsd}, ports: [{port: 5354, targetPort: 5354, protocol: UDP}]}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: udp-client
+  namespace: pp-udp
+  labels: {app: udp-client, podpeers-e2e: udp}
+spec:
+  terminationGracePeriodSeconds: 1
+  nodeSelector: {kubernetes.io/hostname: k3d-podpeers-e2e-agent-0}
+  containers:
+  - name: main
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+    # two connected UDP sockets, one datagram a second each
+    command: ["sh", "-c", "(while true; do echo hi; sleep 1; done | nc -u udp-echo.pp-udp.svc.cluster.local 5353) & while true; do echo q; sleep 1; done | nc -u dnsd.pp-udp.svc.cluster.local 5354"]

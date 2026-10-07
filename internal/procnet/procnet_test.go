@@ -174,13 +174,77 @@ func TestParseSamplerOutputErrors(t *testing.T) {
 }
 
 func TestSamplerScript(t *testing.T) {
-	s := SamplerScript(30*time.Second, 0)
-	for _, want := range []string{"@@podpeers v1", "+ 30 ))", "sleep 1", "/proc/net/$f", "@@end", "tcp tcp6 udp udp6"} {
-		if !strings.Contains(s, want) {
-			t.Errorf("script missing %q:\n%s", want, s)
+	for _, c := range []struct {
+		d, i     time.Duration
+		end, slp string
+	}{
+		{30 * time.Second, time.Second, "+ 3000 ))", "sleep 1\n"},
+		{60 * time.Second, 200 * time.Millisecond, "+ 6000 ))", "sleep 0.2\n"},
+		{5 * time.Minute, 1500 * time.Millisecond, "+ 30000 ))", "sleep 1.5\n"},
+	} {
+		s := SamplerScript(c.d, c.i)
+		for _, want := range []string{"@@podpeers v2", "@@anchor", "read up rest < /proc/uptime", c.end, c.slp,
+			"cat /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6", "@@end"} {
+			if !strings.Contains(s, want) {
+				t.Errorf("script(%s, %s) missing %q:\n%s", c.d, c.i, want, s)
+			}
+		}
+		// Two process starts per sample: exactly one cat and one sleep in the loop.
+		loop := s[strings.Index(s, "while :; do"):strings.Index(s, "done")]
+		if strings.Count(loop, "cat ") != 1 || strings.Count(loop, "sleep ") != 1 || strings.Contains(loop, "date") {
+			t.Errorf("loop must start only cat and sleep:\n%s", loop)
+		}
+		if strings.Contains(s, "%!") {
+			t.Errorf("format verb leaked into script:\n%s", s)
 		}
 	}
-	if strings.Contains(s, "%!") {
-		t.Errorf("format verb leaked into script:\n%s", s)
+}
+
+// Real kernel header lines (Linux 6.8), trailing spaces trimmed.
+const (
+	hdrTCP  = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
+	hdrTCP6 = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
+	hdrUDP  = "   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops"
+	hdrUDP6 = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops"
+)
+
+func TestParseV2SubSecondAndHeaderClassification(t *testing.T) {
+	tcp := "   0: 0A0200C0:2328 076433C6:D431 01 0:0 0:0 0 0 0 1\n"
+	udp := "   0: 0A0200C0:A028 C80200C0:0035 01 0:0 0:0 0 0 0 3\n"
+	in := "@@podpeers v2\n@@anchor 1700000000 1000.00\n" +
+		"@@sample 1000.00\n" + hdrTCP + "\n" + tcp + hdrTCP6 + "\n" + hdrUDP + "\n" + udp + hdrUDP6 + "\n" +
+		"@@sample 1000.20\n" + hdrTCP + "\n" + tcp + hdrUDP + "\n" + udp + // tcp6 file absent this time
+		"@@sample 1000.45\n" + hdrTCP + "\n" + hdrTCP6 + "\n" + hdrUDP + "\n" + hdrUDP6 + "\n" +
+		"@@end\n"
+	out, err := ParseSamplerOutput(strings.NewReader(in))
+	if err != nil || !out.Complete || len(out.Samples) != 3 {
+		t.Fatalf("err=%v complete=%v samples=%d", err, out.Complete, len(out.Samples))
+	}
+	base := time.Unix(1700000000, 0).UTC()
+	for i, off := range []time.Duration{0, 200 * time.Millisecond, 450 * time.Millisecond} {
+		if got := out.Samples[i].Time; !got.Equal(base.Add(off)) {
+			t.Errorf("sample %d time = %v; want %v", i, got, base.Add(off))
+		}
+	}
+	for i := 0; i < 2; i++ {
+		socks := out.Samples[i].Sockets
+		if len(socks) != 2 || socks[0].Protocol != TCP || socks[1].Protocol != UDP {
+			t.Errorf("sample %d: tables misclassified: %+v", i, socks)
+		}
+	}
+	if len(out.Samples[2].Sockets) != 0 {
+		t.Error("empty tables should yield no sockets")
+	}
+}
+
+func TestParseV2Errors(t *testing.T) {
+	for name, in := range map[string]string{
+		"sample before anchor": "@@podpeers v2\n@@sample 1000.00\n",
+		"bad anchor":           "@@podpeers v2\n@@anchor nope\n",
+		"bad sample":           "@@podpeers v2\n@@anchor 1 2.00\n@@sample x\n",
+	} {
+		if _, err := ParseSamplerOutput(strings.NewReader(in)); err == nil {
+			t.Errorf("%s: want error", name)
+		}
 	}
 }

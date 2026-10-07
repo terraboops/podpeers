@@ -44,6 +44,9 @@ input[type=search] { width: 100%; padding: 6px 8px; border: 1px solid var(--line
 textarea { width: 100%; min-height: 110px; font: 12px/1.4 ui-monospace, Menlo, monospace; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
 pre { font: 12px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-all; background: var(--bg); padding: 8px; border-radius: 6px; max-height: 320px; overflow: auto; }
 pre:empty { display: none; }
+details.limits { margin-top: 12px; font-size: 13px; }
+details.limits summary { cursor: pointer; font-weight: 600; }
+details.limits li { margin: 6px 0; color: var(--muted); }
 button { font: inherit; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer; }
 svg text { fill: var(--ink); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
 svg .nlabel { font-size: 13px; font-weight: 600; }
@@ -76,7 +79,7 @@ svg .n.sel .shape { stroke: var(--accent); stroke-width: 4; }
   <svg id="graph" aria-label="peer graph"></svg>
   <aside>
     <input type="search" id="find" placeholder="find a workload, pod, service or IP">
-    <div id="detail"><p class="muted">Select a node to see who it talks to. Drag to pan, scroll to zoom, drag a node to move it.</p></div>
+    <div id="detail"></div>
     <div id="console" hidden>
       <h3>GraphQL</h3>
       <textarea id="q">{
@@ -292,6 +295,11 @@ function rows(list, dir) {
     return `<tr><td><a href="#" data-id="${esc(other.id)}">${esc(other.label)}</a>${other.ns !== nodes.get(selected).ns ? ' <span class="muted">' + esc(other.ns) + "</span>" : ""}</td><td>${esc([...new Set(f.ports)].join(", "))}</td><td>${st}</td></tr>`;
   }).join("") + "</table>";
 }
+function idleHelp() {
+  return '<p class="muted">Select a node to see who it talks to. Drag to pan, scroll to zoom, drag a node to move it.</p>' +
+    '<details class="limits"><summary>What this capture could not see</summary><ul>' +
+    (DATA.limits || []).map(l => `<li>${esc(l)}</li>`).join("") + '</ul></details>';
+}
 function select(id) {
   selected = id;
   const d = document.getElementById("detail");
@@ -302,7 +310,7 @@ function select(id) {
     f.line.classList.toggle("hl", !!on); f.line.setAttribute("marker-end", on ? "url(#arrow-hl)" : "url(#arrow)");
     f.g.classList.toggle("dim", !!id && !on);
   }
-  if (!id) { d.innerHTML = '<p class="muted">Select a node to see who it talks to. Drag to pan, scroll to zoom, drag a node to move it.</p>'; return; }
+  if (!id) { d.innerHTML = idleHelp(); return; }
   const n = nodes.get(id);
   let h = `<h2>${esc(n.label)}</h2><span class="pill">${esc(n.kind === "pod" ? (view === "wl" ? wlOf(n.members[0]).split("/")[0] : "pod") : n.kind)}</span><span class="pill">${esc(n.ns)}</span>`;
   if (n.members.length) {

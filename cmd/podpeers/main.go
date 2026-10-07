@@ -62,7 +62,7 @@ func buildVersion() string {
 const usage = `podpeers - map pod network peers from observed sockets
 
 Usage:
-  podpeers capture -l SELECTOR [-n NS | -A] [--duration 60s] [--interval 5s] [-o peers.json]
+  podpeers capture -l SELECTOR [-n NS | -A] [--duration 5m] [--interval 1s] [-o peers.json]
   podpeers check-context [--kubeconfig PATH] [--context NAME] [--allow-context NAME]
   podpeers render  [-format text|dot|html|json] [-o FILE] peers.json
   podpeers query   peers.json '{ pods { id peers { id kind } } }'
@@ -226,8 +226,8 @@ func cmdCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	fs.StringVar(&opts.LabelSelector, "l", "", "label selector of the pods to probe (required)")
 	fs.StringVar(&opts.Namespace, "n", "", "namespace (default: the context's namespace)")
 	fs.BoolVar(&opts.AllNamespaces, "A", false, "select pods in all namespaces")
-	fs.DurationVar(&opts.Duration, "duration", 60*time.Second, "measurement window")
-	fs.DurationVar(&opts.Interval, "interval", 5*time.Second, "time between socket-table samples")
+	fs.DurationVar(&opts.Duration, "duration", capture.DefaultDuration, "measurement window: what was not happening inside it is not seen (longer beats faster)")
+	fs.DurationVar(&opts.Interval, "interval", capture.DefaultInterval, "time between socket-table samples (minimum 100ms; sub-second costs CPU on the pods' nodes)")
 	fs.DurationVar(&opts.StartTimeout, "start-timeout", 60*time.Second, "how long a debug container may take to start")
 	fs.StringVar(&opts.Image, "image", "busybox:1.36", "debug container image (needs sh, cat, date, sleep)")
 	fs.StringVar(&out, "o", "peers.json", "write the capture (JSON) here; '-' for stdout")
@@ -243,10 +243,13 @@ func cmdCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintln(stderr, "podpeers: -n and -A are mutually exclusive")
 		return exitError
 	}
-	opts.Duration, opts.Interval = opts.Duration.Round(time.Second), opts.Interval.Round(time.Second)
 	if err := opts.Validate(); err != nil {
 		fmt.Fprintf(stderr, "podpeers: %v\n", err)
 		return exitError
+	}
+	if opts.Interval < time.Second {
+		fmt.Fprintf(stderr, "podpeers: WARNING: --interval %s costs about %s. The default is %s; see docs/method.md for when shorter helps (mostly UDP).\n",
+			opts.Interval, capture.SamplingCost(opts.Interval), capture.DefaultInterval)
 	}
 	conn, code := connect(ctx, cf, stderr)
 	if code != exitOK {
