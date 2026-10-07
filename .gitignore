@@ -1,0 +1,6 @@
+/bin/
+/.e2e/
+*.out
+/peers*.json
+/peers*.html
+/.remember/

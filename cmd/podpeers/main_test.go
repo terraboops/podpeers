@@ -1,0 +1,284 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/terraboops/podpeers/internal/graph"
+)
+
+const fixture = "../../internal/testdata/capture.json"
+
+// kubeconfig writes a kubeconfig whose single context points at server.
+func kubeconfig(t *testing.T, context, server string) string {
+	t.Helper()
+	cfg := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: c
+  cluster:
+    server: %s
+    insecure-skip-tls-verify: true
+users:
+- name: u
+  user:
+    token: not-a-real-token
+contexts:
+- name: %s
+  context: {cluster: c, user: u, namespace: shop}
+current-context: %s
+`, server, context, context)
+	p := filepath.Join(t.TempDir(), "kubeconfig")
+	if err := os.WriteFile(p, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// apiServer is a stand-in API server on loopback that counts every request, so
+// tests can prove a refusal happened before any traffic.
+func apiServer(t *testing.T, providerID string) (*httptest.Server, *int64) {
+	var hits int64
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/nodes" {
+			fmt.Fprintf(w, `{"kind":"NodeList","apiVersion":"v1","items":[{"metadata":{"name":"n1"},"spec":{"providerID":%q}}]}`, providerID)
+			return
+		}
+		http.Error(w, `{"kind":"Status","status":"Failure","code":404}`, http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &hits
+}
+
+func runCLI(args ...string) (int, string, string) {
+	var out, errb bytes.Buffer
+	code := run(context.Background(), args, &out, &errb)
+	return code, out.String(), errb.String()
+}
+
+func TestCaptureRefusesNonLocalContextWithoutAnyRequest(t *testing.T) {
+	// The API server is real and reachable on loopback, but the context name is
+	// not a local-cluster name: the default must be refusal, with zero requests.
+	srv, hits := apiServer(t, "k3s://n1")
+	kc := kubeconfig(t, "prod-eu", srv.URL)
+	code, _, stderr := runCLI("capture", "--kubeconfig", kc, "-l", "app", "--duration", "5s", "--interval", "1s")
+	if code != exitRefused {
+		t.Fatalf("exit %d, want %d; stderr: %s", code, exitRefused, stderr)
+	}
+	if !strings.Contains(stderr, "REFUSED") || !strings.Contains(stderr, "--allow-context=prod-eu") {
+		t.Fatalf("stderr: %s", stderr)
+	}
+	if n := atomic.LoadInt64(hits); n != 0 {
+		t.Fatalf("refusal made %d API request(s); want 0", n)
+	}
+}
+
+func TestCaptureRefusesRemoteServerEvenWithLocalName(t *testing.T) {
+	kc := kubeconfig(t, "kind-dev", "https://cluster.example.invalid:6443")
+	code, _, stderr := runCLI("capture", "--kubeconfig", kc, "-l", "app")
+	if code != exitRefused || !strings.Contains(stderr, "not on loopback") {
+		t.Fatalf("exit %d stderr %s", code, stderr)
+	}
+}
+
+func TestContextFlagIsGuardedToo(t *testing.T) {
+	// --context selecting a non-local context must be refused just like
+	// current-context; and an unknown --context is an error, not a fallback.
+	kc := kubeconfig(t, "prod-eu", "https://cluster.example.invalid")
+	if code, _, stderr := runCLI("check-context", "--kubeconfig", kc, "--context", "prod-eu"); code != exitRefused {
+		t.Fatalf("exit %d stderr %s", code, stderr)
+	}
+	if code, _, stderr := runCLI("check-context", "--kubeconfig", kc, "--context", "kind-missing"); code != exitError || !strings.Contains(stderr, "not found") {
+		t.Fatalf("exit %d stderr %s", code, stderr)
+	}
+}
+
+func TestAllowContextMustNameTheActiveContext(t *testing.T) {
+	srv, hits := apiServer(t, "aws:///zone/i-0")
+	kc := kubeconfig(t, "prod-eu", srv.URL)
+	code, _, stderr := runCLI("check-context", "--kubeconfig", kc, "--allow-context", "staging")
+	if code != exitRefused || !strings.Contains(stderr, "does not match") || atomic.LoadInt64(hits) != 0 {
+		t.Fatalf("exit %d hits %d stderr %s", code, *hits, stderr)
+	}
+	code, out, stderr := runCLI("check-context", "--kubeconfig", kc, "--allow-context", "prod-eu")
+	if code != exitOK || strings.TrimSpace(out) != "allowed" || !strings.Contains(stderr, "explicitly allowed") {
+		t.Fatalf("explicit opt-in: exit %d out %q stderr %s", code, out, stderr)
+	}
+}
+
+func TestNodeGuardCatchesTunnelToCloudCluster(t *testing.T) {
+	// Local-looking name and loopback server (as with an SSH tunnel or port
+	// forward), but the nodes are cloud nodes: refuse after the read-only check.
+	srv, _ := apiServer(t, "gce://project/zone/vm-1")
+	kc := kubeconfig(t, "kind-tunnel", srv.URL)
+	code, _, stderr := runCLI("check-context", "--kubeconfig", kc)
+	if code != exitRefused || !strings.Contains(stderr, "gce://...") || strings.Contains(stderr, "vm-1") {
+		t.Fatalf("exit %d stderr %s", code, stderr)
+	}
+}
+
+func TestLocalClusterAllowed(t *testing.T) {
+	srv, _ := apiServer(t, "k3s://n1")
+	kc := kubeconfig(t, "k3d-dev", srv.URL)
+	code, out, stderr := runCLI("check-context", "--kubeconfig", kc)
+	if code != exitOK || strings.TrimSpace(out) != "allowed" {
+		t.Fatalf("exit %d out %q stderr %s", code, out, stderr)
+	}
+}
+
+func TestCaptureFlagValidationHappensFirst(t *testing.T) {
+	cases := [][]string{
+		{"capture"}, // no selector
+		{"capture", "-l", "app", "-n", "x", "-A"},    // -n with -A
+		{"capture", "-l", "app", "--duration", "0s"}, // empty window
+		{"capture", "-l", "app", "--interval", "2m"}, // interval > window
+		{"capture", "-l", "app", "stray-positional"}, // typo guard
+		{"capture", "--no-such-flag"},                // unknown flag
+	}
+	for _, c := range cases {
+		if code, _, _ := runCLI(c...); code != exitError {
+			t.Errorf("%v: exit %d, want %d", c, code, exitError)
+		}
+	}
+}
+
+func TestRender(t *testing.T) {
+	for format, want := range map[string]string{
+		"text": "shop/api  [observed]",
+		"dot":  "digraph podpeers",
+		"html": "<!doctype html>",
+		"json": `"schema": "podpeers/v1"`,
+	} {
+		code, out, stderr := runCLI("render", "-format", format, fixture)
+		if code != exitOK || !strings.Contains(out, want) {
+			t.Errorf("render %s: exit %d stderr %s", format, code, stderr)
+		}
+	}
+	if code, _, _ := runCLI("render", "-format", "pdf", fixture); code != exitError {
+		t.Error("unknown format should fail")
+	}
+	if code, _, _ := runCLI("render", "/does/not/exist.json"); code != exitError {
+		t.Error("missing file should fail")
+	}
+	outFile := filepath.Join(t.TempDir(), "g.dot")
+	if code, _, _ := runCLI("render", "-format", "dot", "-o", outFile, fixture); code != exitOK {
+		t.Fatal("render -o failed")
+	}
+	if b, _ := os.ReadFile(outFile); !strings.HasPrefix(string(b), "digraph") {
+		t.Fatal("render -o wrote nothing useful")
+	}
+}
+
+func TestRenderRejectsWrongSchema(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.json")
+	os.WriteFile(p, []byte(`{"schema":"other/v9"}`), 0o644)
+	if code, _, stderr := runCLI("render", p); code != exitError || !strings.Contains(stderr, "schema") {
+		t.Fatalf("exit %d stderr %s", code, stderr)
+	}
+}
+
+func TestQuery(t *testing.T) {
+	code, out, _ := runCLI("query", fixture, `{ pod(id: "shop/web") { peers(direction: "outbound") { id } } }`)
+	if code != exitOK || !strings.Contains(out, `"id": "svc/shop/api"`) {
+		t.Fatalf("exit %d out %s", code, out)
+	}
+	code, out, _ = runCLI("query", "-vars", `{"s":"skipped"}`, fixture, `query($s: String) { pods(status: $s) { id } }`)
+	if code != exitOK || !strings.Contains(out, "shop/queued") {
+		t.Fatalf("vars: exit %d out %s", code, out)
+	}
+	if code, out, _ := runCLI("query", fixture, `{ nope }`); code != exitError || !strings.Contains(out, "errors") {
+		t.Fatalf("bad query: exit %d out %s", code, out)
+	}
+	if code, _, _ := runCLI("query", fixture); code != exitError {
+		t.Fatal("missing query should fail")
+	}
+}
+
+func TestServeHandler(t *testing.T) {
+	code, _, _ := runCLI("render", "-format", "json", fixture) // sanity
+	if code != exitOK {
+		t.Fatal("fixture unreadable")
+	}
+	res := mustLoad(t)
+	h, err := Handler(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/graphql", "application/json",
+		strings.NewReader(`{"query":"query($id:String){ pod(id:$id){ name } }","variables":{"id":"shop/api"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	json.NewDecoder(resp.Body).Decode(&body)
+	resp.Body.Close()
+	if fmt.Sprint(body["data"]) != "map[pod:map[name:api]]" {
+		t.Fatalf("POST /graphql = %v", body)
+	}
+
+	resp, _ = http.Get(srv.URL + "/graphql?query=" + "%7B%20window%20%7B%20interval%20%7D%20%7D")
+	json.NewDecoder(resp.Body).Decode(&body)
+	resp.Body.Close()
+	if fmt.Sprint(body["data"]) != "map[window:map[interval:5s]]" {
+		t.Fatalf("GET /graphql = %v", body)
+	}
+
+	resp, _ = http.Get(srv.URL + "/")
+	var page bytes.Buffer
+	page.ReadFrom(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(page.String(), `const GRAPHQL = "graphql";`) {
+		t.Fatal("served page should enable the GraphQL console")
+	}
+	for path, want := range map[string]int{"/nope": 404} {
+		r, _ := http.Get(srv.URL + path)
+		if r.StatusCode != want {
+			t.Errorf("%s = %d", path, r.StatusCode)
+		}
+	}
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/graphql", nil)
+	if r, _ := http.DefaultClient.Do(req); r.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("DELETE /graphql = %d", r.StatusCode)
+	}
+	if r, _ := http.Post(srv.URL+"/graphql", "application/json", strings.NewReader("{")); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad body = %d", r.StatusCode)
+	}
+}
+
+func TestUsageAndUnknownCommand(t *testing.T) {
+	if code, _, _ := runCLI(); code != exitError {
+		t.Error("no args should fail")
+	}
+	if code, _, stderr := runCLI("frobnicate"); code != exitError || !strings.Contains(stderr, "unknown command") {
+		t.Error("unknown command")
+	}
+	if code, out, _ := runCLI("help"); code != exitOK || !strings.Contains(out, "SAFETY") {
+		t.Error("help should explain the safety rule")
+	}
+	if code, out, _ := runCLI("version"); code != exitOK || !strings.HasPrefix(out, "podpeers ") {
+		t.Error("version")
+	}
+}
+
+func mustLoad(t *testing.T) graph.Result {
+	t.Helper()
+	r, err := graph.LoadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
