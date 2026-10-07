@@ -10,9 +10,9 @@ No flow logs. No agents. No DaemonSet. Just your `kubectl` credentials.
 [![Go](https://img.shields.io/github/go-mod/go-version/terraboops/podpeers)](go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-<img src="docs/demo.gif" alt="podpeers refusing a production context, observing a Helm release, suggesting NetworkPolicy, verifying a good policy and catching a broken one" width="900">
+<img src="docs/demo.gif" alt="podpeers capturing a two-namespace app, showing the peer graph in the web UI, then generating NetworkPolicy and applying it" width="900">
 
-<sub>Real run against a local k3d cluster: refuse prod → observe → suggest → verify OK → catch a policy that `helm test` can't see is broken. Capture windows are jump-cut.</sub>
+<sub>A real run on a local k3d cluster: <code>podpeers capture</code> → <code>podpeers serve</code> (web UI) → <code>podpeers suggest</code> → <code>kubectl apply</code>. The 10-second capture window is jump-cut.</sub>
 
 </div>
 
@@ -49,7 +49,7 @@ podpeers capture -n shop -l app.kubernetes.io/part-of=shop --duration 10m -o pee
 
 podpeers render peers.json                         # what talks to what
 podpeers suggest -n shop peers.json > policy.yaml  # NetworkPolicy, with reasoning
-podpeers serve peers.json                          # graph + GraphQL on 127.0.0.1:8080
+podpeers serve peers.json                          # web UI: graph + GraphQL on 127.0.0.1:8080
 ```
 
 > [!IMPORTANT]
@@ -95,6 +95,16 @@ kind: NetworkPolicy
 ```
 
 Both outputs are real, from the end-to-end suite.
+
+And `podpeers serve` gives you the same capture as an interactive graph. By
+default it shows **workloads**: replicas are folded together, and Services
+are folded into the workloads behind them, with edges labelled by the real
+target port. Switch to **Pods** for pod-level detail. Click anything to see
+who connects to it and where it connects. A GraphQL console sits underneath.
+`podpeers render -format html` writes the same page as one self-contained
+file.
+
+<img src="docs/ui.png" alt="podpeers web UI: the storefront and payments namespaces as a workload graph, with cart selected showing its inbound and outbound peers" width="900">
 
 ## How it works
 
@@ -306,7 +316,9 @@ for humans and agents alike. In short: never point anything at a non-local
 cluster, keep the guard's default at refusal, keep MCP read-only, and keep
 real environments out of this public repo (`hack/hygiene.sh` checks).
 
-Re-record the demo with `vhs docs/demo.tape` against `make e2e-cluster`.
+Re-record the demo with `docs/demo/make-demo.sh` (vhs for the terminal,
+Firefox via Selenium for the web UI) against `make e2e-cluster`. Diagrams are
+checked with `make docs`.
 
 ## License
 

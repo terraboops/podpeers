@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/terraboops/podpeers/internal/graph"
 )
@@ -158,47 +157,30 @@ func TestPreexistingConnectionsAreInconclusive(t *testing.T) {
 	}
 }
 
-func TestChangedAtCountsRestartedPods(t *testing.T) {
+func TestExistingPodsCountsRestartedPods(t *testing.T) {
 	// The only connection is older than the window, but the pod holding it
-	// started after the policy took effect: it was made under the policy.
-	changed := time.Unix(1700000000, 0).UTC()
+	// did not exist when the policy took effect: it was made under the policy.
 	before := graph.Result{
 		Pods:  []graph.Pod{pod("web-a", "Deployment/web", true)},
 		Edges: []graph.Edge{out("web-a", "api", 9000, false)},
 	}
 	carried := out("web-b", "api", 9000, false)
 	carried.NewConnections = 0
-	restarted := pod("web-b", "Deployment/web", true)
-	restarted.StartTime = changed.Add(time.Minute)
-	after := graph.Result{Pods: []graph.Pod{restarted}, Edges: []graph.Edge{carried}}
+	after := graph.Result{Pods: []graph.Pod{pod("web-b", "Deployment/web", true)}, Edges: []graph.Edge{carried}}
 
 	if r := Compare(before, after); !r.Inconclusive() {
-		t.Fatal("without ChangedAt the flow cannot be proven exercised")
+		t.Fatal("without the pod list the flow cannot be proven exercised")
 	}
-	if r := CompareWith(before, after, Options{ChangedAt: changed}); r.Inconclusive() || r.Broken() || len(r.Changes) != 0 {
-		t.Fatalf("pod started after the change: %+v", r.Changes)
+	atChange := map[string]bool{"shop/web-a": true, "shop/api-a": true}
+	if r := CompareWith(before, after, Options{ExistingPods: atChange}); r.Inconclusive() || r.Broken() || len(r.Changes) != 0 {
+		t.Fatalf("web-b did not exist at the change: %+v", r.Changes)
 	}
-	restarted.StartTime = changed.Add(-time.Minute)
-	after.Pods = []graph.Pod{restarted}
-	if r := CompareWith(before, after, Options{ChangedAt: changed}); !r.Inconclusive() {
-		t.Fatal("pod started before the change is still inconclusive")
+	atChange["shop/web-b"] = true
+	if r := CompareWith(before, after, Options{ExistingPods: atChange}); !r.Inconclusive() {
+		t.Fatal("web-b existed at the change: still inconclusive")
 	}
-}
-
-func TestGlimpsedFlowsAreNoise(t *testing.T) {
-	// One DNS lookup caught in one sample before, nothing after: not a block.
-	dns := graph.Edge{Pod: "shop/web-a", Direction: graph.Outbound, Protocol: "udp", Port: 53,
-		Peer: graph.Peer{Kind: graph.PeerService, Namespace: "kube-system", Name: "kube-dns"}, Connections: 1, Samples: 1, NewConnections: 1}
-	before := graph.Result{Pods: []graph.Pod{pod("web-a", "Deployment/web", true)}, Edges: []graph.Edge{dns}}
-	after := graph.Result{Pods: []graph.Pod{pod("web-b", "Deployment/web", true)}}
-	r := Compare(before, after)
-	if r.Broken() || len(r.Changes) != 1 || r.Changes[0].Kind != Glimpsed {
-		t.Fatalf("%+v", r)
-	}
-	// Seen twice before: its absence is a real loss.
-	dns.Samples = 2
-	before.Edges = []graph.Edge{dns}
-	if r := Compare(before, after); !r.Broken() {
-		t.Fatalf("recurring flow gone should be lost: %+v", r)
+	// A pod in a namespace the list does not cover proves nothing.
+	if r := CompareWith(before, after, Options{ExistingPods: map[string]bool{"other/x": true}}); !r.Inconclusive() {
+		t.Fatal("unlisted namespace must not count as new")
 	}
 }

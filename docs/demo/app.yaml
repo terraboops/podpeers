@@ -1,0 +1,165 @@
+# Demo workload for docs/demo.gif (all names invented). Known traffic:
+#   loadgen -> frontend:80   frontend -> catalog:80, cart:80
+#   cart -> cache:6379       cart -> payments/checkout:443
+# Each client waits for its server (nc -z), then holds a long-lived connection.
+apiVersion: v1
+kind: Namespace
+metadata: {name: storefront}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: payments}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: demo-scripts, namespace: storefront}
+data:
+  run.sh: |
+    # usage: run.sh <listen-port|-> <host:port>...
+    [ "$1" != "-" ] && nc -lk -p "$1" -e cat &
+    shift
+    for t in "$@"; do
+      h=${t%:*}; p=${t#*:}
+      ( until nc -z -w 2 "$h" "$p"; do sleep 1; done; sleep 86400 | nc "$h" "$p" ) &
+    done
+    wait
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: demo-scripts, namespace: payments}
+data:
+  run.sh: |
+    nc -lk -p "$1" -e cat
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: loadgen, namespace: storefront, labels: {app.kubernetes.io/part-of: shop}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: loadgen}}
+  template:
+    metadata: {labels: {app.kubernetes.io/name: loadgen, app.kubernetes.io/part-of: shop}}
+    spec:
+      terminationGracePeriodSeconds: 1
+      volumes: [{name: s, configMap: {name: demo-scripts}}]
+      containers:
+      - name: main
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        volumeMounts: [{name: s, mountPath: /s}]
+        command: ["sh", "/s/run.sh", "-", "frontend.storefront.svc.cluster.local:80"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: frontend, namespace: storefront, labels: {app.kubernetes.io/part-of: shop}}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app.kubernetes.io/name: frontend}}
+  template:
+    metadata: {labels: {app.kubernetes.io/name: frontend, app.kubernetes.io/part-of: shop}}
+    spec:
+      terminationGracePeriodSeconds: 1
+      volumes: [{name: s, configMap: {name: demo-scripts}}]
+      containers:
+      - name: main
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        volumeMounts: [{name: s, mountPath: /s}]
+        command: ["sh", "/s/run.sh", "8080", "catalog.storefront.svc.cluster.local:80", "cart.storefront.svc.cluster.local:80"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: catalog, namespace: storefront, labels: {app.kubernetes.io/part-of: shop}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: catalog}}
+  template:
+    metadata: {labels: {app.kubernetes.io/name: catalog, app.kubernetes.io/part-of: shop}}
+    spec:
+      terminationGracePeriodSeconds: 1
+      volumes: [{name: s, configMap: {name: demo-scripts}}]
+      containers:
+      - name: main
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        volumeMounts: [{name: s, mountPath: /s}]
+        command: ["sh", "/s/run.sh", "8080"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: cart, namespace: storefront, labels: {app.kubernetes.io/part-of: shop}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: cart}}
+  template:
+    metadata: {labels: {app.kubernetes.io/name: cart, app.kubernetes.io/part-of: shop}}
+    spec:
+      terminationGracePeriodSeconds: 1
+      volumes: [{name: s, configMap: {name: demo-scripts}}]
+      containers:
+      - name: main
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        volumeMounts: [{name: s, mountPath: /s}]
+        command: ["sh", "/s/run.sh", "8080", "cache.storefront.svc.cluster.local:6379", "checkout.payments.svc.cluster.local:443"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: cache, namespace: storefront, labels: {app.kubernetes.io/part-of: shop}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: cache}}
+  template:
+    metadata: {labels: {app.kubernetes.io/name: cache, app.kubernetes.io/part-of: shop}}
+    spec:
+      terminationGracePeriodSeconds: 1
+      volumes: [{name: s, configMap: {name: demo-scripts}}]
+      containers:
+      - name: main
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        volumeMounts: [{name: s, mountPath: /s}]
+        command: ["sh", "/s/run.sh", "6379"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: checkout, namespace: payments, labels: {app.kubernetes.io/part-of: shop}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app.kubernetes.io/name: checkout}}
+  template:
+    metadata: {labels: {app.kubernetes.io/name: checkout, app.kubernetes.io/part-of: shop}}
+    spec:
+      terminationGracePeriodSeconds: 1
+      volumes: [{name: s, configMap: {name: demo-scripts}}]
+      containers:
+      - name: main
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        volumeMounts: [{name: s, mountPath: /s}]
+        command: ["sh", "/s/run.sh", "8443"]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: frontend, namespace: storefront}
+spec: {selector: {app.kubernetes.io/name: frontend}, ports: [{port: 80, targetPort: 8080}]}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: catalog, namespace: storefront}
+spec: {selector: {app.kubernetes.io/name: catalog}, ports: [{port: 80, targetPort: 8080}]}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: cart, namespace: storefront}
+spec: {selector: {app.kubernetes.io/name: cart}, ports: [{port: 80, targetPort: 8080}]}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: cache, namespace: storefront}
+spec: {selector: {app.kubernetes.io/name: cache}, ports: [{port: 6379, targetPort: 6379}]}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: checkout, namespace: payments}
+spec: {selector: {app.kubernetes.io/name: checkout}, ports: [{port: 443, targetPort: 8443}]}

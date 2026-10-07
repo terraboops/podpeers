@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"time"
+	"strings"
 
 	"github.com/terraboops/podpeers/internal/graph"
 )
@@ -88,21 +88,38 @@ type flowInfo struct {
 
 // Options refine a comparison.
 type Options struct {
-	// ChangedAt is when the change under test (a NetworkPolicy) took effect.
-	// A connection involving a pod that started after it was necessarily
-	// opened under the change, even if it was already open when the window
-	// began. Zero means unknown: only connections opened during the window
-	// count as exercising the change.
-	ChangedAt time.Time
+	// ExistingPods lists the pods ("ns/name") that existed when the change
+	// under test (a NetworkPolicy) took effect. A connection involving a pod
+	// that is not on the list, in a namespace that is, was necessarily opened
+	// under the change, even if it was already open when the window began.
+	// Comparing pod identity rather than timestamps keeps this exact and
+	// immune to clock skew between the operator's machine and the cluster.
+	// Nil means unknown: only connections opened during the window count.
+	ExistingPods map[string]bool
+}
+
+// startedAfterChange reports whether pod id provably did not exist when the
+// change took effect.
+func (o Options) startedAfterChange(id string, known map[string]bool) bool {
+	if o.ExistingPods == nil || !known[id] || o.ExistingPods[id] {
+		return false
+	}
+	ns, _, _ := strings.Cut(id, "/")
+	for p := range o.ExistingPods {
+		if strings.HasPrefix(p, ns+"/") {
+			return true // the namespace was listed, and this pod was not in it
+		}
+	}
+	return false
 }
 
 // workloadFlows aggregates a capture's flows by workload endpoints.
 func workloadFlows(r graph.Result, o Options) (map[key]*flowInfo, map[string]bool) {
 	wl := map[string]string{}
 	observed := map[string]bool{}
-	started := map[string]time.Time{}
+	known := map[string]bool{}
 	for _, p := range r.Pods {
-		started[p.ID()] = p.StartTime
+		known[p.ID()] = true
 		wl[p.ID()] = p.WorkloadID()
 		if p.Probe.Status == graph.ProbeObserved {
 			observed[p.WorkloadID()] = true
@@ -132,7 +149,7 @@ func workloadFlows(r graph.Result, o Options) (map[key]*flowInfo, map[string]boo
 		if f.Samples > fi.samples {
 			fi.samples = f.Samples
 		}
-		if !o.ChangedAt.IsZero() && (started[f.From].After(o.ChangedAt) || started[f.To].After(o.ChangedAt)) {
+		if o.startedAfterChange(f.From, known) || o.startedAfterChange(f.To, known) {
 			fi.newConns++ // an endpoint pod started under the change
 		}
 		fi.observers[name(f.ObservedOn)] = true

@@ -334,11 +334,13 @@ func TestDiffCLI(t *testing.T) {
 	if code, out, _ := runCLI("diff", fixture, stalePath); code != exitInconclusive || !strings.Contains(out, "INCONCLUSIVE") {
 		t.Fatalf("pre-existing only: exit %d out %s", code, out)
 	}
-	if code, _, _ := runCLI("diff", "-changed-at", "yesterday", fixture, stalePath); code != exitError {
-		t.Error("bad -changed-at should fail")
+	if code, _, _ := runCLI("diff", "-existing-pods", "/no/such/file", fixture, stalePath); code != exitError {
+		t.Error("missing -existing-pods file should fail")
 	}
-	if code, _, _ := runCLI("diff", "-changed-at", "2000-01-01T00:00:00Z", fixture, stalePath); code != exitInconclusive {
-		t.Error("fixture pods have no start time; still inconclusive")
+	podsFile := filepath.Join(t.TempDir(), "pods.txt")
+	os.WriteFile(podsFile, []byte("pod/edge/old-gateway\nshop/old-api\n"), 0o644)
+	if code, out, _ := runCLI("diff", "-existing-pods", podsFile, fixture, stalePath); code != exitOK {
+		t.Errorf("every capture pod is newer than the change: exit %d\n%s", code, out)
 	}
 	if code, _, _ := runCLI("diff", fixture); code != exitError {
 		t.Error("one file should fail")

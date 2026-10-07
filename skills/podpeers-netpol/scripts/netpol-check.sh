@@ -142,10 +142,11 @@ case "$CMD" in
     kc apply -n "$NS" -f "$POLICY"
     say "waiting ${SETTLE}s for the CNI to program the policy"
     sleep "$SETTLE"
-    # From here on the policy is in force: pods started after this moment can
-    # only have connected under it. (Assumes this machine's clock roughly
-    # matches the cluster's.)
-    CHANGED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # The policy is in force from here: any pod not on this list can only
+    # have connected under it. (Pod identity, not timestamps: immune to clock
+    # skew between this machine and the cluster.)
+    { kc get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' 2>/dev/null \
+      || kc get pods -n "$NS" -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}'; } >"$OUT/pods-at-change.txt"
     if [ "$RESTART" = 1 ]; then
       # CNIs only evaluate a policy when a connection is opened; connections
       # established before it keep working. Restart so every client reconnects
@@ -160,7 +161,7 @@ case "$CMD" in
     fi
     capture_with_test "$OUT/after.json" "$OUT/after-helm-test.log"
     DIFF_CODE=0
-    "$PODPEERS" diff -changed-at "$CHANGED_AT" "$BASELINE" "$OUT/after.json" >"$OUT/diff.txt" || DIFF_CODE=$?
+    "$PODPEERS" diff -existing-pods "$OUT/pods-at-change.txt" "$BASELINE" "$OUT/after.json" >"$OUT/diff.txt" || DIFF_CODE=$?
     case "$DIFF_CODE" in 0|4|5) ;; *) die "diff failed (exit $DIFF_CODE)" ;; esac
 
     VERDICT="OK" CODE=0

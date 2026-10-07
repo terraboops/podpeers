@@ -54,7 +54,7 @@ Usage:
   podpeers query   peers.json '{ pods { id peers { id kind } } }'
   podpeers serve   [-addr 127.0.0.1:8080] peers.json
   podpeers suggest [-n NS] [-workload Kind/name] [-dns auto|always|never] [-format yaml|json] peers.json
-  podpeers diff    [-changed-at RFC3339] before.json after.json
+  podpeers diff    [-existing-pods FILE] before.json after.json
   podpeers mcp     peers.json            (MCP server on stdio; read-only)
   podpeers version
 
@@ -160,6 +160,9 @@ func connect(ctx context.Context, cf clusterFlags, stderr io.Writer) (*connectio
 		return nil, exitError
 	}
 	rc.UserAgent = "podpeers/" + version
+	// Injection and polling touch every targeted pod; client-go's default
+	// 5 QPS makes that slow and logs throttling warnings mid-output.
+	rc.QPS, rc.Burst = 50, 100
 	cs, err := kubernetes.NewForConfig(rc)
 	if err != nil {
 		fmt.Fprintf(stderr, "podpeers: %v\n", err)
@@ -493,7 +496,7 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "machine-readable output")
-	changedAt := fs.String("changed-at", "", "RFC 3339 time the change under test took effect; connections of pods started after it count as made under it")
+	existing := fs.String("existing-pods", "", "file listing the pods (ns/name, one per line) that existed when the change took effect; connections of pods not on it count as made under the change")
 	if err := fs.Parse(args); err != nil {
 		return exitError
 	}
@@ -512,13 +515,18 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 	var o diff.Options
-	if *changedAt != "" {
-		t, err := time.Parse(time.RFC3339, *changedAt)
+	if *existing != "" {
+		b, err := os.ReadFile(*existing)
 		if err != nil {
-			fmt.Fprintf(stderr, "podpeers: -changed-at: %v\n", err)
+			fmt.Fprintf(stderr, "podpeers: -existing-pods: %v\n", err)
 			return exitError
 		}
-		o.ChangedAt = t
+		o.ExistingPods = map[string]bool{}
+		for _, l := range strings.Split(string(b), "\n") {
+			if l = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), "pod/")); l != "" {
+				o.ExistingPods[l] = true
+			}
+		}
 	}
 	d := diff.CompareWith(before, after, o)
 	if *asJSON {

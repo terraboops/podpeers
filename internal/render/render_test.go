@@ -129,3 +129,15 @@ func TestHTMLWithConsole(t *testing.T) {
 		t.Fatal("graphql path not embedded")
 	}
 }
+
+func TestHTMLHasWorkloadAndPodViews(t *testing.T) {
+	var b bytes.Buffer
+	if err := HTML(&b, fixture(t), ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`id="v-wl"`, `id="v-pod"`, "function build(view)", "svcPods", "targetPort("} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+}

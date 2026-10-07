@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"time"
 
 	"github.com/terraboops/podpeers/internal/diff"
 	"github.com/terraboops/podpeers/internal/gql"
@@ -167,7 +166,7 @@ var tools = []map[string]any{
 			"allow_empty": map[string]any{"type": "boolean", "description": "emit deny-all for workloads with no observed traffic"},
 		})},
 	{"name": "diff_captures", "description": "Compare a capture taken before a policy change with one taken after. Reports flows now blocked (stuck in SYN_SENT), lost, or new, at workload level, with a BROKEN/OK verdict.",
-		"inputSchema": obj(map[string]any{"before": str("path to the baseline capture JSON"), "after": str("path to the later capture JSON; defaults to the served capture"), "changed_at": str("RFC 3339 time the policy took effect")}, "before")},
+		"inputSchema": obj(map[string]any{"before": str("path to the baseline capture JSON"), "after": str("path to the later capture JSON; defaults to the served capture"), "existing_pods": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "pods (ns/name) that existed when the policy took effect"}}, "before")},
 }
 
 func asJSON(v any) string {
@@ -200,12 +199,13 @@ func (s *Server) call(name string, args map[string]any) (string, any, error) {
 			return "", nil, err
 		}
 		var o diff.Options
-		if ca := sarg("changed_at"); ca != "" {
-			t, err := time.Parse(time.RFC3339, ca)
-			if err != nil {
-				return "", nil, fmt.Errorf("changed_at: %v", err)
+		if ps, ok := args["existing_pods"].([]any); ok {
+			o.ExistingPods = map[string]bool{}
+			for _, p := range ps {
+				if s, ok := p.(string); ok {
+					o.ExistingPods[s] = true
+				}
 			}
-			o.ChangedAt = t
 		}
 		d := diff.CompareWith(before, after, o)
 		var b bytes.Buffer
