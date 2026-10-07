@@ -190,7 +190,18 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		broken := filepath.Join(work, "policy-no-web-egress-to-api.yaml")
 		editPolicies(t, suggested, broken, func(np *netv1.NetworkPolicy) {
 			if np.Name == "podpeers-shop-web" {
-				np.Spec.Egress = np.Spec.Egress[1:] // drop the rule to api, keep DNS
+				// Drop the rule to api by what it selects, not by position:
+				// when DNS happens to be observed, its rule can come first.
+				var keep []netv1.NetworkPolicyEgressRule
+				for _, r := range np.Spec.Egress {
+					if r.To[0].PodSelector.MatchLabels["app.kubernetes.io/component"] != "api" {
+						keep = append(keep, r)
+					}
+				}
+				if len(keep) != len(np.Spec.Egress)-1 {
+					t.Fatalf("expected exactly one egress rule to api in %+v", np.Spec.Egress)
+				}
+				np.Spec.Egress = keep
 			}
 		})
 		r := skill(t, "verify", "--release", "shop", "--policy", broken, "--baseline", baseline, "--duration", "30s", "--out", filepath.Join(work, "broken-egress"))
