@@ -1,80 +1,66 @@
+<div align="center">
+
 # podpeers
 
-Map the network peers of every pod in a cluster from **observed sockets**, and
-turn what you saw into **NetworkPolicy you can verify**, without flow logs.
+**Write Kubernetes NetworkPolicy from traffic you actually observed, and prove it didn't break anything.**
 
-You have a running cluster with no NetworkPolicy and want to add some without
-breaking anything. The usual answer is a flow-log pipeline (CNI flow logs,
-Hubble, VPC logs). podpeers gets the same evidence with only your kubectl
-credentials:
+No flow logs. No agents. No DaemonSet. Just your `kubectl` credentials.
 
-1. For every pod a label selector matches, it adds a short-lived **ephemeral
-   debug container**.
-2. That container shares the pod's network namespace and samples
-   `/proc/net/{tcp,tcp6,udp,udp6}` (the data behind `netstat -tun`) every few
-   seconds for the measurement window, then exits on its own.
-3. podpeers reads the samples back from the container logs and builds a peer
-   graph. Remote addresses are resolved to pods, services, nodes or external
-   addresses; direction comes from the pod's listening ports; and each edge
-   records whether it stayed open, closed during the window, or never
-   completed a handshake (the fingerprint of a policy drop).
+[![ci](https://github.com/terraboops/podpeers/actions/workflows/ci.yml/badge.svg)](https://github.com/terraboops/podpeers/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/github/go-mod/go-version/terraboops/podpeers)](go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Nothing is installed in the cluster: no DaemonSet, no agent, no privileged
-sidecar. The debug container runs as `nobody` with every capability dropped,
-so it is admitted under the `restricted` Pod Security Standard.
+<img src="docs/demo.gif" alt="podpeers refusing a production context, observing a Helm release, suggesting NetworkPolicy, verifying a good policy and catching a broken one" width="900">
 
-## Safety: it refuses your production cluster
+<sub>Real run against a local k3d cluster: refuse prod → observe → suggest → verify OK → catch a policy that `helm test` can't see is broken. Capture windows are jump-cut.</sub>
 
-podpeers modifies every pod a selector matches, so pointing it at the wrong
-context is a real incident. **By default it refuses any context that is not a
-local cluster.** Two gates run before any pod is touched:
+</div>
 
-1. **Pre-flight, from the kubeconfig alone (no network):** the context name
-   must be one a local tool writes (`kind-*`, `k3d-*`, `minikube`,
-   `docker-desktop`, …) **and** its API server must be on loopback.
-2. **After connecting, read-only:** every node must carry a kind or k3s
-   provider ID. This catches a loopback tunnel to a cloud cluster.
+---
 
-The only way past either gate is `--allow-context=<the exact context name>`.
-That makes the operator type the name of the cluster they are about to modify.
-A mismatched name is a refusal, not a fallback. Exit code 2 means refused. The
-unit suite proves a refusal makes **zero** API requests; the e2e suite proves
-it on a real cluster and checks that no pod was modified.
+Most clusters run with no NetworkPolicy, because nobody knows what talks to
+what, and guessing wrong takes production down. The usual fix is a flow-log
+pipeline: a particular CNI, Hubble, VPC flow logs, an agent on every node.
+That's a lot of machinery for the question *"who does this pod talk to?"*
 
-Captures also require a label selector, so there is no "probe everything"
-default.
+**podpeers answers it with the kernel's own socket table.** It adds a
+short-lived ephemeral container to each pod you select. The container reads
+`/proc/net/tcp*` (what `netstat` reads) for a few minutes and exits. podpeers
+turns that into:
 
-## Install
+- 🗺️ **A peer map**: pods, services, nodes and external addresses, with
+  direction, port, and whether each connection stayed open, closed, or never
+  got through.
+- 🛡️ **NetworkPolicy suggestions**: ready-to-`kubectl apply` YAML that allows
+  exactly what was observed. Every rule says *why* it exists, and every
+  policy says what it does **not** cover.
+- ✅ **Verification**: apply a policy, re-observe, and get **OK / BROKEN /
+  INCONCLUSIVE**, including breakage your `helm test` doesn't exercise.
+- 🔎 **GraphQL**, an **interactive HTML graph**, **Graphviz**, an **MCP
+  server** for agents, and a **Claude Code skill** that runs the whole loop.
+
+## 60-second quickstart
 
 ```bash
 go install github.com/terraboops/podpeers/cmd/podpeers@latest
+
+# observe every pod labelled app.kubernetes.io/part-of=shop for 10 minutes
+podpeers capture -n shop -l app.kubernetes.io/part-of=shop --duration 10m -o peers.json
+
+podpeers render peers.json                         # what talks to what
+podpeers suggest -n shop peers.json > policy.yaml  # NetworkPolicy, with reasoning
+podpeers serve peers.json                          # graph + GraphQL on 127.0.0.1:8080
 ```
 
-## Use
+> [!IMPORTANT]
+> On anything but a local kind/k3d cluster, `capture` **refuses to run** until
+> you name the context explicitly: `--allow-context=<exact-context-name>`.
+> That's deliberate. See [Safety](#safety-it-refuses-your-production-cluster).
 
-```bash
-# observe (local cluster): 10 minutes, a sample every 2s
-podpeers capture -n shop -l 'app.kubernetes.io/part-of=shop' --duration 10m --interval 2s -o peers.json
+## What you get
 
-podpeers render -format text peers.json          # report
-podpeers render -format html -o peers.html peers.json   # interactive graph, self-contained
-podpeers render -format dot peers.json | dot -Tsvg > peers.svg
-
-podpeers query peers.json '{ pod(id: "shop/api-0") { peers(direction: "inbound") { id kind } } }'
-podpeers serve peers.json                        # graph + GraphQL console on 127.0.0.1:8080
-
-podpeers suggest -n shop peers.json > policy.yaml   # NetworkPolicy suggestions
-podpeers diff before.json after.json              # did a policy break anything?
-podpeers mcp peers.json                           # MCP server on stdio, for agents
-```
-
-Exit codes: `0` ok · `1` error · `2` refused by the safety guard · `3`
-capture written but some pods could not be observed · `4` diff found blocked
-or lost traffic.
-
-### What a capture reports
-
-```
+```text
+$ podpeers render peers.json
 pp-app/api  [observed]
   listening: tcp/9000
   DIR  PEER             KIND  PORT      CONNS  STATE
@@ -88,17 +74,8 @@ pp-app/loner  [observed]
 pp-app/pending  [skipped: pod phase is Pending, not Running]
 ```
 
-(Real output from the e2e suite. `excluded` was never probed; it appears
-because `api` saw it.)
-
-## NetworkPolicy suggestions
-
-`podpeers suggest` emits, per observed workload (Deployment, StatefulSet, …,
-grouped through owner references so replicas share one policy), a
-**ready-to-apply** NetworkPolicy that permits the observed traffic and nothing
-else. Every rule carries its reasoning as YAML comments:
-
 ```yaml
+$ podpeers suggest peers.json
 # WHY each rule exists:
 #   egress[0] allows pods behind service pp-helm/shop-api (…component=api…) on tcp/api
 #       shop-web-… -> svc/pp-helm/shop-api tcp/80: 6 connection(s), seen in 26 sample(s),
@@ -108,138 +85,221 @@ else. Every rule carries its reasoning as YAML comments:
 #       rarely catches, and the observed outbound connections used names
 #
 # NOT COVERED by this observation:
-#   - Egress is now limited to the rules above. The workload would LOSE: …
+#   - Egress is now limited to the rules above. The workload would LOSE: any service or
+#     pod not listed under egress (dependencies that were idle during the window); every
+#     address outside the cluster; the Kubernetes API server (if this workload uses its
+#     service account) …
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+…
 ```
 
-- Traffic to a Service is translated to the Service's pod selector and its
-  **target port** (named ports included), because policy is evaluated after
-  DNAT.
-- Cross-namespace peers get a `namespaceSelector` on
-  `kubernetes.io/metadata.name`.
-- Every suggestion lists what it does **not** cover: the window and the
-  sampling interval; the egress the workload would lose; ports it listens on
-  with no observed client; peers that cannot be expressed (no labels,
-  selectorless Services, the API server); single-IP rules that will go stale;
-  and pods of the workload that were not observed.
-- **It refuses rather than guesses** when the evidence is too thin: no pod of
-  the workload observed, too few samples, no stable labels to select by,
-  hostNetwork pods, or no traffic at all. A quiet window is not proof of
-  isolation. (`--allow-empty` emits deny-all deliberately.)
-- Connections that never completed a handshake are never turned into allow
-  rules.
+Both outputs are real, from the end-to-end suite.
 
-## Query interface: why GraphQL
+## How it works
 
-A capture is a small, typed, read-only graph loaded from one file. GraphQL
-runs in-process with no server to operate. TinkerPop would need Gremlin
-Server (a JVM service) and a graph store. GraphQL also has an introspectable
-schema, and its nested selections (`pod → edges → peer → pod → seenBy`)
-express the one- and two-hop questions that NetworkPolicy work asks. The cost
-is arbitrary-depth path search (Gremlin's `repeat()`), which per-hop policy
-does not need.
+```mermaid
+flowchart LR
+  you["podpeers<br/>(your kubectl creds)"] -- "1 · add ephemeral container<br/>(nobody, no caps, exits by itself)" --> pod
+  subgraph pod["each selected pod (one network namespace)"]
+    app["app container"]
+    dbg["podpeers sampler<br/>cat /proc/net/tcp* every N s"]
+  end
+  dbg -- "2 · samples via container logs" --> you
+  you -- "3 · resolve IPs → pods / services / nodes" --> graph[("peer graph<br/>peers.json")]
+  graph --> render["text · HTML · DOT"]
+  graph --> gql["GraphQL · MCP"]
+  graph --> suggest["NetworkPolicy<br/>+ reasoning + gaps"]
+  suggest --> verify["apply → restart → re-observe → diff<br/>OK · BROKEN · INCONCLUSIVE"]
+```
 
-Root fields: `window`, `pods(namespace, status, label)`, `pod(id | namespace,
-name)`, `edges(direction, peerKind, protocol, port, open)`, `peers`,
-`services`. `Pod.seenBy` gives the edges observed on *other* pods that point
-at this one, which is the only evidence for pods you did not probe.
+- **Direction** comes from the pod's own listening sockets: a connection to a
+  port it listens on is inbound.
+- **Services**: the client sees the ClusterIP. podpeers maps it back to the
+  Service, and in policies to the Service's selector and *target port*
+  (named ports included), because policy is evaluated after DNAT.
+- **"Never got through"** is tracked per connection. A connect that only ever
+  reaches `SYN_SENT`, or `CLOSE` after a REJECT, is the fingerprint of a
+  policy drop. `TIME_WAIT` leftovers from before the window can't mask it.
+- **Workloads**: owner references group replicas (`Deployment/web`), so
+  policies and before/after diffs survive pod restarts.
 
-## MCP mode
+## Safety: it refuses your production cluster
 
-`podpeers mcp peers.json` speaks the Model Context Protocol over stdio. It
-offers six tools: `summary`, `list_pods`, `peers`, `query` (GraphQL),
-`suggest_policies`, and `diff_captures`. The capture file is re-read on every
-call. **The MCP server is read-only and has no capture tool.** Launching debug
-containers stays a deliberate, guarded CLI action that an agent cannot
-trigger through a tool call.
+podpeers modifies every pod a selector matches. Pointing it at the wrong
+context would be an incident, so **refusal is the default**, enforced by two
+gates before any pod is touched:
+
+1. **Pre-flight, from the kubeconfig alone, with zero network traffic.** The
+   context name must be one a local tool writes (`kind-*`, `k3d-*`,
+   `minikube`, `docker-desktop`, …) **and** the API server must be on
+   loopback.
+2. **After connecting, read-only.** Every node must be a kind/k3s node. This
+   catches a `localhost` port-forward or tunnel to a cloud cluster.
+
+The only way past is `--allow-context=<that exact context name>`. A
+mismatched name is a refusal, not a fallback. Captures also *require* a label
+selector, so there is no accidental "probe everything".
+
+These aren't README promises. Tests prove a refusal makes **0 API requests**,
+and the e2e suite proves on a real cluster that a refused run modifies **no
+pods**.
+
+The sampler runs as `nobody` with every capability dropped, a read-only root
+filesystem and the RuntimeDefault seccomp profile, so it's admitted under the
+`restricted` Pod Security Standard. It exits at the end of the window even if
+you Ctrl-C podpeers.
+
+## Verify a policy (and catch the ones that look fine)
+
+```bash
+podpeers diff before.json after.json   # exit 0 OK · 4 BROKEN · 5 INCONCLUSIVE
+```
+
+| line | meaning |
+|---|---|
+| `blocked` | worked before; after, connections never complete a handshake. **The policy dropped it.** |
+| `lost` | seen before, gone after, while its observer was still observed |
+| `preexisting` | only seen on connections opened *before* the policy, which the CNI never re-checks. **Proves nothing.** |
+| `new` | not seen before |
+
+**INCONCLUSIVE** exists because of something we hit for real while building
+this: a policy that blocked every new connection verified "OK", because the
+app's one long-lived connection predated the policy, and CNIs don't
+re-evaluate established connections. So the workflow restarts workloads after
+applying a policy, and podpeers refuses to call a flow verified unless it was
+exercised under the policy.
+
+## For agents: MCP server + Claude Code skill
 
 ```bash
 claude mcp add podpeers -- podpeers mcp /abs/path/peers.json
 ```
 
-## Claude Code skill: from suggestion to verified policy
+The MCP server offers six tools: `summary`, `list_pods`, `peers`, `query`
+(GraphQL), `suggest_policies`, and `diff_captures`. It is **read-only by
+design, with no capture tool**. An agent can reason about traffic, but it
+can't launch containers into your cluster through a tool call.
 
 [`skills/podpeers-netpol`](skills/podpeers-netpol/SKILL.md) is a Claude Code
-skill. This repo is also a Claude Code plugin (`.claude-plugin/`). The skill
-carries the workflow for adding policy to a **Helm release** and proving the
-app still works:
+skill (this repo is also a plugin) for the use case this was built for: **add
+policy to a Helm release and prove the app still works.**
 
 ```
-baseline capture while `helm test` runs → suggestions → review → apply
-  → verify: `helm test` + second capture + diff → OK / BROKEN (why) → fix or roll back
+baseline (observe while `helm test` runs) → suggest → review the gaps with you
+  → apply → restart → `helm test` + re-observe + diff → OK / BROKEN (why) / INCONCLUSIVE → fix or roll back
 ```
 
-Its script, `scripts/netpol-check.sh`, does the mechanical part and returns a
-verdict:
+Hard-won lessons it teaches:
 
-- `0`: OK.
-- `5`: `helm test` failed.
-- `4`: `helm test` passed but traffic the app relied on is now blocked. The
-  diff caught a break the test cannot see.
+- **Run `helm test` inside the baseline window.** The test pod is a client
+  too, and if it isn't observed, the policy correctly blocks it.
+- **New pods race the CNI.** Allow-lists for a brand-new pod are programmed
+  asynchronously. A test pod that connects in its first second can be dropped
+  by a *correct* policy (on k3s it hangs after the handshake). Tests should
+  retry with a bounded `timeout`, and you should re-run once before blaming
+  the policy.
+- **`helm test` passing isn't enough.** The demo's broken policy passes `helm
+  test` and is caught only by the traffic diff.
 
-The e2e suite runs this exact script against a real Helm release. It shows
-the good policy passing, an unobserved client being blocked, and **both kinds
-of broken policy being caught**.
+## Query it
 
-Two things the skill teaches that were learnt by running it for real:
+```bash
+podpeers query peers.json '{ pod(id: "shop/api-0") { peers(direction: "inbound", open: true) { id kind } } }'
+```
 
-- Run `helm test` *inside* the baseline window. The test pod is a client too,
-  and if its traffic is not observed, the policy will correctly block it.
-- CNIs program allow-lists for a *new* pod asynchronously. A test pod that
-  connects in its first second can be dropped by a correct policy (on k3s's
-  kube-router this hangs after the handshake). Make tests retry with a bounded
-  `timeout`, and re-run once before blaming the policy.
+**Why GraphQL and not TinkerPop/Gremlin?** A capture is a small, typed,
+read-only graph loaded from one file. GraphQL runs in-process with nothing to
+operate; Gremlin needs a JVM server and a graph store. GraphQL's nested
+selections (`pod → edges → peer → pod → seenBy`) cover the one- and two-hop
+questions NetworkPolicy asks. What we give up is arbitrary-depth path search,
+which per-hop policy doesn't need. `Pod.seenBy` gives the edges observed on
+*other* pods that point at this one, which is the only evidence about pods you
+didn't probe.
+
+## How is this different from…
+
+| | needs installed in-cluster | sees | suggests policy | verifies policy |
+|---|---|---|---|---|
+| CNI flow logs (Hubble, Calico, VPC logs) | specific CNI / agent / cloud | every packet flow | some (often commercial) | no |
+| eBPF tracers (e.g. Inspektor Gadget) | DaemonSet with privileges | every connection event | yes | no |
+| `kubectl debug` + `netstat` by hand | nothing | one pod, one moment | no | no |
+| **podpeers** | **nothing** | sampled sockets of selected pods | **yes, with reasoning + gaps** | **yes (OK / BROKEN / INCONCLUSIVE)** |
+
+podpeers trades completeness for zero footprint. If you already run Hubble,
+use it for observation; podpeers' suggest/verify loop still applies.
+
+## FAQ
+
+**Isn't sampling going to miss things?** Yes, and podpeers says so in every
+suggestion. A connection that opens and closes between two samples is
+invisible, although the closing side's 60-second `TIME_WAIT` often catches
+short HTTP calls. Use a short `--interval`, a long `--duration`, and run your
+rarest operations inside the window. Where evidence is thin, `suggest`
+**refuses** rather than guesses: no pod observed, too few samples, no stable
+labels, hostNetwork pods, or no traffic at all.
+
+**Does it leave anything behind?** The sampler exits by itself. But
+Kubernetes has no API to delete an ephemeral container, so a terminated
+`podpeers-<run>` entry stays in each probed pod's status until the pod is
+replaced.
+
+**Why not eBPF?** eBPF sees everything, but needs privileges and an agent on
+every node, which is the footprint this tool exists to avoid.
+
+**Does it see process names (`netstat -p`)?** No. That would need root and
+process-namespace sharing in the debug container. Sockets are enough to write
+policy.
 
 ## Testing
 
 ```bash
-make test   # unit tests (race detector), run in CI
-make e2e    # creates a throwaway single-node k3d cluster, runs the real-cluster suite
-make e2e-down
+make test   # unit tests, race detector
+make e2e    # spins up a throwaway single-node k3d cluster and runs the real-cluster suite
 ```
 
-The **e2e suite** never touches your kubeconfig. `hack/e2e-cluster.sh` writes
-the cluster's kubeconfig to `.e2e/kubeconfig`, and the suite refuses to run
-unless that file's context is exactly the cluster it created. It deploys
-workloads whose connections are known in advance, runs the real binary, and
-asserts that the reported edges match **exactly**. Named cases:
+The end-to-end suite runs the real binary against **real pods with known
+connections** and asserts the output matches **exactly**. It never reads your
+kubeconfig, and refuses to run unless the context is the cluster it created.
+Named cases:
 
-| case | how | asserted |
-|---|---|---|
-| known peers | `web→api`, cross-namespace `gateway→web` via Services | exact edge sets, both ends |
-| pod with no peers | `loner` runs `sleep` | observed, zero edges; `suggest` refuses it |
-| connection that closes during the window | the test kills `brief`'s client mid-window | `closed` on both ends |
-| pod the selector excludes | `excluded` lacks the label | not probed, no ephemeral container, still resolved as `api`'s peer |
-| pending pod | unschedulable `nodeSelector` | skipped, untouched |
-| debug container cannot start | unpullable image | fails within `--start-timeout` with `ErrImagePull`, exit 3 |
-| namespace you may not modify | ServiceAccount that may read but not add ephemeral containers | per-pod `forbidden` naming `pods/ephemeralcontainers`, pod untouched |
-| namespace you may not read | same SA, no access | clean failure at listing, exit 1 |
-| non-local context | the same real cluster under a non-local context name | refused (exit 2), no pod modified; `--allow-context` accepted |
-| suggestions | real capture | right workloads get policies, thin ones refused, API server dry-run accepts all |
-| MCP | the binary over stdio | peers and suggestions answered from the real capture |
-| skill workflow | `examples/shop` Helm release | baseline, good policy OK, intruder blocked, egress break caught by diff (helm test passes), ingress break caught by helm test, rollback, refusal |
+| case | asserted on a real cluster |
+|---|---|
+| known peers, incl. cross-namespace via Services | exact edge sets, both ends |
+| pod with no peers | observed, zero edges, `suggest` refuses it |
+| connection closed mid-window | `closed` on both ends |
+| pod outside the selector | never touched, still resolved as a peer |
+| pending pod | skipped, never touched |
+| debug container can't start | fails fast with `ErrImagePull`, exit 3 |
+| namespace you may read but not modify | per-pod `forbidden` naming the missing permission |
+| namespace you may not read | clean failure, exit 1 |
+| non-local context name for a reachable cluster | refused, exit 2, nothing modified |
+| suggestions from real traffic | API server accepts every policy (dry run) |
+| connection older than a policy | INCONCLUSIVE, while new connects are blocked |
+| MCP over stdio | answers from the real capture |
+| Helm skill workflow | good policy OK; intruder blocked; break invisible to `helm test` caught by diff; break visible to `helm test` caught and rolled back |
 
-CI runs the unit suite and the e2e suite (on a k3d cluster on the runner) on
-every push.
+CI runs both suites on every push. The e2e suite runs on a k3d cluster on the
+runner.
 
-## Known limits
+## Limits, honestly
 
-- **Sampling, not capture.** A connection that opens and closes between two
-  samples is invisible. Short-lived HTTP calls are the usual victims, although
-  the closing side's `TIME_WAIT` (60s) often makes them visible. Use a shorter
-  `--interval` and a longer `--duration`.
-- **Ephemeral containers cannot be removed.** The Kubernetes API has no delete
-  for them, so a terminated `podpeers-<run>` entry stays in each probed pod's
-  status until the pod is replaced. The sampler itself exits at the end of the
-  window, even if podpeers is interrupted.
-- **No process names.** podpeers reports sockets, not owning processes
-  (`netstat -p`). That would need process-namespace targeting and root in the
-  debug container.
-- **hostNetwork pods are skipped**: their sockets are the node's.
-- Byte order is assumed little-endian (amd64/arm64 nodes).
-- Peers in namespaces your credentials cannot list resolve as plain addresses.
-- Enforcement semantics, including kubelet probes and new-pod timing, depend
-  on your CNI.
+- Sampling, not packet capture (see FAQ).
+- hostNetwork pods are skipped: their sockets are the node's.
+- Peers in namespaces you can't list resolve as plain addresses.
+- Assumes little-endian nodes (amd64/arm64).
+- Enforcement details (kubelet probes, new-pod timing, REJECT vs DROP) vary by
+  CNI. Verify on the CNI you run.
 
-## Licence
+## Contributing
 
-MIT
+Issues and PRs welcome. Read [`CLAUDE.md`](CLAUDE.md) first: it's the contract
+for humans and agents alike. In short: never point anything at a non-local
+cluster, keep the guard's default at refusal, keep MCP read-only, and keep
+real environments out of this public repo (`hack/hygiene.sh` checks).
+
+Re-record the demo with `vhs docs/demo.tape` against `make e2e-cluster`.
+
+## License
+
+[MIT](LICENSE)
