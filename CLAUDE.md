@@ -16,7 +16,10 @@ Read this before changing anything in this repo.
    name>`.
 3. **The MCP server stays read-only.** Do not add a tool that runs a capture
    or touches a cluster.
-4. **Public repo hygiene:** no cluster names, hostnames, contexts, IPs (other
+4. **No `Claude-Session:` (or other session-link) trailers in commit messages**
+   in this public repo. Existing history is left as is; that call is the
+   operator's.
+5. **Public repo hygiene:** no cluster names, hostnames, contexts, IPs (other
    than RFC 5737/3849 documentation ranges and loopback), credentials,
    tokens, or kubeconfig contents anywhere: code, fixtures, docs, or commit
    messages. `./hack/hygiene.sh` enforces part of this in CI. Fixture names

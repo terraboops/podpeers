@@ -301,7 +301,7 @@ CI runs both suites on every push. The e2e suite runs on a k3d cluster on the
 runner.
 
 **The tests have teeth, and that's checked too.** Each named negative case,
-and the safety guard, has a mutant in [`hack/mutants/`](hack/mutants): a
+the safety guard, and the skill script's own context refusal has a mutant in [`hack/mutants/`](hack/mutants): a
 one-line patch that breaks exactly that protection. `make mutants-e2e` applies
 each one in a scratch worktree and requires the unit **and** real-cluster tests
 to fail **for the expected reason**; it also checks that they pass unmutated.

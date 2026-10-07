@@ -1,0 +1,23 @@
+# Mutant 07-skill-script-refusal: breaks the protection for "the skill script's context refusal".
+# Bug introduced: the script's guard is softened to a warning: it reports that podpeers refused the context, then carries on into kubectl and helm.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./test/skillscript/
+# unit-run: TestScriptRefusesBeforeTouchingAnything
+# unit-expect: the script touched the cluster despite the refused context
+# e2e-run: TestSkillHelmWorkflow/(baseline|the_skill_script)
+# e2e-expect: the script touched the cluster despite the refused context
+diff --git a/skills/podpeers-netpol/scripts/netpol-check.sh b/skills/podpeers-netpol/scripts/netpol-check.sh
+index 409dd03..2b86d42 100755
+--- a/skills/podpeers-netpol/scripts/netpol-check.sh
++++ b/skills/podpeers-netpol/scripts/netpol-check.sh
+@@ -89,7 +89,7 @@ hl() { helm "${H[@]}" "$@"; }
+ guard() {
+   if ! "$PODPEERS" check-context "${P[@]}" >/dev/null; then
+     say "podpeers refused context '$CONTEXT'; nothing was touched."
+-    exit 2
++    say "warning: continuing anyway"
+   fi
+ }
+ 

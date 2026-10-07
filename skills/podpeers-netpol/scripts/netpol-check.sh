@@ -93,6 +93,10 @@ guard() {
   fi
 }
 
+# Refuse first: before any other check, file read or cluster call, for every
+# subcommand.
+guard
+
 # capture_with_test OUTFILE TESTLOG: capture the release while `helm test`
 # runs inside the window. Sets TEST_OK=1/0 and CAPTURE_CODE.
 capture_with_test() {
@@ -114,7 +118,6 @@ capture_with_test() {
 case "$CMD" in
   baseline)
     [ -n "$RELEASE" ] || die "--release is required"
-    guard
     mkdir -p "$OUT"
     say "baseline: capturing $SELECTOR in $NS for $DURATION while 'helm test $RELEASE' runs"
     capture_with_test "$OUT/baseline.json" "$OUT/baseline-helm-test.log"
@@ -135,7 +138,6 @@ case "$CMD" in
     [ -n "$RELEASE" ] || die "--release is required"
     [ -f "$POLICY" ] || die "--policy file not found: $POLICY"
     [ -f "$BASELINE" ] || die "--baseline file not found: $BASELINE"
-    guard
     mkdir -p "$OUT"
     say "verify: server-side dry run of $POLICY"
     kc apply -n "$NS" --dry-run=server -f "$POLICY" >/dev/null
@@ -189,7 +191,6 @@ case "$CMD" in
 
   rollback)
     [ -f "$POLICY" ] || die "--policy file not found: $POLICY"
-    guard
     kc delete -n "$NS" -f "$POLICY" --ignore-not-found
     ;;
 

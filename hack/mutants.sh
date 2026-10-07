@@ -27,11 +27,23 @@ if [ "$E2E" = 1 ]; then
   fi
 fi
 
-# Snapshot the working tree (including uncommitted edits) as a commit object.
-SNAP="$(git stash create 2>/dev/null)"
-[ -n "$SNAP" ] || SNAP="$(git rev-parse HEAD)"
+# Snapshot the working tree as git would commit it (uncommitted edits and new
+# files included, .gitignore honoured) via a throwaway index.
+idx="$(mktemp)"
+cp "$(git rev-parse --git-path index)" "$idx"
+GIT_INDEX_FILE="$idx" git add -A
+SNAP="$(git commit-tree "$(GIT_INDEX_FILE="$idx" git write-tree)" -p HEAD -m "mutants snapshot")"
+rm -f "$idx"
 
 field() { sed -n "s/^# $1: //p" "$2"; }
+
+# e2e_tops prints the top-level e2e test each selected mutant relies on.
+e2e_tops() {
+  local p
+  for p in hack/mutants/*.patch; do
+    if [[ "$(basename "$p")" == *"$FILTER"* ]]; then field e2e-run "$p" | cut -d/ -f1; fi
+  done
+}
 
 newtree() {
   local wt
@@ -60,13 +72,15 @@ rows=""
 
 echo "baseline: the selected tests must pass on the unmutated tree"
 base="$(newtree)"
-if ! (cd "$base" && go test -count=1 ./internal/... ./cmd/...) >"$LOGS/baseline-unit.log" 2>&1; then
+if ! (cd "$base" && go test -count=1 ./internal/... ./cmd/... ./test/skillscript/) >"$LOGS/baseline-unit.log" 2>&1; then
   echo "baseline unit tests FAIL; a mutant failing them would prove nothing (see $LOGS/baseline-unit.log)" >&2
   git worktree remove --force "$base"; exit 1
 fi
 if [ "$E2E" = 1 ]; then
+  # The top-level e2e tests the selected mutants rely on must pass unmutated.
+  tops="$(e2e_tops | sort -u | paste -sd'|' -)"
   if ! (cd "$base" && PODPEERS_E2E_KUBECONFIG="$ROOT/.e2e/kubeconfig" PODPEERS_E2E_OUT="$base/.e2e-out" \
-        go test -tags e2e -count=1 -v -timeout 15m -run 'TestE2E' ./test/e2e/) >"$LOGS/baseline-e2e.log" 2>&1; then
+        go test -tags e2e -count=1 -v -timeout 20m -run "^($tops)\$" ./test/e2e/) >"$LOGS/baseline-e2e.log" 2>&1; then
     echo "baseline e2e FAILS; see $LOGS/baseline-e2e.log" >&2
     git worktree remove --force "$base"; exit 1
   fi

@@ -234,7 +234,10 @@ func TestSkillHelmWorkflow(t *testing.T) {
 			code = ee.ExitCode()
 		}
 		t.Logf("exit=%d\n%s", code, out)
-		if code != 2 || strings.Contains(string(out), "created") {
+		if strings.Contains(string(out), "networkpolicy") || strings.Contains(string(out), "dry run") {
+			t.Errorf("the script touched the cluster despite the refused context")
+		}
+		if code != 2 {
 			t.Fatalf("want refusal (exit 2) before any apply, got %d", code)
 		}
 	})
