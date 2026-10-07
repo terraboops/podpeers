@@ -186,3 +186,52 @@ kind: RoleBinding
 metadata: {name: pp-reader, namespace: pp-locked}
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: pp-reader}
 subjects: [{kind: ServiceAccount, name: pp-limited, namespace: pp-app}]
+---
+# A namespace that ENFORCES the "restricted" Pod Security Standard. The
+# workloads comply; podpeers' debug container must be admitted here too.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pp-strict
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vaultd
+  namespace: pp-strict
+  labels: {app: vaultd, podpeers-e2e: strict}
+spec:
+  terminationGracePeriodSeconds: 1
+  securityContext: {runAsNonRoot: true, runAsUser: 65534, seccompProfile: {type: RuntimeDefault}}
+  containers:
+  - name: main
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+    command: ["nc", "-lk", "-p", "9000", "-e", "cat"]
+    securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: vaultd, namespace: pp-strict}
+spec:
+  selector: {app: vaultd}
+  ports: [{port: 9000, targetPort: 9000}]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: auditor
+  namespace: pp-strict
+  labels: {app: auditor, podpeers-e2e: strict}
+spec:
+  terminationGracePeriodSeconds: 1
+  securityContext: {runAsNonRoot: true, runAsUser: 65534, seccompProfile: {type: RuntimeDefault}}
+  containers:
+  - name: main
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+    command: ["sh", "-c", "until nc -z -w 2 vaultd 9000; do sleep 1; done; sleep 86400 | nc vaultd 9000"]
+    securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}

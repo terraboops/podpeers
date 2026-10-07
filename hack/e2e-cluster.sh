@@ -46,6 +46,12 @@ up() {
 down() {
   k3d cluster delete "$CLUSTER"
   rm -f "$KCFG"
+  # On colima, blocks freed inside the VM stay allocated on the host until
+  # trimmed; hand them back so repeated cluster runs do not eat the host disk.
+  # fstrim only discards free blocks; it deletes nothing.
+  if command -v colima >/dev/null 2>&1 && colima status >/dev/null 2>&1; then
+    colima ssh -- sudo fstrim -a >/dev/null 2>&1 || true
+  fi
 }
 
 case "${1:-up}" in

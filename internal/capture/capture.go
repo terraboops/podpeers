@@ -322,6 +322,10 @@ func inject(ctx context.Context, cs kubernetes.Interface, targets []*target, nam
 // describeErr shortens API errors to something an operator can act on.
 func describeErr(err error) string {
 	switch {
+	case apierrors.IsForbidden(err) && strings.Contains(err.Error(), "violates PodSecurity"):
+		// Same HTTP 403 as an RBAC denial, but an admission policy: pointing
+		// the operator at RBAC would send them the wrong way.
+		return "rejected by Pod Security admission (the namespace's policy, not your RBAC): " + err.Error()
 	case apierrors.IsForbidden(err):
 		return "forbidden: your credentials may not add ephemeral containers here (needs update on pods/ephemeralcontainers): " + err.Error()
 	case apierrors.IsNotFound(err):

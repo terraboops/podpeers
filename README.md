@@ -291,6 +291,7 @@ Named cases:
 | debug container can't start | fails fast with `ErrImagePull`, exit 3 |
 | namespace you may read but not modify | per-pod `forbidden` naming the missing permission |
 | namespace you may not read | clean failure, exit 1 |
+| namespace enforcing Pod Security `restricted` | enforcement proven on (a plain pod is rejected); podpeers' debug container is admitted and observes the known flow |
 | non-local context name for a reachable cluster | refused, exit 2, nothing modified |
 | suggestions from real traffic | API server accepts every policy (dry run) |
 | connection older than a policy | INCONCLUSIVE, while new connects are blocked |
@@ -301,7 +302,8 @@ CI runs both suites on every push. The e2e suite runs on a k3d cluster on the
 runner.
 
 **The tests have teeth, and that's checked too.** Each named negative case,
-the safety guard, and the skill script's own context refusal has a mutant in [`hack/mutants/`](hack/mutants): a
+the safety guard, the skill script's own context refusal, and admission under
+Pod Security `restricted` has a mutant in [`hack/mutants/`](hack/mutants): a
 one-line patch that breaks exactly that protection. `make mutants-e2e` applies
 each one in a scratch worktree and requires the unit **and** real-cluster tests
 to fail **for the expected reason**; it also checks that they pass unmutated.

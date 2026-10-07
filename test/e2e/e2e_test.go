@@ -176,6 +176,7 @@ func TestE2E(t *testing.T) {
 		"pod/api", "pod/web", "pod/brief", "pod/excluded", "pod/loner")
 	kubectl(t, "wait", "-n", "pp-edge", "--for=condition=Ready", "--timeout=60s", "pod/gateway")
 	kubectl(t, "wait", "-n", "pp-locked", "--for=condition=Ready", "--timeout=60s", "pod/vault")
+	kubectl(t, "wait", "-n", "pp-strict", "--for=condition=Ready", "--timeout=60s", "pod/vaultd", "pod/auditor")
 	time.Sleep(3 * time.Second) // let the clients' connections establish
 
 	t.Run("guard refuses a non-local context name, even for a reachable local cluster", func(t *testing.T) {
@@ -444,6 +445,25 @@ spec:
 		if d.code != 5 || !strings.Contains(d.stdout, "preexisting pp-app/Pod/web -> svc/pp-app/api tcp/9000") || !strings.Contains(d.stdout, "INCONCLUSIVE") {
 			t.Fatalf("want INCONCLUSIVE (exit 5) naming web -> api, got exit %d", d.code)
 		}
+	})
+
+	t.Run("debug container is admitted where Pod Security restricted is enforced", func(t *testing.T) {
+		// Enforcement must really be on, or admitting podpeers proves nothing.
+		out, err := exec.Command("kubectl", "--kubeconfig", kubeconfig, "--context", kubeCtx, "run", "unhardened", "-n", "pp-strict",
+			"--image=busybox:1.36", "--restart=Never", "--dry-run=server", "--command", "--", "sleep", "1").CombinedOutput()
+		t.Logf("a pod without a restricted securityContext: err=%v\n%s", err, out)
+		if err == nil || !strings.Contains(string(out), "violates PodSecurity") {
+			t.Fatal("pp-strict does not enforce the restricted Pod Security Standard")
+		}
+		capture := filepath.Join(t.TempDir(), "strict.json")
+		r := podpeers(ctx, t, "capture", "-n", "pp-strict", "-l", "podpeers-e2e=strict", "--duration", "6s", "--interval", "1s", "-o", capture)
+		t.Logf("exit=%d\n%s", r.code, r.stderr)
+		if r.code != 0 {
+			t.Fatalf("capture in a restricted namespace: exit %d", r.code)
+		}
+		res := load(t, capture)
+		expectEdges(t, res, "pp-strict/vaultd", "inbound pp-strict/auditor tcp/9000 open")
+		expectEdges(t, res, "pp-strict/auditor", "outbound svc/pp-strict/vaultd tcp/9000 open")
 	})
 
 	t.Run("debug container that cannot start is reported, not waited on forever", func(t *testing.T) {

@@ -244,6 +244,11 @@ func TestDescribeErr(t *testing.T) {
 	if !strings.Contains(describeErr(f), "pods/ephemeralcontainers") {
 		t.Error("forbidden should name the missing permission")
 	}
+	psa := apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "x",
+		errors.New(`violates PodSecurity "restricted:latest": allowPrivilegeEscalation != false`))
+	if d := describeErr(psa); !strings.Contains(d, "Pod Security admission") || strings.Contains(d, "your credentials") {
+		t.Errorf("an admission rejection must not be blamed on RBAC: %s", d)
+	}
 	nf := apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, "x")
 	if !strings.Contains(describeErr(nf), "disappeared") {
 		t.Error("not found should say the pod went away")

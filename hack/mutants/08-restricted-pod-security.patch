@@ -1,0 +1,36 @@
+# Mutant 08-restricted-pod-security: breaks the protection for "admission under the restricted Pod Security Standard".
+# Bug introduced: the debug container loses its hardened securityContext (non-root, no capabilities, no privilege escalation, RuntimeDefault seccomp), so restricted namespaces reject it.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/capture/
+# unit-run: TestDebugContainerIsRestrictedAndSelfTerminating
+# unit-expect: security context not restricted
+# e2e-run: TestE2E/debug_container_is_admitted
+# e2e-expect: fail pp-strict/[a-z]+: adding debug container: rejected by Pod Security admission
+diff --git a/internal/capture/capture.go b/internal/capture/capture.go
+index cc5b70b..11e07f1 100644
+--- a/internal/capture/capture.go
++++ b/internal/capture/capture.go
+@@ -131,20 +131,13 @@ func ContainerName(runID string) string { return "podpeers-" + runID }
+ func DebugContainer(name, image string, duration, interval time.Duration) corev1.EphemeralContainer {
+ 	no, yes := false, true
+ 	nobody := int64(65534)
++	_, _, _ = no, yes, nobody
+ 	return corev1.EphemeralContainer{EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+ 		Name:                     name,
+ 		Image:                    image,
+ 		ImagePullPolicy:          corev1.PullIfNotPresent,
+ 		Command:                  []string{"sh", "-c", procnet.SamplerScript(duration, interval)},
+ 		TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+-		SecurityContext: &corev1.SecurityContext{
+-			RunAsNonRoot:             &yes,
+-			RunAsUser:                &nobody,
+-			AllowPrivilegeEscalation: &no,
+-			ReadOnlyRootFilesystem:   &yes,
+-			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+-			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+-		},
+ 	}}
+ }
+ 
