@@ -77,11 +77,23 @@ type Pod struct {
 	Node        string            `json:"node,omitempty"`
 	Labels      map[string]string `json:"labels,omitempty"`
 	HostNetwork bool              `json:"hostNetwork,omitempty"`
-	Probe       Probe             `json:"probe"`
-	Listening   []Listener        `json:"listening,omitempty"`
+	// Workload is the controller that owns the pod, "Kind/name" (a pod owned by
+	// a ReplicaSet reports its Deployment), or "Pod/<name>" for a bare pod. It is
+	// stable across pod restarts, unlike the pod name.
+	Workload  string     `json:"workload,omitempty"`
+	Probe     Probe      `json:"probe"`
+	Listening []Listener `json:"listening,omitempty"`
 }
 
 func (p Pod) ID() string { return p.Namespace + "/" + p.Name }
+
+// WorkloadID is "ns/Kind/name", falling back to the pod itself.
+func (p Pod) WorkloadID() string {
+	if p.Workload == "" {
+		return p.Namespace + "/Pod/" + p.Name
+	}
+	return p.Namespace + "/" + p.Workload
+}
 
 type Probe struct {
 	Status  ProbeStatus `json:"status"`
@@ -102,6 +114,15 @@ type Service struct {
 	Name       string            `json:"name"`
 	ClusterIPs []string          `json:"clusterIPs,omitempty"`
 	Selector   map[string]string `json:"selector,omitempty"`
+	Ports      []ServicePort     `json:"ports,omitempty"`
+}
+
+// ServicePort maps a service port to the pod port traffic is DNATed to.
+// TargetPort is a number or a container port name, as in the Service spec.
+type ServicePort struct {
+	Protocol   string `json:"protocol"`
+	Port       uint16 `json:"port"`
+	TargetPort string `json:"targetPort"`
 }
 
 func (s Service) ID() string { return s.Namespace + "/" + s.Name }
@@ -146,6 +167,15 @@ type Edge struct {
 	// Open is true when a connection on this edge was ESTABLISHED in the pod's
 	// final sample. False means it closed during the window.
 	Open bool `json:"open"`
+	// FailedConnections counts connections that never completed a handshake
+	// (only ever SYN_SENT, SYN_RECV, or CLOSE after a refused connect).
+	FailedConnections int `json:"failedConnections,omitempty"`
+	// Attempted is true when connections on this edge failed and none was
+	// ever seen ESTABLISHED in the window: something kept trying and never got
+	// through. A NetworkPolicy that drops or rejects traffic produces exactly
+	// this. (TIME_WAIT leftovers from before the window do not count as
+	// getting through: they predate it.)
+	Attempted bool `json:"attempted,omitempty"`
 }
 
 // Inventory is what the cluster API said existed during the capture; it is how
@@ -257,9 +287,10 @@ func Analyze(pod string, samples []procnet.Sample, res *Resolver) ([]Listener, [
 	}
 
 	type agg struct {
-		edge  Edge
-		conns map[connKey]bool
-		seen  map[int]bool
+		edge        Edge
+		conns       map[connKey]bool // value: the connection completed a handshake
+		seen        map[int]bool
+		established bool // some connection was seen ESTABLISHED (or UDP)
 	}
 	edges := map[edgeKey]*agg{}
 	last := len(samples) - 1
@@ -287,10 +318,14 @@ func Analyze(pod string, samples []procnet.Sample, res *Resolver) ([]Listener, [
 				}
 				edges[ek] = a
 			}
-			a.conns[connKey{k.Protocol, k.Local, k.Remote}] = true
+			ck := connKey{k.Protocol, k.Local, k.Remote}
+			a.conns[ck] = a.conns[ck] || k.Protocol == procnet.UDP || handshakeDone(k.State)
 			a.seen[i] = true
 			if s.Time.After(a.edge.LastSeen) {
 				a.edge.LastSeen = s.Time
+			}
+			if k.Protocol == procnet.UDP || k.State == procnet.Established {
+				a.established = true
 			}
 			if i == last && (k.State == procnet.Established || k.Protocol == procnet.UDP) {
 				a.edge.Open = true
@@ -314,11 +349,30 @@ func Analyze(pod string, samples []procnet.Sample, res *Resolver) ([]Listener, [
 	var outE []Edge
 	for _, a := range edges {
 		a.edge.Connections = len(a.conns)
+		for _, ok := range a.conns {
+			if !ok {
+				a.edge.FailedConnections++
+			}
+		}
+		a.edge.Attempted = a.edge.FailedConnections > 0 && !a.established
 		a.edge.Samples = len(a.seen)
 		outE = append(outE, a.edge)
 	}
 	SortEdges(outE)
 	return outL, outE
+}
+
+// handshakeDone reports whether a TCP state can only be reached after the
+// three-way handshake completed. SYN_SENT and SYN_RECV are mid-handshake, and
+// CLOSE with a remote address is what a connect() refused by a REJECT rule or a
+// RST leaves behind, so none of those prove the connection ever worked.
+func handshakeDone(s procnet.State) bool {
+	switch s {
+	case procnet.Established, procnet.FinWait1, procnet.FinWait2, procnet.TimeWait,
+		procnet.CloseWait, procnet.LastAck, procnet.Closing:
+		return true
+	}
+	return false
 }
 
 // SortEdges orders edges deterministically for stable output and diffs.
@@ -403,6 +457,33 @@ func Build(sel Selector, win Window, inv Inventory, targets []Pod, obs []Observa
 	sort.Slice(out.Services, func(i, j int) bool { return out.Services[i].ID() < out.Services[j].ID() })
 	SortEdges(out.Edges)
 	return out, nil
+}
+
+// Flow is an edge oriented from client to server, which is how traffic and
+// NetworkPolicy read: an outbound edge on A to B is A->B, and an inbound edge on
+// B from A is also A->B.
+type Flow struct {
+	From, To   string // pod IDs, or Peer.ID() for non-pod peers
+	Port       uint16
+	Protocol   string
+	Open       bool
+	Attempted  bool
+	ObservedOn string // pod whose sockets showed it
+}
+
+// Flows lists every edge as a client->server flow.
+func (r Result) Flows() []Flow {
+	var out []Flow
+	for _, e := range r.Edges {
+		f := Flow{Port: e.Port, Protocol: e.Protocol, Open: e.Open, Attempted: e.Attempted, ObservedOn: e.Pod}
+		if e.Direction == Outbound {
+			f.From, f.To = e.Pod, e.Peer.ID()
+		} else {
+			f.From, f.To = e.Peer.ID(), e.Pod
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // Load decodes a capture file and checks its schema version.

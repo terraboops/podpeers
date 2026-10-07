@@ -1,0 +1,4 @@
+image: busybox:1.36
+# web reconnects to api every few seconds, so a policy that blocks it shows up
+# within one capture window.
+reconnectSeconds: 4

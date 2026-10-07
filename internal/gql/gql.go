@@ -162,11 +162,13 @@ func NewSchema(r graph.Result) (graphql.Schema, error) {
 	var podT, peerT, edgeT *graphql.Object
 	podT = graphql.NewObject(graphql.ObjectConfig{Name: "Pod", Fields: graphql.FieldsThunk(func() graphql.Fields {
 		return graphql.Fields{
-			"id":          {Type: graphql.NewNonNull(graphql.String), Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Pod).ID(), nil }},
-			"namespace":   {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Pod).Namespace, nil }},
-			"name":        {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Pod).Name, nil }},
-			"ip":          {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Pod).IP, nil }},
-			"node":        {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Pod).Node, nil }},
+			"id":        {Type: graphql.NewNonNull(graphql.String), Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Pod).ID(), nil }},
+			"namespace": {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Pod).Namespace, nil }},
+			"name":      {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Pod).Name, nil }},
+			"ip":        {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Pod).IP, nil }},
+			"node":      {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Pod).Node, nil }},
+			"workload": {Type: graphql.String, Description: "owning controller, Kind/name",
+				Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Pod).Workload, nil }},
 			"hostNetwork": {Type: graphql.Boolean, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Pod).HostNetwork, nil }},
 			"labels":      {Type: graphql.NewList(labelT), Resolve: func(p graphql.ResolveParams) (any, error) { return labels(p.Source.(graph.Pod).Labels), nil }},
 			"label": {Type: graphql.String, Args: graphql.FieldConfigArgument{"key": {Type: graphql.NewNonNull(graphql.String)}},
@@ -230,8 +232,12 @@ func NewSchema(r graph.Result) (graphql.Schema, error) {
 			"connections": {Type: graphql.Int, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Edge).Connections, nil }},
 			"samples":     {Type: graphql.Int, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Edge).Samples, nil }},
 			"open":        {Type: graphql.Boolean, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Edge).Open, nil }},
-			"firstSeen":   timeField(func(s any) time.Time { return s.(graph.Edge).FirstSeen }),
-			"lastSeen":    timeField(func(s any) time.Time { return s.(graph.Edge).LastSeen }),
+			"failedConnections": {Type: graphql.Int, Description: "connections that never completed a handshake",
+				Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Edge).FailedConnections, nil }},
+			"attempted": {Type: graphql.Boolean, Description: "only ever seen half-open (SYN_SENT): tried and never connected",
+				Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Edge).Attempted, nil }},
+			"firstSeen": timeField(func(s any) time.Time { return s.(graph.Edge).FirstSeen }),
+			"lastSeen":  timeField(func(s any) time.Time { return s.(graph.Edge).LastSeen }),
 		}
 	})})
 

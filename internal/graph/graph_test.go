@@ -2,6 +2,7 @@ package graph
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -222,5 +223,72 @@ func TestBuildRejectsInconsistentInput(t *testing.T) {
 	}
 	if _, err := Build(Selector{}, win, inv, nil, []Observation{{Pod: "a/ghost"}}); err == nil {
 		t.Error("observation of untargeted pod should error")
+	}
+}
+
+func TestAnalyzeAttemptedOnly(t *testing.T) {
+	// A client stuck in SYN_SENT across the window: tried, never connected.
+	r := NewResolver(inv)
+	samples := []procnet.Sample{
+		sample(0, sock(procnet.TCP, "192.0.2.11:40001", "192.0.2.200:9000", procnet.SynSent)),
+		sample(5, sock(procnet.TCP, "192.0.2.11:40002", "192.0.2.200:9000", procnet.SynSent)),
+	}
+	_, es := Analyze("shop/web", samples, r)
+	if len(es) != 1 || !es[0].Attempted || es[0].Open || es[0].Connections != 2 {
+		t.Fatalf("edges = %+v", es)
+	}
+	// A connect() refused by a REJECT rule leaves the socket in CLOSE: still
+	// never connected.
+	rejected := []procnet.Sample{
+		sample(0, sock(procnet.TCP, "192.0.2.11:40001", "192.0.2.200:9000", procnet.Close)),
+		sample(5, sock(procnet.TCP, "192.0.2.11:40002", "192.0.2.200:9000", procnet.SynSent)),
+	}
+	if _, es := Analyze("shop/web", rejected, r); !es[0].Attempted {
+		t.Fatalf("rejected connects should be attempted-only: %+v", es)
+	}
+	// Connections closed before the window (TIME_WAIT leftovers) plus new
+	// connects that never complete: still blocked now.
+	mixed := []procnet.Sample{
+		sample(0, sock(procnet.TCP, "192.0.2.11:40001", "192.0.2.200:9000", procnet.TimeWait),
+			sock(procnet.TCP, "192.0.2.11:40005", "192.0.2.200:9000", procnet.SynSent)),
+		sample(5, sock(procnet.TCP, "192.0.2.11:40001", "192.0.2.200:9000", procnet.TimeWait),
+			sock(procnet.TCP, "192.0.2.11:40006", "192.0.2.200:9000", procnet.Close)),
+	}
+	if _, es := Analyze("shop/web", mixed, r); !es[0].Attempted || es[0].FailedConnections != 2 || es[0].Connections != 3 {
+		t.Fatalf("TIME_WAIT leftovers must not mask new failures: %+v", es)
+	}
+	// Short connections only ever caught in TIME_WAIT did succeed.
+	short := []procnet.Sample{sample(0, sock(procnet.TCP, "192.0.2.11:40001", "192.0.2.200:9000", procnet.TimeWait))}
+	if _, es := Analyze("shop/web", short, r); es[0].Attempted || es[0].FailedConnections != 0 {
+		t.Fatalf("TIME_WAIT-only is a completed connection: %+v", es)
+	}
+	// Once any connection on the edge got through, it is not "attempted".
+	samples = append(samples, sample(10, sock(procnet.TCP, "192.0.2.11:40003", "192.0.2.200:9000", procnet.Established)))
+	_, es = Analyze("shop/web", samples, r)
+	if es[0].Attempted || !es[0].Open {
+		t.Fatalf("edges = %+v", es)
+	}
+}
+
+func TestFlowsAndWorkloadID(t *testing.T) {
+	r := Result{Edges: []Edge{
+		{Pod: "shop/api", Direction: Inbound, Peer: Peer{Kind: PeerPod, Namespace: "shop", Name: "web"}, Port: 9000, Protocol: "tcp", Open: true},
+		{Pod: "shop/web", Direction: Outbound, Peer: Peer{Kind: PeerService, Namespace: "shop", Name: "api"}, Port: 9000, Protocol: "tcp", Attempted: true},
+	}}
+	fs := r.Flows()
+	if fs[0].From != "shop/web" || fs[0].To != "shop/api" || fs[1].From != "shop/web" || fs[1].To != "svc/shop/api" || !fs[1].Attempted {
+		t.Fatalf("flows = %+v", fs)
+	}
+	if (Pod{Namespace: "a", Name: "p"}).WorkloadID() != "a/Pod/p" || (Pod{Namespace: "a", Name: "p", Workload: "Deployment/d"}).WorkloadID() != "a/Deployment/d" {
+		t.Fatal("WorkloadID")
+	}
+}
+
+func TestLoadRejectsGarbage(t *testing.T) {
+	if _, err := Load(strings.NewReader("not json")); err == nil {
+		t.Error("garbage should fail")
+	}
+	if _, err := LoadFile("/does/not/exist"); err == nil {
+		t.Error("missing file should fail")
 	}
 }

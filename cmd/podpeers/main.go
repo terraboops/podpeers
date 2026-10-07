@@ -22,9 +22,12 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/terraboops/podpeers/internal/capture"
+	"github.com/terraboops/podpeers/internal/diff"
 	"github.com/terraboops/podpeers/internal/gql"
 	"github.com/terraboops/podpeers/internal/graph"
 	"github.com/terraboops/podpeers/internal/guard"
+	"github.com/terraboops/podpeers/internal/mcp"
+	"github.com/terraboops/podpeers/internal/policy"
 	"github.com/terraboops/podpeers/internal/render"
 )
 
@@ -34,6 +37,7 @@ const (
 	exitError   = 1
 	exitRefused = 2 // the safety guard refused the target cluster
 	exitPartial = 3 // capture written, but some targeted pods could not be observed
+	exitBroken  = 4 // diff: traffic that worked before is blocked or missing
 )
 
 var version = "dev"
@@ -46,6 +50,9 @@ Usage:
   podpeers render  [-format text|dot|html|json] [-o FILE] peers.json
   podpeers query   peers.json '{ pods { id peers { id kind } } }'
   podpeers serve   [-addr 127.0.0.1:8080] peers.json
+  podpeers suggest [-n NS] [-workload Kind/name] [-dns auto|always|never] [-format yaml|json] peers.json
+  podpeers diff    before.json after.json
+  podpeers mcp     peers.json            (MCP server on stdio; read-only)
   podpeers version
 
 SAFETY: capture adds a debug container to every pod the selector matches. It
@@ -78,6 +85,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return cmdQuery(rest, stdout, stderr)
 	case "serve":
 		return cmdServe(ctx, rest, stderr)
+	case "suggest":
+		return cmdSuggest(rest, stdout, stderr)
+	case "diff":
+		return cmdDiff(rest, stdout, stderr)
+	case "mcp":
+		return cmdMCP(rest, os.Stdin, stdout, stderr)
 	case "version":
 		fmt.Fprintln(stdout, "podpeers", version)
 		return exitOK
@@ -417,6 +430,113 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "podpeers: serving http://%s/ (GraphQL at /graphql)\n", *addr)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(stderr, "podpeers: %v\n", err)
+		return exitError
+	}
+	return exitOK
+}
+
+func cmdSuggest(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("suggest", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var o policy.Options
+	format := fs.String("format", "yaml", "yaml (apply-ready, reasoning as comments) or json")
+	out := fs.String("o", "-", "output file ('-' for stdout)")
+	fs.StringVar(&o.Namespace, "n", "", "only workloads in this namespace")
+	fs.StringVar(&o.Workload, "workload", "", "only this workload, Kind/name (e.g. Deployment/web)")
+	fs.StringVar(&o.DNS, "dns", policy.DNSAuto, "DNS egress: auto (if the workload has outbound traffic), always, never")
+	fs.IntVar(&o.MinSamples, "min-samples", 3, "refuse to suggest for pods with fewer samples")
+	fs.DurationVar(&o.MinWindow, "min-window", 24*time.Hour, "warn when the capture window is shorter than this")
+	fs.BoolVar(&o.AllowEmpty, "allow-empty", false, "emit deny-all for workloads with no observed traffic instead of refusing")
+	if err := fs.Parse(args); err != nil {
+		return exitError
+	}
+	if o.DNS != policy.DNSAuto && o.DNS != policy.DNSAlways && o.DNS != policy.DNSNever {
+		fmt.Fprintln(stderr, "podpeers: -dns must be auto, always or never")
+		return exitError
+	}
+	res, ok := loadArg(fs, stderr)
+	if !ok {
+		return exitError
+	}
+	rep := policy.Suggest(res, o)
+	var body string
+	switch *format {
+	case "yaml":
+		y, err := rep.YAML()
+		if err != nil {
+			fmt.Fprintf(stderr, "podpeers: %v\n", err)
+			return exitError
+		}
+		body = y
+	case "json":
+		b, _ := json.MarshalIndent(rep, "", "  ")
+		body = string(b) + "\n"
+	default:
+		fmt.Fprintf(stderr, "podpeers: unknown format %q\n", *format)
+		return exitError
+	}
+	if *out == "-" {
+		io.WriteString(stdout, body)
+	} else if err := os.WriteFile(*out, []byte(body), 0o644); err != nil {
+		fmt.Fprintf(stderr, "podpeers: %v\n", err)
+		return exitError
+	}
+	ready, refused := len(rep.Ready()), len(rep.Suggestions)-len(rep.Ready())
+	fmt.Fprintf(stderr, "podpeers: %d policy suggestion(s), %d workload(s) refused for thin evidence\n", ready, refused)
+	return exitOK
+}
+
+func cmdDiff(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return exitError
+	}
+	if fs.NArg() != 2 {
+		fmt.Fprintln(stderr, "podpeers: diff needs two capture files: before.json after.json")
+		return exitError
+	}
+	before, err := graph.LoadFile(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(stderr, "podpeers: %v\n", err)
+		return exitError
+	}
+	after, err := graph.LoadFile(fs.Arg(1))
+	if err != nil {
+		fmt.Fprintf(stderr, "podpeers: %v\n", err)
+		return exitError
+	}
+	d := diff.Compare(before, after)
+	if *asJSON {
+		b, _ := json.MarshalIndent(map[string]any{"broken": d.Broken(), "changes": d.Changes, "unverifiable": d.Unverifiable}, "", "  ")
+		fmt.Fprintln(stdout, string(b))
+	} else {
+		d.Text(stdout)
+	}
+	if d.Broken() {
+		return exitBroken
+	}
+	return exitOK
+}
+
+func cmdMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return exitError
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "podpeers: mcp needs the capture file to serve")
+		return exitError
+	}
+	if _, err := graph.LoadFile(fs.Arg(0)); err != nil {
+		fmt.Fprintf(stderr, "podpeers: %v\n", err)
+		return exitError
+	}
+	srv := &mcp.Server{CapturePath: fs.Arg(0), Version: version}
+	if err := srv.Serve(stdin, stdout); err != nil {
+		fmt.Fprintf(stderr, "podpeers: mcp: %v\n", err)
 		return exitError
 	}
 	return exitOK

@@ -282,3 +282,66 @@ func mustLoad(t *testing.T) graph.Result {
 	}
 	return r
 }
+
+func TestSuggestCLI(t *testing.T) {
+	code, out, stderr := runCLI("suggest", "-min-samples", "1", fixture)
+	if code != exitOK || !strings.Contains(out, "kind: NetworkPolicy") || !strings.Contains(stderr, "policy suggestion(s)") {
+		t.Fatalf("exit %d stderr %s", code, stderr)
+	}
+	code, out, _ = runCLI("suggest", "-format", "json", "-n", "shop", "-workload", "Pod/web", "-min-samples", "1", fixture)
+	if code != exitOK || !strings.Contains(out, `"workload": "Pod/web"`) || strings.Contains(out, `"workload": "Pod/api"`) {
+		t.Fatalf("json filter: %s", out)
+	}
+	for _, bad := range [][]string{{"suggest", "-dns", "maybe", fixture}, {"suggest", "-format", "xml", fixture}, {"suggest"}} {
+		if code, _, _ := runCLI(bad...); code != exitError {
+			t.Errorf("%v should fail", bad)
+		}
+	}
+	f := filepath.Join(t.TempDir(), "p.yaml")
+	if code, _, _ := runCLI("suggest", "-o", f, "-min-samples", "1", fixture); code != exitOK {
+		t.Fatal("suggest -o")
+	}
+	if b, _ := os.ReadFile(f); !strings.Contains(string(b), "NOT COVERED") {
+		t.Fatal("suggest -o content")
+	}
+}
+
+func TestDiffCLI(t *testing.T) {
+	code, out, _ := runCLI("diff", fixture, fixture)
+	if code != exitOK || !strings.Contains(out, "VERDICT: OK") {
+		t.Fatalf("exit %d out %s", code, out)
+	}
+	b, _ := os.ReadFile(fixture)
+	broken := strings.Replace(string(b), `"port": 8080, "protocol": "tcp", "connections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": true}`,
+		`"port": 8080, "protocol": "tcp", "connections": 1, "firstSeen": "2023-11-14T22:13:20Z", "lastSeen": "2023-11-14T22:14:15Z", "samples": 12, "open": false, "attempted": true}`, 1)
+	if broken == string(b) {
+		t.Fatal("fixture edit did not apply")
+	}
+	after := filepath.Join(t.TempDir(), "after.json")
+	os.WriteFile(after, []byte(broken), 0o644)
+	code, out, _ = runCLI("diff", fixture, after)
+	if code != exitBroken || !strings.Contains(out, "blocked") {
+		t.Fatalf("exit %d out %s", code, out)
+	}
+	code, out, _ = runCLI("diff", "-json", fixture, after)
+	if code != exitBroken || !strings.Contains(out, `"broken": true`) {
+		t.Fatalf("json: %s", out)
+	}
+	if code, _, _ := runCLI("diff", fixture); code != exitError {
+		t.Error("one file should fail")
+	}
+}
+
+func TestMCPCLI(t *testing.T) {
+	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"summary","arguments":{}}}` + "\n")
+	var out, errb bytes.Buffer
+	if code := cmdMCP([]string{fixture}, in, &out, &errb); code != exitOK || !strings.Contains(out.String(), "shop/api") {
+		t.Fatalf("exit %d out %s err %s", code, out.String(), errb.String())
+	}
+	if code := cmdMCP([]string{"/nope.json"}, strings.NewReader(""), &out, &errb); code != exitError {
+		t.Error("missing capture should fail before serving")
+	}
+	if code := cmdMCP(nil, strings.NewReader(""), &out, &errb); code != exitError {
+		t.Error("no capture should fail")
+	}
+}

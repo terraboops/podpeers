@@ -14,6 +14,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -297,6 +298,84 @@ func TestE2E(t *testing.T) {
 		}
 		text, _ := os.ReadFile(filepath.Join(outDir, "e2e-capture.text"))
 		t.Logf("rendered report:\n%s", text)
+	})
+
+	t.Run("suggestions from real traffic, refusing where evidence is thin", func(t *testing.T) {
+		capture := filepath.Join(outDir, "e2e-capture.json")
+		r := podpeers(ctx, t, "suggest", "-format", "json", capture)
+		if r.code != 0 {
+			t.Fatalf("suggest: %s", r.stderr)
+		}
+		var rep struct {
+			Suggestions []struct {
+				Workload, Refused string
+				Gaps              []string
+				Policy            *struct{ Spec map[string]any }
+			}
+		}
+		if err := json.Unmarshal([]byte(r.stdout), &rep); err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, s := range rep.Suggestions {
+			state := "policy"
+			if s.Refused != "" {
+				state = "refused: " + s.Refused
+			}
+			got[s.Workload] = state
+			t.Logf("%-14s %s", s.Workload, state)
+		}
+		for wl, want := range map[string]string{
+			"Pod/api": "policy", "Pod/web": "policy", "Pod/brief": "policy", "Pod/gateway": "policy",
+			"Pod/loner":   "refused: no traffic at all was observed",
+			"Pod/pending": "refused: no pod of this workload was observed",
+		} {
+			if !strings.HasPrefix(got[wl], want) {
+				t.Errorf("%s = %q; want prefix %q", wl, got[wl], want)
+			}
+		}
+		y := podpeers(ctx, t, "suggest", "-o", filepath.Join(outDir, "e2e-policy.yaml"), capture)
+		if y.code != 0 {
+			t.Fatal(y.stderr)
+		}
+		// Server-side validation of every suggested policy by the real API server.
+		kubectl(t, "apply", "--dry-run=server", "-f", filepath.Join(outDir, "e2e-policy.yaml"))
+	})
+
+	t.Run("MCP server answers over stdio from the real capture", func(t *testing.T) {
+		capture := filepath.Join(outDir, "e2e-capture.json")
+		cmd := exec.Command(binary, "mcp", capture)
+		cmd.Stdin = strings.NewReader(strings.Join([]string{
+			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}`,
+			`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"peers","arguments":{"pod":"pp-app/api","direction":"inbound"}}}`,
+			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"suggest_policies","arguments":{"workload":"Pod/web"}}}`,
+		}, "\n") + "\n")
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		if len(lines) != 3 {
+			t.Fatalf("want 3 responses, got %d:\n%s", len(lines), out)
+		}
+		var peersResp struct {
+			Result struct {
+				Content []struct{ Text string }
+			}
+		}
+		if err := json.Unmarshal([]byte(lines[1]), &peersResp); err != nil || len(peersResp.Result.Content) == 0 {
+			t.Fatalf("peers response: %v %.300s", err, lines[1])
+		}
+		for _, want := range []string{`"name": "excluded"`, `"name": "brief"`, `"name": "web"`} {
+			if !strings.Contains(peersResp.Result.Content[0].Text, want) {
+				t.Errorf("peers response missing %s", want)
+			}
+		}
+		if !strings.Contains(lines[2], "podpeers-web") || !strings.Contains(lines[2], "NOT COVERED") {
+			t.Errorf("suggest_policies response: %.400s", lines[2])
+		}
+		t.Logf("MCP peers response: %.300s...", lines[1])
 	})
 
 	t.Run("debug container that cannot start is reported, not waited on forever", func(t *testing.T) {

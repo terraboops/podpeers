@@ -1,0 +1,7 @@
+{
+  "name": "podpeers",
+  "description": "Turn observed pod traffic into NetworkPolicy and verify it with helm test and a before/after traffic diff.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": "https://github.com/terraboops/podpeers"
+}

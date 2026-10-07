@@ -14,31 +14,8 @@ import (
 	"github.com/terraboops/podpeers/internal/graph"
 )
 
-// Flow is an edge oriented from client to server, which is how traffic (and
-// NetworkPolicy) reads: an outbound edge on A to B is A->B; an inbound edge on
-// B from A is also A->B.
-type Flow struct {
-	From, To   string // node ids
-	Port       uint16
-	Protocol   string
-	Open       bool
-	ObservedOn string // pod whose sockets showed it
-}
-
 // Flows lists every edge as a client->server flow.
-func Flows(r graph.Result) []Flow {
-	var out []Flow
-	for _, e := range r.Edges {
-		f := Flow{Port: e.Port, Protocol: e.Protocol, Open: e.Open, ObservedOn: e.Pod}
-		if e.Direction == graph.Outbound {
-			f.From, f.To = e.Pod, e.Peer.ID()
-		} else {
-			f.From, f.To = e.Peer.ID(), e.Pod
-		}
-		out = append(out, f)
-	}
-	return out
-}
+func Flows(r graph.Result) []graph.Flow { return r.Flows() }
 
 func probeMark(p graph.Probe) string {
 	switch p.Status {
@@ -102,7 +79,13 @@ func Text(w io.Writer, r graph.Result) error {
 				arrow = "<-"
 			}
 			state := "open"
-			if !e.Open {
+			if e.FailedConnections > 0 && !e.Attempted {
+				state = fmt.Sprintf("%d failed connect(s)", e.FailedConnections)
+			}
+			switch {
+			case e.Attempted:
+				state = "ATTEMPTED, never connected (blocked?)"
+			case !e.Open:
 				state = "closed in window"
 			}
 			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s/%d\t%d\t%s\n", arrow, e.Peer.ID(), e.Peer.Kind, e.Protocol, e.Port, e.Connections, state)

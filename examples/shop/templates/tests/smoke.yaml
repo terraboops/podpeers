@@ -1,0 +1,33 @@
+# helm test: a real round trip through the front door. Each connection is held
+# for a couple of seconds so a podpeers capture running alongside observes it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-smoke
+  labels: {{- include "shop.labels" . | nindent 4 }}
+    app.kubernetes.io/component: smoke-test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+  containers:
+  - name: smoke
+    image: {{ .Values.image }}
+    imagePullPolicy: IfNotPresent
+    command:
+    - sh
+    - -c
+    - |
+      # Retry: CNIs program NetworkPolicy allow-lists for a NEW pod
+      # asynchronously, so a correct policy can still drop this pod's first
+      # second of traffic. A test that tries once would report that race as a
+      # broken policy. `timeout` bounds each attempt (nc -w alone can hang).
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        reply=$( (echo ping; sleep 2) | timeout 5 nc -w 2 {{ include "shop.fqdn" (dict "Release" .Release "component" "web" "ns" .Release.Namespace) }} 8080)
+        if [ "$reply" = "ping" ]; then echo "smoke: front door answered (attempt $i)"; exit 0; fi
+        echo "smoke: attempt $i got no answer"
+        sleep 2
+      done
+      echo "smoke: web:8080 never answered"; exit 1

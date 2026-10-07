@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -163,6 +164,7 @@ func TestRunOrchestration(t *testing.T) {
 	cs := fake.NewSimpleClientset(running, locked, pending, other, svc)
 
 	var injected []string
+	var mu sync.Mutex // the reactor runs on capture's concurrent inject goroutines
 	cs.PrependReactor("update", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		if a.GetSubresource() != "ephemeralcontainers" {
 			return false, nil, nil
@@ -171,7 +173,9 @@ func TestRunOrchestration(t *testing.T) {
 		if p.Name == "vault" {
 			return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "pods/ephemeralcontainers"}, p.Name, errors.New("denied"))
 		}
+		mu.Lock()
 		injected = append(injected, p.Name)
+		mu.Unlock()
 		if n := len(p.Spec.EphemeralContainers); n != 1 || !strings.HasPrefix(p.Spec.EphemeralContainers[0].Name, "podpeers-") {
 			t.Errorf("unexpected ephemeral containers on %s: %+v", p.Name, p.Spec.EphemeralContainers)
 		}
@@ -253,5 +257,31 @@ func TestToGraphPodDropsBookkeepingLabels(t *testing.T) {
 	}
 	if toGraphPod(pod("a", "b", corev1.PodRunning, nil)).Labels != nil {
 		t.Error("no labels should stay nil")
+	}
+}
+
+func TestWorkload(t *testing.T) {
+	yes := true
+	own := func(kind, name string) []metav1.OwnerReference {
+		return []metav1.OwnerReference{{Kind: kind, Name: name, Controller: &yes}}
+	}
+	cases := []struct {
+		labels map[string]string
+		owners []metav1.OwnerReference
+		want   string
+	}{
+		{map[string]string{"pod-template-hash": "7d9f8"}, own("ReplicaSet", "web-7d9f8"), "Deployment/web"},
+		{nil, own("ReplicaSet", "hand-made"), "ReplicaSet/hand-made"},
+		{nil, own("StatefulSet", "db"), "StatefulSet/db"},
+		{nil, own("Job", "migrate"), "Job/migrate"},
+		{nil, []metav1.OwnerReference{{Kind: "ConfigMap", Name: "x"}}, "Pod/p"}, // not a controller
+		{nil, nil, "Pod/p"},
+	}
+	for _, c := range cases {
+		p := pod("a", "p", corev1.PodRunning, c.labels)
+		p.OwnerReferences = c.owners
+		if got := Workload(p); got != c.want {
+			t.Errorf("Workload(%v %v) = %q; want %q", c.labels, c.owners, got, c.want)
+		}
 	}
 }

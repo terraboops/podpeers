@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: hygiene (no real IPs or credentials in a public repo)
+        run: ./hack/hygiene.sh
+      - name: vet and gofmt
+        run: make vet
+      - name: unit tests
+        run: go test -race -count=1 ./...
+      - name: shell syntax
+        run: bash -n hack/e2e-cluster.sh skills/podpeers-netpol/scripts/netpol-check.sh
+      - name: build
+        run: make build
+
+  e2e:
+    # A real, throwaway, single-node k3d cluster on the runner. Nothing here
+    # can reach any other cluster: the suite only uses the kubeconfig the
+    # cluster script writes to .e2e/, and refuses any other context.
+    runs-on: ubuntu-latest
+    needs: unit
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: azure/setup-helm@v4
+      - name: install k3d
+        run: curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+      - name: end-to-end against a real local cluster
+        run: make e2e
+      - name: keep the observed output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-output
+          path: .e2e/out/
+      - name: tear down
+        if: always()
+        run: ./hack/e2e-cluster.sh down || true

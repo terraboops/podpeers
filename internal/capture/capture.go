@@ -68,6 +68,14 @@ func (o *Options) defaults() {
 	if o.Logf == nil {
 		o.Logf = func(string, ...any) {}
 	}
+	// Injection runs concurrently; serialize logging so callers' loggers
+	// need not be goroutine-safe.
+	logf, mu := o.Logf, &sync.Mutex{}
+	o.Logf = func(f string, a ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		logf(f, a...)
+	}
 	if !o.AllNamespaces && o.Namespace == "" {
 		o.Namespace = "default"
 	}
@@ -440,7 +448,15 @@ func inventory(ctx context.Context, cs kubernetes.Interface, targets []corev1.Po
 					keep = append(keep, ip)
 				}
 			}
-			inv.Services = append(inv.Services, graph.Service{Namespace: s.Namespace, Name: s.Name, ClusterIPs: keep, Selector: s.Spec.Selector})
+			var ports []graph.ServicePort
+			for _, sp := range s.Spec.Ports {
+				tp := sp.TargetPort.String()
+				if sp.TargetPort.IntValue() == 0 && sp.TargetPort.StrVal == "" {
+					tp = fmt.Sprint(sp.Port) // unset targetPort defaults to port
+				}
+				ports = append(ports, graph.ServicePort{Protocol: strings.ToLower(string(sp.Protocol)), Port: uint16(sp.Port), TargetPort: tp})
+			}
+			inv.Services = append(inv.Services, graph.Service{Namespace: s.Namespace, Name: s.Name, ClusterIPs: keep, Selector: s.Spec.Selector, Ports: ports})
 		}
 	} else {
 		opts.Logf("note: cannot list services (%v); service IPs will show as addresses", shortErr(err))
@@ -466,7 +482,7 @@ func shortErr(err error) string {
 
 func toGraphPod(p *corev1.Pod) graph.Pod {
 	gp := graph.Pod{Namespace: p.Namespace, Name: p.Name, IP: p.Status.PodIP, Node: p.Spec.NodeName,
-		HostNetwork: p.Spec.HostNetwork}
+		HostNetwork: p.Spec.HostNetwork, Workload: Workload(p)}
 	for k, v := range p.Labels {
 		// Controller bookkeeping labels add noise without helping policy.
 		if k == "pod-template-hash" || k == "controller-revision-hash" || k == "pod-template-generation" {
@@ -478,4 +494,22 @@ func toGraphPod(p *corev1.Pod) graph.Pod {
 		gp.Labels[k] = v
 	}
 	return gp
+}
+
+// Workload names the controller that owns a pod: "Deployment/x" for a pod of a
+// ReplicaSet created by a Deployment (recognised by the pod-template-hash
+// suffix), "<Kind>/<name>" for any other controller, "Pod/<name>" otherwise.
+func Workload(p *corev1.Pod) string {
+	for _, o := range p.OwnerReferences {
+		if o.Controller == nil || !*o.Controller {
+			continue
+		}
+		if o.Kind == "ReplicaSet" {
+			if h := p.Labels["pod-template-hash"]; h != "" && strings.HasSuffix(o.Name, "-"+h) {
+				return "Deployment/" + strings.TrimSuffix(o.Name, "-"+h)
+			}
+		}
+		return o.Kind + "/" + o.Name
+	}
+	return "Pod/" + p.Name
 }
