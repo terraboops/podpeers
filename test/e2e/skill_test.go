@@ -252,6 +252,11 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		if r.code != 5 || !strings.Contains(r.stdout, "BROKEN: helm test failed") {
 			t.Fatalf("want exit 5, got %d", r.code)
 		}
+		// A failed helm test never sits next to an unexplained clean diff:
+		// either the diff names what broke, or the report says it cannot.
+		if strings.Contains(r.stdout, "VERDICT: OK") && !strings.Contains(r.stdout, "no evidence either way") {
+			t.Errorf("helm test failed but the traffic diff reads OK with no explanation")
+		}
 		left := kubectl(t, "get", "networkpolicy", "-n", helmNS, "-o", "name")
 		if strings.TrimSpace(left) != "" {
 			t.Fatalf("--rollback-on-fail left policies behind: %s", left)

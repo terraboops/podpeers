@@ -184,7 +184,7 @@ only if restarting is unacceptable; expect INCONCLUSIVE.
 | exit | verdict | what it means |
 |------|---------|---------------|
 | 0 | OK | helm test passed **and** no flow was blocked or lost |
-| 5 | BROKEN: helm test failed | the user-visible path is broken; read `after-helm-test.log` and `diff.txt` |
+| 5 | BROKEN: helm test failed | the user-visible path is broken; read `after-helm-test.log` and `diff.txt`. The diff may show nothing blocked: a test pod's one short connection is sampled too rarely to tell blocked from unseen, and the report says so. The test log is the evidence |
 | 4 | BROKEN: helm test passed, traffic blocked/lost | the test does not exercise what broke; the diff names the flow |
 | 7 | INCONCLUSIVE | some flows were only seen on connections older than the policy (`preexisting` lines): the policy was never exercised for them. Restart those workloads and verify again. Never report this as OK |
 | 2 | context refused | nothing was touched |

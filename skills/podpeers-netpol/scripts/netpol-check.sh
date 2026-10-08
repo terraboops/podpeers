@@ -195,6 +195,12 @@ case "$CMD" in
       echo
       echo "traffic diff (baseline -> with policy):"
       cat "$OUT/diff.txt"
+      if [ "$TEST_OK" != 1 ] && [ "$DIFF_CODE" = 0 ]; then
+        echo
+        echo "note: the traffic diff has no evidence either way here: what broke was too short-lived to"
+        echo "sample reliably (a test pod's single connection is caught in a few samples at best; see any"
+        echo "glimpsed line). helm test's failure is the signal; its log shows what failed: $OUT/after-helm-test.log"
+      fi
     } | tee "$OUT/verdict.txt"
     if [ "$CODE" != 0 ] && [ "$ROLLBACK_ON_FAIL" = 1 ]; then
       say "rolling back $POLICY"
