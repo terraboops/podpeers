@@ -108,11 +108,23 @@ on the closing side (above). **For UDP it is the whole story**: a shorter
 interval directly catches more short UDP exchanges.
 
 **Shorter intervals cost CPU on the pods' nodes.** Each sample starts two
-processes in the debug container (one `cat`, one `sleep`). At 1s that is 2 per
-second per pod; at 100ms, 20 per second per pod, on every probed pod's node.
-podpeers prints that cost whenever `--interval` is under 1s and refuses
-anything under 100ms. Timestamps come from `/proc/uptime`, so they resolve to
-10ms.
+processes in the debug container (one `cat`, one `sleep`). Measured with the
+kubelet's per-container CPU accounting (k3s, arm64, an idle pod, 70s captures):
+
+| sampler | interval | CPU per probed pod | samples in 70s (expected) |
+|---|---|---|---|
+| v1 (until 678eadb: `date` + 4 `cat` per sample) | 5s | 1.3 millicores | 15 (15) |
+| v1 | 1s | 10.3 millicores | 70 (71) |
+| current | **1s (default)** | **6.2 millicores** | 71 (71) |
+| current | 200ms | 27.4 millicores | 351 (351) |
+| current | 100ms | 55.7 millicores (5.6% of one core) | 701 (701) |
+
+So about **6ms of CPU per sample**, per probed pod, on that pod's node.
+Multiply by the number of pods a selector matches. podpeers prints the cost
+whenever `--interval` is under 1s and refuses anything under 100ms. Samples
+are scheduled on a fixed grid (an earlier version slept a fixed interval after
+each sample and fell 6% behind at 100ms). Timestamps come from `/proc/uptime`,
+so they resolve to 10ms, and the interval must be a whole number of 10ms.
 
 The defaults are `--duration 5m` and `--interval 1s`:
 
@@ -122,6 +134,6 @@ The defaults are `--duration 5m` and `--interval 1s`:
   always seen; a shorter one is seen through `TIME_WAIT` when its closing
   side was sampled, and otherwise only with a probability of roughly its
   lifetime divided by the interval. UDP gets a 1-second memory. The cost is
-  2 process starts per second per pod.
+  about 6 millicores of CPU per probed pod (measured).
 - **Sub-second** is available (`--interval 200ms`) when UDP traffic matters
   more than node CPU. It is not the default.

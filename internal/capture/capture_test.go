@@ -73,7 +73,7 @@ func TestDebugContainerIsRestrictedAndSelfTerminating(t *testing.T) {
 		t.Error("no process-namespace targeting is needed for /proc/net")
 	}
 	script := strings.Join(c.Command, " ")
-	if !strings.Contains(script, "+ 3000 ))") || !strings.Contains(script, "sleep 5") || !strings.Contains(script, "break") {
+	if !strings.Contains(script, "+ 3000 ))") || !strings.Contains(script, "next + 500 ))") || !strings.Contains(script, "break") {
 		t.Fatalf("sampler must stop by itself after the window: %s", script)
 	}
 }
@@ -333,7 +333,7 @@ func TestSubSecondIntervalsAreAccepted(t *testing.T) {
 			t.Errorf("%s rejected: %v", iv, err)
 		}
 	}
-	if c := SamplingCost(100 * time.Millisecond); !strings.HasPrefix(c, "20 process starts per second") {
+	if c := SamplingCost(100 * time.Millisecond); !strings.HasPrefix(c, "20 process starts per second") || !strings.Contains(c, "about 60 millicores") {
 		t.Errorf("cost at 100ms = %q", c)
 	}
 	if c := SamplingCost(time.Second); !strings.HasPrefix(c, "2 process starts per second") {

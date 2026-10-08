@@ -207,20 +207,36 @@ const MinInterval = 100 * time.Millisecond
 // MinInterval).
 func SamplerScript(duration, interval time.Duration) string {
 	durCS := int64(duration / (10 * time.Millisecond))
-	sleep := strconv.FormatFloat(interval.Seconds(), 'f', -1, 64)
+	ivCS := int64(interval / (10 * time.Millisecond))
+	if ivCS < 1 {
+		ivCS = 1
+	}
+	// Samples are scheduled on a fixed grid (start + k*interval), not with a
+	// fixed sleep after each one: each sample costs a few milliseconds, and a
+	// fixed sleep let that accumulate (656 samples instead of 701 at 100ms
+	// over 70s, measured). The remaining time to the next tick is computed in
+	// centiseconds and formatted as seconds with shell builtins only.
 	return fmt.Sprintf(`echo '%s'
 read up0 rest < /proc/uptime
 echo "%s$(date +%%s) $up0"
-end=$(( ${up0%%.*}${up0#*.} + %d ))
+t0=${up0%%.*}${up0#*.}
+end=$(( t0 + %d ))
+next=$t0
 while :; do
   read up rest < /proc/uptime
   echo "%s$up"
   cat /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6 2>/dev/null
-  [ "${up%%.*}${up#*.}" -ge "$end" ] && break
-  sleep %s
+  [ "$next" -ge "$end" ] && break
+  next=$(( next + %d ))
+  read up rest < /proc/uptime
+  left=$(( next - ${up%%.*}${up#*.} ))
+  if [ "$left" -gt 0 ]; then
+    f=$(( left %% 100 )); [ "$f" -lt 10 ] && f=0$f
+    sleep $(( left / 100 )).$f
+  fi
 done
 echo '%s'
-`, markerHeader, markerAnchor, durCS, markerSample, sleep, markerEnd)
+`, markerHeader, markerAnchor, durCS, markerSample, ivCS, markerEnd)
 }
 
 // tableProtocol classifies a /proc/net socket-table header line. The kernel

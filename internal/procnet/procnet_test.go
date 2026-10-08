@@ -1,7 +1,10 @@
 package procnet
 
 import (
+	"bytes"
 	"net/netip"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -175,15 +178,15 @@ func TestParseSamplerOutputErrors(t *testing.T) {
 
 func TestSamplerScript(t *testing.T) {
 	for _, c := range []struct {
-		d, i     time.Duration
-		end, slp string
+		d, i      time.Duration
+		end, step string
 	}{
-		{30 * time.Second, time.Second, "+ 3000 ))", "sleep 1\n"},
-		{60 * time.Second, 200 * time.Millisecond, "+ 6000 ))", "sleep 0.2\n"},
-		{5 * time.Minute, 1500 * time.Millisecond, "+ 30000 ))", "sleep 1.5\n"},
+		{30 * time.Second, time.Second, "+ 3000 ))", "next + 100 ))"},
+		{60 * time.Second, 200 * time.Millisecond, "+ 6000 ))", "next + 20 ))"},
+		{5 * time.Minute, 1500 * time.Millisecond, "+ 30000 ))", "next + 150 ))"},
 	} {
 		s := SamplerScript(c.d, c.i)
-		for _, want := range []string{"@@podpeers v2", "@@anchor", "read up rest < /proc/uptime", c.end, c.slp,
+		for _, want := range []string{"@@podpeers v2", "@@anchor", "read up rest < /proc/uptime", c.end, c.step,
 			"cat /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6", "@@end"} {
 			if !strings.Contains(s, want) {
 				t.Errorf("script(%s, %s) missing %q:\n%s", c.d, c.i, want, s)
@@ -196,6 +199,30 @@ func TestSamplerScript(t *testing.T) {
 		}
 		if strings.Contains(s, "%!") {
 			t.Errorf("format verb leaked into script:\n%s", s)
+		}
+	}
+}
+
+func TestSamplerScriptRunsOnAFixedGrid(t *testing.T) {
+	// Runs the real script under sh where /proc/uptime exists (Linux CI);
+	// elsewhere the e2e suite checks the cadence on a real cluster.
+	if _, err := os.Stat("/proc/uptime"); err != nil {
+		t.Skip("needs /proc/uptime (Linux); the e2e suite checks the cadence on a real cluster")
+	}
+	out, err := exec.Command("sh", "-c", SamplerScript(2*time.Second, 200*time.Millisecond)).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseSamplerOutput(bytes.NewReader(out))
+	if err != nil || !parsed.Complete {
+		t.Fatalf("err=%v complete=%v", err, parsed.Complete)
+	}
+	if n := len(parsed.Samples); n != 11 {
+		t.Errorf("2s at 200ms on a fixed grid must take 11 samples, got %d", n)
+	}
+	for i := 1; i < len(parsed.Samples); i++ {
+		if gap := parsed.Samples[i].Time.Sub(parsed.Samples[i-1].Time); gap < 150*time.Millisecond || gap > 260*time.Millisecond {
+			t.Errorf("gap %d = %s; want about 200ms", i, gap)
 		}
 	}
 }

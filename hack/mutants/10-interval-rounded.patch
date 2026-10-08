@@ -5,7 +5,7 @@
 # right reason, not just any reason).
 # unit-pkg: ./internal/procnet/
 # unit-run: TestSamplerScript
-# unit-expect: missing \"sleep 0\.2
+# unit-expect: missing \"next \+ 20 \)\)
 # e2e-run: TestE2E/sub-second
 # e2e-expect: want about 21 samples at 200ms
 --- a/internal/procnet/procnet.go
@@ -14,8 +14,8 @@
  // MinInterval).
  func SamplerScript(duration, interval time.Duration) string {
  	durCS := int64(duration / (10 * time.Millisecond))
--	sleep := strconv.FormatFloat(interval.Seconds(), 'f', -1, 64)
-+	sleep := strconv.Itoa(max(1, int(interval.Round(time.Second)/time.Second)))
- 	return fmt.Sprintf(`echo '%s'
- read up0 rest < /proc/uptime
- echo "%s$(date +%%s) $up0"
+-	ivCS := int64(interval / (10 * time.Millisecond))
++	ivCS := max(1, int64(interval.Round(time.Second)/time.Second)) * 100
+ 	if ivCS < 1 {
+ 		ivCS = 1
+ 	}

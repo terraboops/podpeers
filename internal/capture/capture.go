@@ -41,10 +41,15 @@ const (
 	DefaultDuration = 5 * time.Minute
 )
 
-// SamplingCost describes the process starts a capture adds per probed pod.
+// CPUPerSample is the measured CPU cost of one sample (k3s, arm64, busybox
+// 1.36: 5.6 to 6.3ms at intervals from 100ms to 1s; see docs/method.md).
+const CPUPerSample = 6 * time.Millisecond
+
+// SamplingCost describes what a capture adds per probed pod.
 func SamplingCost(interval time.Duration) string {
-	perSec := 2 * float64(time.Second) / float64(interval)
-	return fmt.Sprintf("%.3g process starts per second (one cat, one sleep per sample) in each probed pod's debug container, on that pod's node", perSec)
+	perSec := float64(time.Second) / float64(interval)
+	milli := perSec * float64(CPUPerSample) / float64(time.Millisecond)
+	return fmt.Sprintf("%.3g process starts per second (one cat, one sleep per sample) in each probed pod's debug container, on that pod's node: about %.0f millicores of CPU per probed pod (measured: about 6ms of CPU per sample)", 2*perSec, milli)
 }
 
 // Options configure a capture.
@@ -112,8 +117,8 @@ func (o Options) Validate() error {
 	if o.Interval < procnet.MinInterval {
 		return fmt.Errorf("interval %s is below the %s minimum: each sample starts two processes in the debug container, and shorter intervals would mostly measure the sampler itself", o.Interval, procnet.MinInterval)
 	}
-	if o.Interval%time.Millisecond != 0 {
-		return fmt.Errorf("interval %s must be a whole number of milliseconds", o.Interval)
+	if o.Interval%(10*time.Millisecond) != 0 {
+		return fmt.Errorf("interval %s must be a whole number of 10ms (samples are scheduled on /proc/uptime, which counts in 10ms steps)", o.Interval)
 	}
 	if o.Duration%(10*time.Millisecond) != 0 {
 		return fmt.Errorf("duration %s must be a whole number of 10ms (the resolution of /proc/uptime)", o.Duration)

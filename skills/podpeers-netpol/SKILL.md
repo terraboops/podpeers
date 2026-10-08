@@ -14,7 +14,8 @@ baseline capture (helm test running)  ->  suggestions  ->  review with the user
       ->  fix or roll back  ->  ship it in the chart and verify that too
 ```
 
-`scripts/netpol-check.sh` (next to this file) does the mechanical steps. Your
+`scripts/netpol-check.sh` (next to this file; use its absolute path, and give
+`--out` absolute paths too if you change directory) does the mechanical steps. Your
 job is the judgement: reading the reasoning and gaps, telling the user what the
 policy will cost them, and deciding what a failure means.
 
@@ -50,7 +51,8 @@ policy will cost them, and deciding what a failure means.
   checkout of the podpeers repo run `make build` (binary at `bin/podpeers`).
   `go install` puts the binary in `$GOBIN` (default `~/go/bin`), which may not
   be on `PATH`. The script runs `$PODPEERS` if set, otherwise `podpeers` from
-  `PATH`. Check with `podpeers version`. `kubectl` and `helm` must be on `PATH` as well.
+  `PATH`. Check with `podpeers version`, or `"$PODPEERS" version` / `"$GOBIN/podpeers" version`
+  when it is not on `PATH`. `kubectl` and `helm` must be on `PATH` as well.
 - **The release exists:**
   `helm status <release> -n <ns> --kube-context <ctx> [--kubeconfig <path>]`.
 - **Which pods to observe.** The script selects
@@ -68,9 +70,10 @@ policy will cost them, and deciding what a failure means.
   `examples/shop/templates/tests/smoke.yaml` in the podpeers repo.
 - **The CNI enforces NetworkPolicy**, or a "verified" policy proves nothing.
   kind's default CNI does not; Calico and Cilium do; k3s/k3d do *unless*
-  started with `--disable-network-policy`. Check rather than assume: on k3s,
-  `kubectl get node <node> -o jsonpath='{.metadata.annotations.k3s\.io/node-args}'`
-  must not contain `--disable-network-policy`. Anywhere, the definitive test
+  started with `--disable-network-policy`. Check rather than assume: on k3s the
+  flag is set on the server (control-plane) nodes, so
+  `kubectl get nodes -l node-role.kubernetes.io/control-plane -o jsonpath='{range .items[*]}{.metadata.name}: {.metadata.annotations.k3s\.io/node-args}{"\n"}{end}'`
+  must not show `--disable-network-policy` (agent nodes only show `["agent"]`). Anywhere, the definitive test
   (it creates and deletes a scratch namespace, so ask the user first) is a
   connection that works, then fails under a deny-all policy. Add
   `--context <ctx> [--kubeconfig <path>]` to each command, written out, not
@@ -80,9 +83,11 @@ policy will cost them, and deciding what a failure means.
   kubectl run target -n netpol-enforcement-check --image=busybox:1.36 --labels=app=target --command -- nc -lk -p 8080 -e cat
   kubectl wait -n netpol-enforcement-check --for=condition=Ready pod/target
   IP=$(kubectl get pod target -n netpol-enforcement-check -o jsonpath='{.status.podIP}')
-  # run twice: before and after the deny-all; expect REACHABLE, then BLOCKED
-  kubectl run probe -n netpol-enforcement-check --image=busybox:1.36 --restart=Never --rm -i --quiet --command -- \
+  # run twice: before and after the deny-all; expect REACHABLE, then BLOCKED.
+  # (deleted explicitly, not with --rm: some agent sandboxes refuse --rm next to sh -c)
+  kubectl run probe -n netpol-enforcement-check --image=busybox:1.36 --restart=Never -i --quiet --command -- \
     sh -c "sleep 10; timeout 5 nc -z -w 3 $IP 8080 && echo REACHABLE || echo BLOCKED"
+  kubectl delete pod probe -n netpol-enforcement-check
   printf 'apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata: {name: deny-all}\nspec: {podSelector: {}, policyTypes: [Ingress]}\n' \
     | kubectl apply -n netpol-enforcement-check -f -
   kubectl delete namespace netpol-enforcement-check
@@ -264,15 +269,27 @@ Never leave a BROKEN policy applied without telling the user.
 Once `verify` is OK, offer to put the policy into the chart so it ships with
 the release and `helm test` keeps guarding it:
 
-1. Add `templates/networkpolicy.yaml`, gated by `.Values.networkPolicy.enabled`.
+1. Add `templates/networkpolicy.yaml`, gated by `.Values.networkPolicy.enabled`,
+   and add the key to `values.yaml` (`networkPolicy:` / `  enabled: false`):
+   rendering fails on the missing key otherwise.
    Ask the user what the default should be: `false` lets existing installs
    opt in; `true` ships it everywhere. Replace hard-coded labels with the
    chart's label helpers and the namespace with `{{ .Release.Namespace }}`;
    keep the NOT COVERED notes as comments; keep `helm test` able to reach what
    it tests (its pod is a client too). Its labels must come from the same
    helpers as the policy's selectors: render the chart under another release
-   name and namespace (`helm template other <chart> -n elsewhere --set networkPolicy.enabled=true`)
-   and check the test pod still matches the policy's `from` selector.
+   name and namespace and check the test pod still matches the policy's
+   `from` selector (`kubectl create --dry-run=client` needs the usual
+   `--context`/`--kubeconfig`; `helm template` is offline). The policy for
+   the workload the test calls must say "admits the test pod":
+   ```bash
+   helm template other <chart> -n elsewhere --set networkPolicy.enabled=true > other.yaml
+   kubectl create --dry-run=client -o json -f other.yaml | jq -s -r '
+     ([.[] | select(.kind == "Pod" and .metadata.annotations["helm.sh/hook"] == "test")][0].metadata.labels) as $test
+     | .[] | select(.kind == "NetworkPolicy") | .metadata.name as $np
+     | .spec.ingress[]?.from[]? | (.podSelector.matchLabels // {}) as $sel
+     | "\($np): \(if ($sel | to_entries | all(.value == $test[.key])) then "admits the test pod" else "does not admit the test pod" end)"'
+   ```
 2. **Name the templated policies differently from the `podpeers-<workload>`
    ones `verify` applied** (e.g. `{{ .Release.Name }}-web`). Same names make
    `helm upgrade` fail: Helm will not adopt objects it did not create.
