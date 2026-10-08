@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -228,9 +229,7 @@ func TestRefusals(t *testing.T) {
 		{"too few samples", func(r *graph.Result) { r.Pods[0].Probe.Samples = 2 }, "only 2 sample(s)"},
 		{"no labels", func(r *graph.Result) { r.Pods[0].Labels = map[string]string{"pod-template-hash": "x"} }, "share no stable labels"},
 		{"hostNetwork", func(r *graph.Result) { r.Pods[0].HostNetwork = true }, "hostNetwork"},
-		{"no traffic", func(r *graph.Result) {
-			r.Edges = r.Edges[3:] // drop everything on api
-		}, "no traffic at all was observed"},
+		{"no traffic", func(r *graph.Result) { *r = withoutAPITraffic(*r) }, "no traffic at all was observed"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -252,8 +251,7 @@ func TestRefusals(t *testing.T) {
 }
 
 func TestAllowEmptyEmitsDenyAll(t *testing.T) {
-	r := shop()
-	r.Edges = r.Edges[3:]
+	r := withoutAPITraffic(shop())
 	api := find(t, Suggest(r, Options{AllowEmpty: true}), "Deployment/api")
 	if api.Policy == nil || len(api.Policy.Spec.Ingress) != 0 || len(api.Policy.Spec.Egress) != 0 {
 		t.Fatalf("want deny-all, got %+v", api)
@@ -356,8 +354,19 @@ func TestDNSModes(t *testing.T) {
 	if api := find(t, Suggest(r, Options{}), "Deployment/api"); len(api.Policy.Spec.Egress) != 0 {
 		t.Errorf("auto added egress to ingress-only workload: %+v", api.Policy.Spec.Egress)
 	}
-	if api := find(t, Suggest(r, Options{DNS: DNSAlways}), "Deployment/api"); len(api.Policy.Spec.Egress) != 1 {
-		t.Errorf("always should add DNS: %+v", api.Policy.Spec.Egress)
+	api := find(t, Suggest(r, Options{DNS: DNSAlways}), "Deployment/api")
+	if len(api.Policy.Spec.Egress) != 1 {
+		t.Fatalf("always should add DNS: %+v", api.Policy.Spec.Egress)
+	}
+	// The DNS rule reaches the cluster DNS pods only: port 53 anywhere would
+	// let a workload query (or tunnel through) any DNS server.
+	dns := api.Policy.Spec.Egress[0]
+	to := dns.To[0]
+	ok := to.IPBlock == nil && to.NamespaceSelector != nil && to.PodSelector != nil &&
+		to.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == "kube-system" &&
+		to.PodSelector.MatchLabels["k8s-app"] == "kube-dns" && len(dns.Ports) == 2
+	if !ok {
+		t.Errorf("DNS rule must reach only the cluster DNS pods on udp/53 and tcp/53; got %+v", dns)
 	}
 }
 
@@ -476,5 +485,63 @@ func TestReportCarriesCaptureLimitsAndUDPListeners(t *testing.T) {
 	api := find(t, rep, "Deployment/api")
 	if !hasGap(api, "Listens on udp/5353: an unconnected UDP socket records no peer") || hasGap(api, "Listens on udp/5353 but no client") {
 		t.Errorf("UDP listener gap wrong: %v", api.Gaps)
+	}
+}
+
+// withoutAPITraffic removes every record of api's traffic, from both ends:
+// api's own edges and its clients' edges to it.
+func withoutAPITraffic(r graph.Result) graph.Result {
+	var keep []graph.Edge
+	for _, e := range r.Edges {
+		if strings.HasPrefix(e.Pod, "shop/api-") || e.Peer.ID() == "svc/shop/api" {
+			continue
+		}
+		keep = append(keep, e)
+	}
+	r.Edges = keep
+	return r
+}
+
+// An unconnected UDP server names no client in its own sockets; its clients'
+// connected sockets do. Their outbound edges are its ingress evidence.
+func TestClientSideIngress(t *testing.T) {
+	r := shop()
+	r.Services = append(r.Services, graph.Service{Namespace: "shop", Name: "stats", Selector: map[string]string{"app": "api"},
+		Ports: []graph.ServicePort{{Protocol: "udp", Port: 8125, TargetPort: "8125"}}})
+	udp := func(pod string, peer graph.Peer, port uint16, attempted bool) graph.Edge {
+		e := edge(pod, graph.Outbound, peer, port)
+		e.Protocol, e.Attempted = "udp", attempted
+		return e
+	}
+	r.Edges = append(r.Edges,
+		udp("shop/web-a", svcPeer("shop", "stats"), 8125, false),                                              // through a Service
+		udp("edge/gateway-x", graph.Peer{Kind: graph.PeerPod, Namespace: "shop", Name: "api-1"}, 9999, false), // straight at a pod
+		udp("shop/web-b", graph.Peer{Kind: graph.PeerPod, Namespace: "shop", Name: "api-1"}, 7777, true))      // attempted only
+	api := find(t, Suggest(r, Options{}), "Deployment/api")
+	got := map[string]bool{}
+	for _, in := range api.Policy.Spec.Ingress {
+		for _, p := range in.Ports {
+			got[fmt.Sprintf("%v %s/%s", in.From[0].PodSelector.MatchLabels["app"], strings.ToLower(string(*p.Protocol)), p.Port.String())] = true
+		}
+	}
+	for _, want := range []string{"web udp/8125", "gateway udp/9999", "web tcp/8080"} {
+		if !got[want] {
+			t.Errorf("missing ingress %q; got %v", want, got)
+		}
+	}
+	if got["web udp/7777"] {
+		t.Error("an attempted-only flow must not be allowed")
+	}
+	// The server-side view of web over TCP is not repeated by the client's
+	// view through the Service's NAMED target port.
+	if got["web tcp/http"] {
+		t.Errorf("client-side duplicate of a flow the server saw: %v", got)
+	}
+	ev := ""
+	for _, rs := range api.Reasons {
+		ev += strings.Join(rs.Evidence, "\n")
+	}
+	if !strings.Contains(ev, "web-a -> svc/shop/stats udp/8125") || !strings.Contains(ev, "seen from the CLIENT's side only") {
+		t.Errorf("evidence should say the rule rests on the client's view:\n%s", ev)
 	}
 }

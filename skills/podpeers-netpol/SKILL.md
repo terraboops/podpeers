@@ -142,7 +142,9 @@ Read `policy.yaml` (or `policy.json`) and present, per workload:
     scrapers), which become closed;
   - *UDP listeners*: an unconnected UDP socket (DNS, QUIC, syslog) records
     no peer, so its clients were invisible from that side; unless they were
-    captured from their own side, the policy drops all UDP to that port;
+    captured from their own side, the policy drops all UDP to that port
+    (clients that were captured are admitted, with evidence marked "seen from
+    the CLIENT's side only");
   - *window/interval limits*: short connections and weekly jobs are invisible
     (the report's "could not see" list states this capture's numbers; see
     `docs/method.md` in the podpeers repo);

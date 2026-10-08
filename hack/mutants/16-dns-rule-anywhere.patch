@@ -1,0 +1,22 @@
+# Mutant 16-dns-rule-anywhere: breaks the protection for "the DNS rule reaches only the cluster DNS".
+# Bug introduced: the DNS rule allows port 53 to any address instead of the cluster DNS pods.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/policy/
+# unit-run: TestDNSModes
+# unit-expect: DNS rule must reach only the cluster DNS pods
+# e2e-run: TestPolicyEnforcementUDPAndDNS
+# e2e-expect: ENFORCEMENT DOES NOT MATCH INTENT: client -> another DNS server \(udp/53, decoy\) is allowed
+--- a/internal/policy/policy.go
++++ b/internal/policy/policy.go
+@@ -579,8 +579,7 @@
+ 				}
+ 			}
+ 		} else {
+-			peer := netv1.NetworkPolicyPeer{NamespaceSelector: nsSelector(b.kubeDNSNS),
+-				PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"k8s-app": "kube-dns"}}}
++			peer := netv1.NetworkPolicyPeer{IPBlock: &netv1.IPBlock{CIDR: "0.0.0.0/0"}} // port 53 anywhere
+ 			desc := "cluster DNS (pods k8s-app=kube-dns in kube-system)"
+ 			add(egress, &egressOrder, "dns", peer, desc, port{"udp", "53"}, "", true)
+ 			add(egress, &egressOrder, "dns", peer, desc, port{"tcp", "53"}, "", true)

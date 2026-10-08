@@ -1,0 +1,21 @@
+# Mutant 15-client-side-ignored: breaks the protection for "clients seen only from their own side are a server's ingress".
+# Bug introduced: an unconnected UDP server's clients, recorded only by the clients' own sockets, are ignored, so the server gets no policy at all.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/policy/
+# unit-run: TestClientSideIngress
+# unit-expect: missing ingress "web udp/8125"
+# e2e-run: TestPolicyEnforcementUDPAndDNS
+# e2e-expect: pp-dgram-srv/Deployment/geo refused
+--- a/internal/policy/policy.go
++++ b/internal/policy/policy.go
+@@ -545,7 +545,7 @@
+ 	// (connected) socket. Another captured pod's outbound edge that lands on
+ 	// this workload, at one of its pods or through a Service selecting them,
+ 	// is ingress evidence too.
+-	for _, cs := range b.clientSide(edges, ids, pods) {
++	for _, cs := range b.clientSide(edges, ids, pods)[:0] {
+ 		peer, desc, g := b.podPeer(cs.client.ID(), s.Namespace)
+ 		if g != "" {
+ 			gap(g)

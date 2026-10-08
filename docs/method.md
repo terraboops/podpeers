@@ -67,9 +67,29 @@ the client's side, and only if the client connected its socket. Many clients
 do; a client that sends without connecting is invisible on both sides. This is
 a property of the kernel interface, not a podpeers bug.
 
-`podpeers suggest` names unconnected UDP listeners explicitly: unless their
-clients were captured from the client side, a policy built from the capture
-drops all UDP to those ports.
+So capture the clients too. A client's connected socket names the server
+(or its Service), and `podpeers suggest` uses that as the server's ingress
+evidence: the server's policy admits the client, and the reasoning says the
+rule rests on the client's side only. An early version ignored it: it refused
+to write any policy for such a server ("no traffic at all was observed")
+while the capture held the client's record of sending to it every second.
+The end-to-end suite applies the policy and proves it with real datagrams:
+the captured client gets through, a stranger does not. `podpeers suggest`
+still names any unconnected UDP listener none of whose clients was
+captured: a policy built from the capture drops all UDP to those ports.
+
+### The DNS rule
+
+DNS lookups are sub-second UDP exchanges that sampling rarely catches, so
+`podpeers suggest` adds DNS egress whenever a workload makes outbound
+connections (`--dns auto`), marked ASSUMED. The rule allows udp/53 and tcp/53
+to the cluster DNS pods (`k8s-app=kube-dns` in `kube-system`) and nowhere
+else. Measured with the rule applied: lookups through the cluster DNS work
+over both protocols, while a query to any other DNS server on udp/53 and the
+DNS pod's metrics port are blocked. With only that rule removed, a lookup gets
+no answer and fails after the resolver's 5-second timeout ("connection timed
+out; no servers could be reached"): every connection by name fails, and
+connections by address keep working. `--dns never` leaves it out and says so.
 
 ### 3. Services hide the pod behind them, on the client side
 

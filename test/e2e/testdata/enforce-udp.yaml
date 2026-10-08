@@ -1,0 +1,88 @@
+# UDP and DNS policy enforcement fixture.
+#
+# Captured (label podpeers-e2e=dgram):
+#   pp-dgram/client -> svc pp-dgram-srv/geo udp/53, over a CONNECTED UDP socket
+#   pp-dgram-srv/geo: busybox dnsd, an UNCONNECTED UDP server, so its own
+#   socket table never shows who sends to it
+# Not captured, used only to probe what the policies must block:
+#   pp-dgram/stranger (geo's would-be client without client's labels)
+#   pp-dgram-other/decoy: another DNS server on udp/53
+# The servers are DNS servers so a probe can tell a datagram arrived: a query
+# for probe.test gets an answer only if it got through. geo answers
+# 192.0.2.1, decoy 192.0.2.2.
+apiVersion: v1
+kind: Namespace
+metadata: {name: pp-dgram}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: pp-dgram-srv}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: pp-dgram-other}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: zone, namespace: pp-dgram-srv}
+data: {dnsd.conf: "probe.test 192.0.2.1\n"}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: zone, namespace: pp-dgram-other}
+data: {dnsd.conf: "probe.test 192.0.2.2\n"}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: geo, namespace: pp-dgram-srv}
+spec: {selector: {app: geo}, ports: [{port: 53, targetPort: 53, protocol: UDP}]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: geo, namespace: pp-dgram-srv}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: geo}}
+  template:
+    metadata: {labels: {app: geo, podpeers-e2e: dgram}}
+    spec:
+      terminationGracePeriodSeconds: 1
+      nodeSelector: {kubernetes.io/hostname: k3d-podpeers-e2e-server-0}
+      volumes: [{name: zone, configMap: {name: zone}}]
+      containers:
+      - {name: main, image: busybox:1.36, imagePullPolicy: IfNotPresent, command: ["dnsd", "-c", "/zone/dnsd.conf"], volumeMounts: [{name: zone, mountPath: /zone}]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: client, namespace: pp-dgram}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: client}}
+  template:
+    metadata: {labels: {app: client, podpeers-e2e: dgram}}
+    spec:
+      terminationGracePeriodSeconds: 1
+      nodeSelector: {kubernetes.io/hostname: k3d-podpeers-e2e-agent-0}
+      containers:
+      - name: feed
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        # one datagram a second on one connected socket
+        command: ["sh", "-c", "while true; do echo q; sleep 1; done | nc -u geo.pp-dgram-srv.svc.cluster.local 53"]
+      - {name: probe, image: busybox:1.36, imagePullPolicy: IfNotPresent, command: ["sleep", "86400"]}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: stranger, namespace: pp-dgram, labels: {app: stranger}}
+spec:
+  terminationGracePeriodSeconds: 1
+  containers: [{name: main, image: busybox:1.36, imagePullPolicy: IfNotPresent, command: ["sleep", "86400"]}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: decoy, namespace: pp-dgram-other, labels: {app: decoy}}
+spec:
+  terminationGracePeriodSeconds: 1
+  volumes: [{name: zone, configMap: {name: zone}}]
+  containers:
+  - {name: main, image: busybox:1.36, imagePullPolicy: IfNotPresent, command: ["dnsd", "-c", "/zone/dnsd.conf"], volumeMounts: [{name: zone, mountPath: /zone}]}

@@ -199,6 +199,92 @@ func nodeCaveat(p graph.Peer) string {
 	return "node IPs change when nodes are replaced."
 }
 
+type clientSeen struct {
+	client graph.Peer
+	port   port
+	ev     string
+}
+
+// clientSide finds other captured pods' outbound edges that land on the
+// workload made of ids/pods, directly or through a Service whose selector
+// picks its pods. Attempted-only edges never count. own is the workload's own
+// edges, so a client the workload itself already saw is not counted twice.
+func (b *builder) clientSide(own []graph.Edge, ids map[string]bool, pods []graph.Pod) []clientSeen {
+	seen := map[string]bool{}
+	sawClient := map[string]bool{} // client ID + protocol, any port
+	for _, e := range own {
+		if e.Direction == graph.Inbound {
+			seen[e.Peer.ID()+" "+e.Protocol+"/"+fmt.Sprint(e.Port)] = true
+			sawClient[e.Peer.ID()+" "+e.Protocol] = true
+		}
+	}
+	var out []clientSeen
+	for _, e := range b.res.Edges {
+		if ids[e.Pod] || e.Direction != graph.Outbound || e.Attempted {
+			continue
+		}
+		target := ""
+		switch e.Peer.Kind {
+		case graph.PeerPod:
+			if ids[e.Peer.ID()] {
+				target = fmt.Sprint(e.Port)
+			}
+		case graph.PeerService:
+			svc, ok := b.services[e.Peer.Namespace+"/"+e.Peer.Name]
+			if !ok || len(svc.Selector) == 0 || !selects(svc.Selector, pods) {
+				continue
+			}
+			for _, sp := range svc.Ports {
+				if sp.Port == e.Port && sp.Protocol == e.Protocol {
+					target = sp.TargetPort
+				}
+			}
+		}
+		if target == "" {
+			continue
+		}
+		cp, ok := b.pods[e.Pod]
+		if !ok {
+			continue
+		}
+		client := graph.Peer{Kind: graph.PeerPod, Namespace: cp.Namespace, Name: cp.Name, IP: cp.IP}
+		if seen[client.ID()+" "+e.Protocol+"/"+target] {
+			continue
+		}
+		// A named target port cannot be compared with the numbers this
+		// workload's own sockets show; if it already saw this client over the
+		// same protocol, that is the same flow.
+		if _, err := strconv.Atoi(target); err != nil && sawClient[client.ID()+" "+e.Protocol] {
+			continue
+		}
+		seen[client.ID()+" "+e.Protocol+"/"+target] = true
+		state := "open at window end"
+		if !e.Open {
+			state = "closed during the window"
+		}
+		out = append(out, clientSeen{client, port{e.Protocol, target}, fmt.Sprintf(
+			"%s -> %s %s/%d: %d connection(s), seen in %d sample(s), %s; seen from the CLIENT's side only (this workload's own sockets do not name it)",
+			cp.Name, e.Peer.ID(), e.Protocol, e.Port, e.Connections, e.Samples, state)})
+	}
+	return out
+}
+
+// selects reports whether a Service selector picks the workload's pods.
+func selects(sel map[string]string, pods []graph.Pod) bool {
+	for _, p := range pods {
+		match := true
+		for k, v := range sel {
+			if p.Labels[k] != v {
+				match = false
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
 // podPeer builds a peer selecting the workload a peer pod belongs to.
 func (b *builder) podPeer(peerID, policyNS string) (netv1.NetworkPolicyPeer, string, string) {
 	pp, ok := b.pods[peerID]
@@ -451,6 +537,23 @@ func (b *builder) suggest(pods []graph.Pod, o Options) Suggestion {
 			}
 			add(egress, &egressOrder, "ip:"+cidr, netv1.NetworkPolicyPeer{IPBlock: blk}, desc, p, ev, false)
 		}
+	}
+
+	// Clients seen only from their own side. An edge is recorded by the pod
+	// that observed it; an unconnected UDP server's socket never names its
+	// clients, so the only record of who sends to it is the client's own
+	// (connected) socket. Another captured pod's outbound edge that lands on
+	// this workload, at one of its pods or through a Service selecting them,
+	// is ingress evidence too.
+	for _, cs := range b.clientSide(edges, ids, pods) {
+		peer, desc, g := b.podPeer(cs.client.ID(), s.Namespace)
+		if g != "" {
+			gap(g)
+			continue
+		}
+		usedListeners[cs.port] = true
+		portClients[cs.port] = append(portClients[cs.port], cs.client)
+		add(ingress, &ingressOrder, "pod:"+desc, peer, desc, cs.port, cs.ev, false)
 	}
 
 	// DNS: lookups are short UDP exchanges that sampling rarely catches.
