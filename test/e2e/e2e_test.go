@@ -356,6 +356,7 @@ func TestE2E(t *testing.T) {
 				Gaps              []string
 				Policy            *struct{ Spec map[string]any }
 			}
+			Gaps []string
 		}
 		if err := json.Unmarshal([]byte(r.stdout), &rep); err != nil {
 			t.Fatal(err)
@@ -378,9 +379,34 @@ func TestE2E(t *testing.T) {
 				t.Errorf("%s = %q; want prefix %q", wl, got[wl], want)
 			}
 		}
+		// The honest gap list, from the real capture: what the window could
+		// not see, rare traffic, and the egress each workload would lose.
+		all := strings.Join(rep.Gaps, "\n")
+		for _, want := range []string{"Observation window:", "nightly, weekly and failover-only traffic was almost certainly not seen",
+			"nothing here is a namespace-wide default-deny"} {
+			if !strings.Contains(all, want) {
+				t.Errorf("report gaps lack %q:\n%s", want, all)
+			}
+		}
+		for _, s := range rep.Suggestions {
+			if s.Workload != "Pod/web" {
+				continue
+			}
+			g := strings.Join(s.Gaps, "\n")
+			t.Logf("Pod/web NOT COVERED:\n%s", g)
+			// web calls api inside the cluster and nothing outside it.
+			if !strings.Contains(g, "The workload would LOSE:") || !strings.Contains(g, "every address outside the cluster") ||
+				!strings.Contains(g, "dependencies that were idle during the window") {
+				t.Errorf("Pod/web's gaps should name the egress it would lose")
+			}
+		}
 		y := podpeers(ctx, t, "suggest", "-o", filepath.Join(outDir, "e2e-policy.yaml"), capture)
 		if y.code != 0 {
 			t.Fatal(y.stderr)
+		}
+		if py, _ := os.ReadFile(filepath.Join(outDir, "e2e-policy.yaml")); !strings.Contains(string(py), "# NOT COVERED by this observation:") ||
+			!strings.Contains(string(py), "would LOSE") || !strings.Contains(string(py), "NO POLICY SUGGESTED") {
+			t.Error("policy.yaml should carry the gaps and the refusals as comments")
 		}
 		// Server-side validation of every suggested policy by the real API server.
 		kubectl(t, "apply", "--dry-run=server", "-f", filepath.Join(outDir, "e2e-policy.yaml"))

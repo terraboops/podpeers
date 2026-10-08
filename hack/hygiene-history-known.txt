@@ -1,0 +1,5 @@
+# Blobs in this public repo's history that break the hygiene rule and are
+# still there, because removing them means rewriting published history: the
+# operator's call, not an agent's. hack/hygiene.sh --history skips exactly
+# these and fails on anything else. Format: <blob sha> <path> <what it is>.
+d3f69c36b21fdf97feacffa546efe3a5dcb3189b docs/demo.gif an early demo recording (commit ca417f4, replaced in f06e8aa) whose frames show a pod address from this repo's own throwaway k3d cluster (k3s's default pod range); it identifies no real environment

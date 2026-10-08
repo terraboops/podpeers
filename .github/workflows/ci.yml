@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the hygiene check reads every version ever committed
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -20,6 +22,8 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr ffmpeg graphviz >/dev/null
       - name: hygiene (no real IPs or credentials in a public repo, text and images)
         run: HYGIENE_IMAGES=1 ./hack/hygiene.sh
+      - name: hygiene across the whole history (a leak removed from the tree is still public)
+        run: HYGIENE_IMAGES=1 ./hack/hygiene.sh --history
       - name: vet and gofmt
         run: make vet
       - name: unit tests

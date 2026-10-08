@@ -2,9 +2,47 @@
 # Public-repo hygiene gate: tracked files must not contain IP addresses outside
 # the documentation/loopback ranges, kubeconfig credentials, or private keys.
 # Real environments must never leak into this repo.
+#
+#   hack/hygiene.sh             the current tree
+#   hack/hygiene.sh --history   every version of every file ever committed,
+#                               images included: deleting a leak from the tree
+#                               does not delete it from a public history
 set -euo pipefail
 cd "$(dirname "$0")/.."
 fail=0
+if [ "${1:-}" = --history ]; then
+  # Blobs already public that a history rewrite would be needed to remove.
+  # Rewriting public history is the operator's decision, so each is listed
+  # with what it is, and nothing else is let through.
+  known="$(grep -oE '^[0-9a-f]{40}' hack/hygiene-history-known.txt 2>/dev/null || true)"
+  work="$(mktemp -d)"
+  trap 'rm -rf "$work"' EXIT
+  git rev-list --all --objects | while read -r sha path; do
+    [ -n "$path" ] && [ "$(git cat-file -t "$sha")" = blob ] || continue
+    case "$path" in go.sum|LICENSE|hack/hygiene.sh) continue ;; esac
+    echo "$known" | grep -qx "$sha" && continue
+    git cat-file -p "$sha" >"$work/blob"
+    case "$path" in
+      *.gif|*.png|*.jpg|*.jpeg)
+        ext="${path##*.}"; mv "$work/blob" "$work/img.$ext"
+        "$0" "$work/img.$ext" </dev/null >"$work/out" 2>&1 || { echo "$path (blob $sha):"; cat "$work/out"; echo x >>"$work/failed"; } ;;
+      *)
+        if grep -qI . "$work/blob" 2>/dev/null; then
+          hit=$( { grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' "$work/blob" \
+              | grep -vE '^(192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|127\.|0\.0\.0\.0$)' ;
+            grep -oE '(client-key-data|client-certificate-data|certificate-authority-data|BEGIN [A-Z ]*PRIVATE KEY|token: [A-Za-z0-9_.-]{20,})' "$work/blob" ; } | sort -u || true)
+          if [ -n "$hit" ]; then echo "$path (blob $sha): $hit"; echo x >>"$work/failed"; fi
+        fi ;;
+    esac
+  done
+  if git log --all --format=%B | grep -E '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' \
+      | grep -vE '^(192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|127\.|0\.0\.0\.0$)'; then
+    echo "non-documentation IPv4 in a commit message"; echo x >>"$work/failed"
+  fi
+  [ -e "$work/failed" ] && exit 1
+  echo "hygiene: history ok ($(git rev-list --all --objects | wc -l | tr -d ' ') objects; $(echo "$known" | grep -c . || true) known blob(s) listed in hack/hygiene-history-known.txt)"
+  exit 0
+fi
 files=$(git ls-files | grep -vE '^(go\.sum|LICENSE)$')
 
 ips=$(echo "$files" | xargs grep -nHoE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' 2>/dev/null \

@@ -22,8 +22,11 @@ Read this before changing anything in this repo.
 5. **Public repo hygiene:** no cluster names, hostnames, contexts, IPs (other
    than RFC 5737/3849 documentation ranges and loopback), credentials,
    tokens, or kubeconfig contents anywhere: code, fixtures, docs, or commit
-   messages. `./hack/hygiene.sh` enforces part of this in CI. Fixture names
-   are invented.
+   messages. `./hack/hygiene.sh` enforces part of this in CI, and
+   `./hack/hygiene.sh --history` checks every version ever committed, images
+   included: a leak deleted from the tree is still public. Removing one from
+   history is the operator's call; until then it is listed, with what it is,
+   in `hack/hygiene-history-known.txt`. Fixture names are invented.
 
 ## Layout
 

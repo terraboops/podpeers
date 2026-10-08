@@ -1,0 +1,21 @@
+# Mutant 28-egress-loss-unstated: breaks the protection for "the gap list names the egress a workload would lose (brief 11.3)".
+# Bug introduced: a suggestion restricts egress without saying what the workload would lose.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/policy/
+# unit-run: TestSuggestShop
+# unit-expect: web gaps
+# e2e-run: TestE2E/(capture_matches|suggestions)
+# e2e-expect: Pod/web's gaps should name the egress it would lose|should carry the gaps
+--- a/internal/policy/policy.go
++++ b/internal/policy/policy.go
+@@ -688,7 +688,7 @@ func (b *builder) suggest(pods []graph.Pod, o Options) Suggestion {
+ 	if !wantDNS {
+ 		lose = append(lose, "DNS")
+ 	}
+-	gap("Egress is now limited to the rules above. The workload would LOSE: " + strings.Join(lose, "; ") + ".")
++	_ = lose
+ 	gap(fmt.Sprintf("podSelector %s also selects any other pod in %s carrying these labels; check with: kubectl get pods -n %s -l %s",
+ 		selectorString(s.Selector), s.Namespace, s.Namespace, selectorString(s.Selector)))
+ 	s.Policy = np

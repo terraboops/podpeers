@@ -404,7 +404,10 @@ And the smaller ones:
 Issues and PRs welcome. Read [`CLAUDE.md`](CLAUDE.md) first: it's the contract
 for humans and agents alike. In short: never point anything at a non-local
 cluster, keep the guard's default at refusal, keep MCP read-only, and keep
-real environments out of this public repo (`hack/hygiene.sh` checks).
+real environments out of this public repo (`hack/hygiene.sh` checks the
+tree, and with `--history` every version ever committed; one early demo frame
+that showed a throwaway local cluster's pod address is still in history and is
+listed in `hack/hygiene-history-known.txt`).
 
 Re-record the demo with `docs/demo/make-demo.sh` (vhs for the terminal,
 Firefox via Selenium for the web UI) against `make e2e-cluster`. Diagrams are
