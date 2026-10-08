@@ -1,0 +1,21 @@
+# Mutant 25-guard-ignores-proxy: breaks the protection for "a loopback server behind a proxy-url is refused".
+# Bug introduced: the pre-flight guard judges only the server URL, so a local-named context whose requests go through a proxy to any cluster is allowed.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/guard/ ./cmd/podpeers/
+# unit-run: TestCheckDefaultsToRefusal|TestCaptureRefusesLoopbackServerBehindAProxy
+# unit-expect: allowed=false|proxy-url
+# e2e-run: -
+# e2e-expect: -
+--- a/internal/guard/guard.go
++++ b/internal/guard/guard.go
+@@ -88,7 +88,7 @@ func Check(t Target, allowContext string) Decision {
+ 	}
+ 	name, loop := LooksLocalName(t.Context), IsLoopbackServer(t.Server)
+ 	switch {
+-	case name && loop && t.Proxy != "":
++	case false && name && loop && t.Proxy != "":
+ 		// Requests go to the proxy, which can forward them anywhere: the
+ 		// loopback server URL no longer says which cluster answers.
+ 		return Decision{Reason: fmt.Sprintf(

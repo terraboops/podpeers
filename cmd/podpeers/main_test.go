@@ -92,6 +92,24 @@ func TestCaptureRefusesRemoteServerEvenWithLocalName(t *testing.T) {
 	}
 }
 
+func TestCaptureRefusesLoopbackServerBehindAProxy(t *testing.T) {
+	// A loopback server URL proves nothing when the cluster entry sends
+	// requests through a proxy, which can forward them to any cluster. The
+	// refusal must come before any request reaches the API server.
+	srv, hits := apiServer(t, "k3s://n1")
+	kc := kubeconfig(t, "k3d-dev", srv.URL)
+	b, _ := os.ReadFile(kc)
+	os.WriteFile(kc, []byte(strings.Replace(string(b), "    insecure-skip-tls-verify: true\n",
+		"    insecure-skip-tls-verify: true\n    proxy-url: socks5://127.0.0.1:1080\n", 1)), 0o600)
+	code, _, stderr := runCLI("capture", "--kubeconfig", kc, "-l", "app", "--duration", "5s", "--interval", "1s")
+	if code != exitRefused || !strings.Contains(stderr, "proxy-url") {
+		t.Fatalf("exit %d stderr %s", code, stderr)
+	}
+	if n := atomic.LoadInt64(hits); n != 0 {
+		t.Fatalf("refusal made %d API request(s); want 0", n)
+	}
+}
+
 func TestContextFlagIsGuardedToo(t *testing.T) {
 	// --context selecting a non-local context must be refused just like
 	// current-context; and an unknown --context is an error, not a fallback.
@@ -256,6 +274,44 @@ func TestServeHandler(t *testing.T) {
 	}
 	if r, _ := http.Post(srv.URL+"/graphql", "application/json", strings.NewReader("{")); r.StatusCode != http.StatusBadRequest {
 		t.Errorf("bad body = %d", r.StatusCode)
+	}
+}
+
+// serve binds to loopback, which keeps other machines out but not other web
+// sites: a page can rebind its own name to 127.0.0.1, or post cross-site.
+func TestServeRefusesRebindingAndCrossSite(t *testing.T) {
+	h, err := Handler(mustLoad(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	do := func(method, host string, hdr map[string]string) int {
+		req := httptest.NewRequest(method, "/graphql?query=%7B%20window%20%7B%20interval%20%7D%20%7D", strings.NewReader(`{"query":"{ window { interval } }"}`))
+		req.Host = host
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for _, c := range []struct {
+		method, host string
+		hdr          map[string]string
+		want         int
+	}{
+		{"GET", "127.0.0.1:8080", nil, 200},
+		{"GET", "localhost:8080", map[string]string{"Origin": "http://localhost:8080", "Sec-Fetch-Site": "same-origin"}, 200},
+		{"GET", "[::1]:8080", nil, 200},
+		{"GET", "192.0.2.5:8080", nil, 200}, // an operator who chose -addr on a LAN address
+		{"GET", "rebind.example.test:8080", nil, http.StatusMisdirectedRequest},
+		{"GET", "rebind.example.test:8080", map[string]string{"Origin": "http://rebind.example.test:8080"}, http.StatusMisdirectedRequest},
+		{"POST", "127.0.0.1:8080", map[string]string{"Origin": "https://evil.example.test", "Content-Type": "text/plain"}, http.StatusForbidden},
+		{"GET", "127.0.0.1:8080", map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"POST", "127.0.0.1:8080", map[string]string{"Origin": "null"}, http.StatusForbidden},
+	} {
+		if got := do(c.method, c.host, c.hdr); got != c.want {
+			t.Errorf("%s Host=%s %v: %d, want %d", c.method, c.host, c.hdr, got, c.want)
+		}
 	}
 }
 

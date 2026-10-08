@@ -32,6 +32,7 @@ func TestValidate(t *testing.T) {
 		"zero duration":      {Duration: 0, Interval: time.Second, LabelSelector: "app"},
 		"interval > window":  {Duration: time.Second, Interval: 5 * time.Second, LabelSelector: "app"},
 		"no selector":        {Duration: 30 * time.Second, Interval: time.Second},
+		"blank selector":     {Duration: 30 * time.Second, Interval: time.Second, LabelSelector: " \t"}, // parses as "everything"
 		"interval too short": {Duration: 30 * time.Second, Interval: 50 * time.Millisecond, LabelSelector: "app"},
 		"zero interval":      {Duration: 30 * time.Second, Interval: 0, LabelSelector: "app"},
 		"sub-ms interval":    {Duration: 30 * time.Second, Interval: 100*time.Millisecond + 500*time.Microsecond, LabelSelector: "app"},

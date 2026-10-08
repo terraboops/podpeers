@@ -1,0 +1,21 @@
+# Mutant 22-service-any-namespace: breaks the protection for "a Service is ingress evidence only in its own namespace".
+# Bug introduced: a client's traffic to a same-labelled Service in another namespace is credited to this workload.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/policy/
+# unit-run: TestClientSideServiceIsNamespaced
+# unit-expect: does not select shop's api pods
+# e2e-run: -
+# e2e-expect: -
+--- a/internal/policy/policy.go
++++ b/internal/policy/policy.go
+@@ -235,7 +235,7 @@ func (b *builder) clientSide(own []graph.Edge, ids map[string]bool, pods []graph
+ 			svc, ok := b.services[e.Peer.Namespace+"/"+e.Peer.Name]
+ 			// A Service selects pods in its own namespace only: a same-labelled
+ 			// Service elsewhere says nothing about this workload.
+-			if !ok || len(svc.Selector) == 0 || len(pods) == 0 || svc.Namespace != pods[0].Namespace || !selects(svc.Selector, pods) {
++			if !ok || len(svc.Selector) == 0 || !selects(svc.Selector, pods) {
+ 				continue
+ 			}
+ 			for _, sp := range svc.Ports {

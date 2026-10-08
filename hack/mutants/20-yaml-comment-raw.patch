@@ -1,0 +1,21 @@
+# Mutant 20-yaml-comment-raw: breaks the protection for "capture strings stay inside YAML comments".
+# Bug introduced: a peer's workload name is written raw into a comment line, so a line break in it adds documents to what kubectl applies.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/policy/
+# unit-run: TestYAMLHostileNamesStayInComments
+# unit-expect: reached the YAML
+# e2e-run: -
+# e2e-expect: -
+--- a/internal/policy/policy.go
++++ b/internal/policy/policy.go
+@@ -819,7 +819,7 @@ func (rep Report) YAML() (string, error) {
+ 		}
+ 		fmt.Fprintf(&b, "# selects: %s\n#\n# WHY each rule exists:\n", graph.Printable(selectorString(s.Selector)))
+ 		for _, r := range s.Reasons {
+-			fmt.Fprintf(&b, "#   %s allows %s on %s\n", r.Rule, graph.Printable(r.Peer), graph.Printable(strings.Join(r.Ports, ", ")))
++			fmt.Fprintf(&b, "#   %s allows %s on %s\n", r.Rule, r.Peer, strings.Join(r.Ports, ", "))
+ 			for _, e := range r.Evidence {
+ 				writeComment(&b, "      ", e)
+ 			}

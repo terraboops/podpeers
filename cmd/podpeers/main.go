@@ -10,10 +10,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,6 +161,7 @@ func connect(ctx context.Context, cf clusterFlags, stderr io.Writer) (*connectio
 	if kc, ok := raw.Contexts[target.Context]; ok {
 		if cl, ok := raw.Clusters[kc.Cluster]; ok {
 			target.Server = cl.Server
+			target.Proxy = cl.ProxyURL
 		}
 	} else if target.Context != "" {
 		fmt.Fprintf(stderr, "podpeers: context %q not found in kubeconfig\n", target.Context)
@@ -428,7 +432,33 @@ func Handler(res graph.Result) (http.Handler, error) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = render.HTML(w, res, "graphql")
 	})
-	return mux, nil
+	return sameOrigin(mux), nil
+}
+
+// sameOrigin answers only requests addressed to an IP literal or localhost
+// and made by the page itself. Binding to loopback keeps other machines out,
+// not other web sites: a page in the operator's browser can rebind its own
+// DNS name to 127.0.0.1 and read the capture as "same-origin", or post a
+// query from anywhere. A rebound request still carries the attacker's name
+// in Host, and a cross-site one carries a foreign Origin.
+func sameOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+		_, ipErr := netip.ParseAddr(host)
+		if ipErr != nil && host != "localhost" && !strings.HasSuffix(host, ".localhost") {
+			http.Error(w, "podpeers serve answers only to an IP address or localhost, not "+strconv.Quote(r.Host)+" (DNS rebinding guard)", http.StatusMisdirectedRequest)
+			return
+		}
+		if o := r.Header.Get("Origin"); (o != "" && o != "http://"+r.Host) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			http.Error(w, "cross-origin requests are refused", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func cmdServe(ctx context.Context, args []string, stderr io.Writer) int {

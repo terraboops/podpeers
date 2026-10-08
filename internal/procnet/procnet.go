@@ -324,6 +324,9 @@ func ParseSamplerOutput(r io.Reader) (SamplerOutput, error) {
 					}
 				}
 			}
+			if len(f) == 0 {
+				return out, fmt.Errorf("procnet: empty sample marker %q", line)
+			}
 			up, err := strconv.ParseFloat(f[0], 64)
 			if err != nil || !haveAnchor {
 				return out, fmt.Errorf("procnet: bad sample marker %q (anchor seen: %v)", line, haveAnchor)

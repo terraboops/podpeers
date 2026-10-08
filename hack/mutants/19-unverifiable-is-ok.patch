@@ -1,0 +1,22 @@
+# Mutant 19-unverifiable-is-ok: breaks the protection for "a flow whose observer went unobserved is not verified".
+# Bug introduced: a baseline flow whose observing pods were not observed after is listed as unverifiable but the verdict is OK.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/diff/
+# unit-run: TestUnobservedAfterIsUnverifiableNotLost
+# unit-expect: an unverifiable flow must make the result inconclusive
+# e2e-run: -
+# e2e-expect: -
+--- a/internal/diff/diff.go
++++ b/internal/diff/diff.go
+@@ -64,9 +64,6 @@ type Result struct {
+ // predate the after-window, so the policy was never exercised for it, or
+ // whether some flow's observer went unobserved, so nothing was checked at all.
+ func (r Result) Inconclusive() bool {
+-	if len(r.Unverifiable) > 0 {
+-		return true
+-	}
+ 	for _, c := range r.Changes {
+ 		if c.Kind == Preexisting {
+ 			return true

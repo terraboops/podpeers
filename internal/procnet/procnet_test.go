@@ -269,6 +269,9 @@ func TestParseV2Errors(t *testing.T) {
 		"sample before anchor": "@@podpeers v2\n@@sample 1000.00\n",
 		"bad anchor":           "@@podpeers v2\n@@anchor nope\n",
 		"bad sample":           "@@podpeers v2\n@@anchor 1 2.00\n@@sample x\n",
+		"empty sample":         "@@podpeers v2\n@@anchor 1 2.00\n@@sample \n", // used to panic
+		"cut after marker":     "@@podpeers v2\n@@anchor 1 2.00\n@@sample ",
+		"headerless empty":     "@@sample \n",
 	} {
 		if _, err := ParseSamplerOutput(strings.NewReader(in)); err == nil {
 			t.Errorf("%s: want error", name)

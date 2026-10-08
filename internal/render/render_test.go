@@ -155,3 +155,29 @@ func TestEveryViewStatesWhatTheCaptureCouldNotSee(t *testing.T) {
 		t.Error("HTML page lacks limits")
 	}
 }
+
+// Capture files can be written by anyone. Their strings must not reach the
+// terminal as escape sequences, and a trailing backslash must not end a DOT
+// string early (Go's %q is not DOT quoting; Graphviz lexers disagree on it).
+func TestHostileStringsAreInert(t *testing.T) {
+	r := fixture(t)
+	r.Pods = append(r.Pods, graph.Pod{Namespace: "n", Name: "a\\", Probe: graph.Probe{Status: graph.ProbeFailed, Reason: "x\x1b[8m\nforged"}})
+	r.Edges = append(r.Edges, graph.Edge{Pod: "n/a\\", Direction: graph.Outbound, Protocol: "tcp", Port: 443,
+		Peer: graph.Peer{Kind: graph.PeerExternal, IP: `] X [label=INJ] y [k=\`}})
+	var text, dot bytes.Buffer
+	Text(&text, r)
+	if err := DOT(&dot, r); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsRune(text.String(), 0x1b) || strings.Contains(text.String(), "\nforged") {
+		t.Fatalf("raw control characters in text:\n%q", text.String())
+	}
+	// A backslash only ever starts a \uXXXX escape or escapes a quote, so no
+	// lexer can read a delimiter as escaped or an escape as a delimiter.
+	if strings.Contains(dot.String(), `\\`) {
+		t.Fatalf("raw backslash pair in DOT:\n%s", dot.String())
+	}
+	if !strings.Contains(dot.String(), `"] X [label=INJ] y [k=`+`\`+`u005c" [label=`) {
+		t.Fatalf("capture text escaped its DOT string:\n%s", dot.String())
+	}
+}

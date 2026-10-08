@@ -40,7 +40,7 @@ func Text(w io.Writer, r graph.Result) error {
 	if ns == "" {
 		ns = "all namespaces"
 	}
-	fmt.Fprintf(w, "podpeers capture: selector %q in %s\n", r.Selector.LabelSelector, ns)
+	fmt.Fprintf(w, "podpeers capture: selector %q in %s\n", r.Selector.LabelSelector, graph.Printable(ns))
 	fmt.Fprintf(w, "window: %s .. %s (sample every %s)\n\n",
 		r.Window.Start.UTC().Format("2006-01-02 15:04:05Z"), r.Window.End.UTC().Format("15:04:05Z"), r.Window.Interval)
 
@@ -54,7 +54,7 @@ func Text(w io.Writer, r graph.Result) error {
 		if p.Probe.Status == graph.ProbeNotTargeted {
 			continue
 		}
-		fmt.Fprintf(w, "%s  [%s]\n", p.ID(), probeMark(p.Probe))
+		fmt.Fprintf(w, "%s  [%s]\n", graph.Printable(p.ID()), graph.Printable(probeMark(p.Probe)))
 		if p.Probe.Status != graph.ProbeObserved {
 			fmt.Fprintln(w)
 			continue
@@ -88,7 +88,7 @@ func Text(w io.Writer, r graph.Result) error {
 			case !e.Open:
 				state = "closed in window"
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s/%d\t%d\t%s\n", arrow, e.Peer.ID(), peerKind(e.Peer), e.Protocol, e.Port, e.Connections, state)
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s/%d\t%d\t%s\n", arrow, graph.Printable(e.Peer.ID()), peerKind(e.Peer), e.Protocol, e.Port, e.Connections, state)
 		}
 		tw.Flush()
 		fmt.Fprintln(w)
@@ -97,7 +97,7 @@ func Text(w io.Writer, r graph.Result) error {
 		counts[graph.ProbeObserved], counts[graph.ProbeFailed], counts[graph.ProbeSkipped], counts[graph.ProbeNotTargeted], len(r.Edges))
 	fmt.Fprintln(w, "\nWHAT THIS CAPTURE COULD NOT SEE:")
 	for _, l := range limitsOf(r) {
-		fmt.Fprintf(w, "  - %s\n", l)
+		fmt.Fprintf(w, "  - %s\n", graph.Printable(l))
 	}
 	return nil
 }
@@ -157,11 +157,11 @@ func DOT(w io.Writer, r graph.Result) error {
 		sort.Slice(ns_, func(a, b int) bool { return ns_[a].id < ns_[b].id })
 		indent := "  "
 		if ns != "" {
-			fmt.Fprintf(w, "  subgraph cluster_%d {\n    label=%q; style=rounded;\n", i, "namespace "+ns)
+			fmt.Fprintf(w, "  subgraph cluster_%d {\n    label=%s; style=rounded;\n", i, dotQuote("namespace "+ns))
 			indent = "    "
 		}
 		for _, n := range ns_ {
-			fmt.Fprintf(w, "%s%q [label=%q, shape=%s, style=%s];\n", indent, n.id, n.label, n.shape, n.style)
+			fmt.Fprintf(w, "%s%s [label=%s, shape=%s, style=%s];\n", indent, dotQuote(n.id), dotQuote(n.label), n.shape, n.style)
 		}
 		if ns != "" {
 			fmt.Fprintln(w, "  }")
@@ -178,7 +178,7 @@ func DOT(w io.Writer, r graph.Result) error {
 		if !f.Open {
 			style = "dashed"
 		}
-		fmt.Fprintf(w, "  %q -> %q [label=%q, style=%s];\n", f.From, f.To, fmt.Sprintf("%s/%d", f.Protocol, f.Port), style)
+		fmt.Fprintf(w, "  %s -> %s [label=%s, style=%s];\n", dotQuote(f.From), dotQuote(f.To), dotQuote(fmt.Sprintf("%s/%d", f.Protocol, f.Port)), style)
 	}
 	fmt.Fprintln(w, "}")
 	return nil
@@ -209,4 +209,13 @@ func peerKind(p graph.Peer) string {
 		return fmt.Sprintf("node (pod network %s)", p.IP)
 	}
 	return string(p.Kind)
+}
+
+// dotQuote writes s as a DOT quoted string. Go's %q is not DOT escaping:
+// Graphviz lexers disagree on a trailing backslash, which could end the string
+// early and let capture text become DOT statements. Printable has already
+// turned every backslash and control character into a \uXXXX escape, so only
+// the quote itself needs escaping.
+func dotQuote(s string) string {
+	return `"` + strings.ReplaceAll(graph.Printable(s), `"`, `\"`) + `"`
 }

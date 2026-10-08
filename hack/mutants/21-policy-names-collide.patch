@@ -1,0 +1,20 @@
+# Mutant 21-policy-names-collide: breaks the protection for "every suggested NetworkPolicy has its own name".
+# Bug introduced: Deployment/web and a bare Pod/web both get podpeers-web, so applying the stream keeps only one.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/policy/
+# unit-run: TestPolicyNamesNeverCollide
+# unit-expect: are both shop/podpeers-web
+# e2e-run: -
+# e2e-expect: -
+--- a/internal/policy/policy.go
++++ b/internal/policy/policy.go
+@@ -341,7 +341,6 @@ func Suggest(r graph.Result, o Options) Report {
+ 	for _, id := range order {
+ 		rep.Suggestions = append(rep.Suggestions, b.suggest(groups[id], o))
+ 	}
+-	uniqueNames(rep.Suggestions)
+ 
+ 	dur := r.Window.End.Sub(r.Window.Start).Round(time.Second)
+ 	rep.Gaps = append(rep.Gaps,

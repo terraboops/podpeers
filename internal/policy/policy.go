@@ -9,6 +9,8 @@
 package policy
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/netip"
 	"sort"
@@ -231,7 +233,9 @@ func (b *builder) clientSide(own []graph.Edge, ids map[string]bool, pods []graph
 			}
 		case graph.PeerService:
 			svc, ok := b.services[e.Peer.Namespace+"/"+e.Peer.Name]
-			if !ok || len(svc.Selector) == 0 || !selects(svc.Selector, pods) {
+			// A Service selects pods in its own namespace only: a same-labelled
+			// Service elsewhere says nothing about this workload.
+			if !ok || len(svc.Selector) == 0 || len(pods) == 0 || svc.Namespace != pods[0].Namespace || !selects(svc.Selector, pods) {
 				continue
 			}
 			for _, sp := range svc.Ports {
@@ -337,6 +341,7 @@ func Suggest(r graph.Result, o Options) Report {
 	for _, id := range order {
 		rep.Suggestions = append(rep.Suggestions, b.suggest(groups[id], o))
 	}
+	uniqueNames(rep.Suggestions)
 
 	dur := r.Window.End.Sub(r.Window.Start).Round(time.Second)
 	rep.Gaps = append(rep.Gaps,
@@ -743,7 +748,9 @@ func reason(rule, dir string, r *ruleAcc) Reason {
 	return Reason{Rule: rule, Direction: dir, Peer: r.desc, Ports: ports, Evidence: ev, Assumed: r.assumed}
 }
 
-// policyName derives a DNS-1123 name from a workload "Kind/name".
+// policyName derives a DNS-1123 name from a workload "Kind/name". A name
+// too long to fit is cut and given a hash of the whole workload, so two long
+// names that share a prefix do not end up as one NetworkPolicy.
 func policyName(workload string) string {
 	name := workload
 	if i := strings.Index(workload, "/"); i >= 0 {
@@ -751,9 +758,43 @@ func policyName(workload string) string {
 	}
 	n := "podpeers-" + strings.ToLower(name)
 	if len(n) > 63 {
-		n = strings.TrimRight(n[:63], "-.")
+		n = withHash(n, workload)
 	}
 	return n
+}
+
+// withHash appends a short hash of the workload to a policy name, cutting the
+// name so the result still fits in 63 characters.
+func withHash(n, workload string) string {
+	h := sha256.Sum256([]byte(workload))
+	suffix := "-" + hex.EncodeToString(h[:4])
+	if len(n) > 63-len(suffix) {
+		n = n[:63-len(suffix)]
+	}
+	return strings.TrimRight(n, "-.") + suffix
+}
+
+// uniqueNames keeps every suggested NetworkPolicy's namespace/name distinct.
+// The name drops the workload's kind, so Deployment/web and a bare Pod/web
+// would otherwise share one name, and applying the stream would leave only
+// the last of them, silently governing the other's pods. Workloads whose
+// names collide each get a hash of their full workload ID instead.
+func uniqueNames(ss []Suggestion) {
+	byName := map[string][]*Suggestion{}
+	for i := range ss {
+		if p := ss[i].Policy; p != nil {
+			k := p.Namespace + "/" + p.Name
+			byName[k] = append(byName[k], &ss[i])
+		}
+	}
+	for _, group := range byName {
+		if len(group) < 2 {
+			continue
+		}
+		for _, s := range group {
+			s.Policy.Name = withHash(s.Policy.Name, s.Namespace+"/"+s.Workload)
+		}
+	}
 }
 
 // YAML renders every suggestion as one multi-document stream that can be
@@ -768,7 +809,7 @@ func (rep Report) YAML() (string, error) {
 	}
 	for _, s := range rep.Suggestions {
 		b.WriteString("---\n")
-		fmt.Fprintf(&b, "# %s in namespace %s (pods: %s)\n", s.Workload, s.Namespace, strings.Join(s.Pods, ", "))
+		fmt.Fprintf(&b, "# %s in namespace %s (pods: %s)\n", graph.Printable(s.Workload), graph.Printable(s.Namespace), graph.Printable(strings.Join(s.Pods, ", ")))
 		if s.Refused != "" {
 			writeComment(&b, "NO POLICY SUGGESTED: ", s.Refused)
 			for _, g := range s.Gaps {
@@ -776,9 +817,9 @@ func (rep Report) YAML() (string, error) {
 			}
 			continue
 		}
-		fmt.Fprintf(&b, "# selects: %s\n#\n# WHY each rule exists:\n", selectorString(s.Selector))
+		fmt.Fprintf(&b, "# selects: %s\n#\n# WHY each rule exists:\n", graph.Printable(selectorString(s.Selector)))
 		for _, r := range s.Reasons {
-			fmt.Fprintf(&b, "#   %s allows %s on %s\n", r.Rule, r.Peer, strings.Join(r.Ports, ", "))
+			fmt.Fprintf(&b, "#   %s allows %s on %s\n", r.Rule, graph.Printable(r.Peer), graph.Printable(strings.Join(r.Ports, ", ")))
 			for _, e := range r.Evidence {
 				writeComment(&b, "      ", e)
 			}
@@ -802,11 +843,13 @@ func (rep Report) YAML() (string, error) {
 }
 
 // writeComment wraps text at ~100 columns as YAML comments; continuation
-// lines are indented under the prefix.
+// lines are indented under the prefix. Capture text is made Printable first:
+// a line break would end the comment and start YAML that kubectl applies, and
+// a control character makes the whole stream unparsable.
 func writeComment(b *strings.Builder, prefix, text string) {
 	line, cont := "# "+prefix, "# "+strings.Repeat(" ", len(prefix))
 	fresh := true
-	for _, w := range strings.Fields(text) {
+	for _, w := range strings.Fields(graph.Printable(text)) {
 		if !fresh && len(line)+1+len(w) > 100 {
 			b.WriteString(line + "\n")
 			line, fresh = cont, true

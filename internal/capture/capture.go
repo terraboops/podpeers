@@ -126,7 +126,7 @@ func (o Options) Validate() error {
 	if o.Interval > o.Duration {
 		return fmt.Errorf("interval %s is longer than the %s window", o.Interval, o.Duration)
 	}
-	if o.LabelSelector == "" {
+	if strings.TrimSpace(o.LabelSelector) == "" {
 		return errors.New("a label selector is required: podpeers will not probe every pod by accident (use a selector such as 'app' or 'app in (a,b)')")
 	}
 	return nil

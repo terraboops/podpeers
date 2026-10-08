@@ -314,6 +314,37 @@ func TestNewConnections(t *testing.T) {
 	if es[0].NewConnections != 0 {
 		t.Fatalf("a single sample has nothing new: %+v", es[0])
 	}
+	// A pooled connection from before the window stays up while every new
+	// connect() is dropped (SYN_SENT) or rejected (CLOSE): nothing new got
+	// through, so nothing new counts.
+	pooled := []procnet.Sample{
+		sample(0, sock(procnet.TCP, "192.0.2.11:40001", "192.0.2.200:9000", procnet.Established)),
+		sample(5, sock(procnet.TCP, "192.0.2.11:40001", "192.0.2.200:9000", procnet.Established),
+			sock(procnet.TCP, "192.0.2.11:40002", "192.0.2.200:9000", procnet.SynSent)),
+		sample(10, sock(procnet.TCP, "192.0.2.11:40001", "192.0.2.200:9000", procnet.Established),
+			sock(procnet.TCP, "192.0.2.11:40003", "192.0.2.200:9000", procnet.Close)),
+	}
+	_, es = Analyze("shop/web", pooled, r)
+	if es[0].Attempted || es[0].NewConnections != 0 || es[0].NewFailed != 2 {
+		t.Fatalf("failed connects must not count as new connections: %+v", es[0])
+	}
+}
+
+// A completed pod in another namespace may still report an address a running
+// pod now holds. Whatever the list order, the running pod owns it: otherwise
+// the policy would name the finished pod's namespace and labels.
+func TestRunningPodOwnsAReusedAddress(t *testing.T) {
+	live := Pod{Namespace: "shop", Name: "web-abc", IP: "192.0.2.30", Phase: "Running"}
+	done := Pod{Namespace: "zz-tenant", Name: "job-x-1", IP: "192.0.2.30", Phase: "Succeeded"}
+	for _, pods := range [][]Pod{{live, done}, {done, live}} {
+		if got := NewResolver(Inventory{Pods: pods}).Resolve(netip.MustParseAddr("192.0.2.30")); got.Namespace != "shop" || got.Name != "web-abc" {
+			t.Fatalf("order %s first: resolved to %+v", pods[0].Name, got)
+		}
+	}
+	// With no running holder, the finished pod is still the best answer.
+	if got := NewResolver(Inventory{Pods: []Pod{done}}).Resolve(netip.MustParseAddr("192.0.2.30")); got.Name != "job-x-1" {
+		t.Fatalf("resolved to %+v", got)
+	}
 }
 
 func TestDualStackPodResolvesByEveryIP(t *testing.T) {

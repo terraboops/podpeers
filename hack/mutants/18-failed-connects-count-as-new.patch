@@ -1,0 +1,27 @@
+# Mutant 18-failed-connects-count-as-new: breaks the protection for "a pooled connection does not hide failed new connects".
+# Bug introduced: connect()s that never complete count as new connections, so an old pooled connection plus dropped reconnects verifies OK.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/graph/
+# unit-run: TestNewConnections
+# unit-expect: failed connects must not count as new connections
+# e2e-run: TestE2E/(capture_matches|connections_older)
+# e2e-expect: want BROKEN \(exit 4\)
+--- a/internal/graph/graph.go
++++ b/internal/graph/graph.go
+@@ -416,13 +416,7 @@ func Analyze(pod string, samples []procnet.Sample, res *Resolver) ([]Listener, [
+ 	var outE []Edge
+ 	for _, a := range edges {
+ 		a.edge.Connections = len(a.conns)
+-		for ck := range a.fresh {
+-			if a.conns[ck] {
+-				a.edge.NewConnections++
+-			} else {
+-				a.edge.NewFailed++
+-			}
+-		}
++		a.edge.NewConnections = len(a.fresh)
+ 		for _, ok := range a.conns {
+ 			if !ok {
+ 				a.edge.FailedConnections++

@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/terraboops/podpeers/internal/procnet"
 )
@@ -196,7 +197,12 @@ type Edge struct {
 	// first sample predate the window, and so predate anything (such as a
 	// NetworkPolicy change) that happened just before it: CNIs do not
 	// re-evaluate established connections.
+	// Only connections that completed a handshake count: a connect() the
+	// policy drops or rejects proves nothing is allowed.
 	NewConnections int `json:"newConnections"`
+	// NewFailed counts connections opened during the window that never
+	// completed a handshake.
+	NewFailed int `json:"newFailed,omitempty"`
 	// FailedConnections counts connections that never completed a handshake
 	// (only ever SYN_SENT, SYN_RECV, or CLOSE after a refused connect).
 	FailedConnections int `json:"failedConnections,omitempty"`
@@ -257,6 +263,11 @@ func NewResolver(inv Inventory) *Resolver {
 		// the primary IP, and indexing only that left IPv6 peers "external".
 		for _, ip := range append([]string{p.IP}, p.IPs...) {
 			if a, err := netip.ParseAddr(ip); err == nil {
+				// A finished pod can still report an address IPAM has since
+				// given to a running one; the running pod owns it.
+				if held, ok := r.pods[a.Unmap()]; ok && finished(p) && !finished(held) {
+					continue
+				}
 				r.pods[a.Unmap()] = p
 			}
 		}
@@ -405,7 +416,13 @@ func Analyze(pod string, samples []procnet.Sample, res *Resolver) ([]Listener, [
 	var outE []Edge
 	for _, a := range edges {
 		a.edge.Connections = len(a.conns)
-		a.edge.NewConnections = len(a.fresh)
+		for ck := range a.fresh {
+			if a.conns[ck] {
+				a.edge.NewConnections++
+			} else {
+				a.edge.NewFailed++
+			}
+		}
 		for _, ok := range a.conns {
 			if !ok {
 				a.edge.FailedConnections++
@@ -537,7 +554,8 @@ type Flow struct {
 	Open       bool
 	Attempted  bool
 	ObservedOn string // pod whose sockets showed it
-	New        int    // connections opened during the window
+	New        int    // connections opened during the window that completed
+	NewFailed  int    // connections opened during the window that never completed
 	Samples    int    // samples in which the flow was present
 	Conns      int    // distinct connections
 }
@@ -546,7 +564,7 @@ type Flow struct {
 func (r Result) Flows() []Flow {
 	var out []Flow
 	for _, e := range r.Edges {
-		f := Flow{Port: e.Port, Protocol: e.Protocol, Open: e.Open, Attempted: e.Attempted, ObservedOn: e.Pod, New: e.NewConnections, Samples: e.Samples, Conns: e.Connections}
+		f := Flow{Port: e.Port, Protocol: e.Protocol, Open: e.Open, Attempted: e.Attempted, ObservedOn: e.Pod, New: e.NewConnections, NewFailed: e.NewFailed, Samples: e.Samples, Conns: e.Connections}
 		if e.Direction == Outbound {
 			f.From, f.To = e.Pod, e.Peer.ID()
 		} else {
@@ -556,6 +574,34 @@ func (r Result) Flows() []Flow {
 	}
 	return out
 }
+
+// finished reports whether a pod has terminated, so its address may already
+// belong to another pod.
+func finished(p Pod) bool { return p.Phase == "Succeeded" || p.Phase == "Failed" }
+
+// Printable makes a capture string safe to print in a terminal, a YAML
+// comment or a line-oriented report: every rune that is not printable (line
+// breaks, ESC, BEL, C1 controls, bidi overrides) becomes a visible \uXXXX
+// escape, and so does a backslash, so an escape is never ambiguous. Names
+// come from pod metadata (an ownerReference's kind and name are free-form) or
+// from a capture file someone else wrote, so they cannot be trusted to stay
+// on one line or to leave the terminal alone.
+func Printable(s string) string {
+	if strings.IndexFunc(s, notPrintable) < 0 {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if notPrintable(r) {
+			fmt.Fprintf(&b, "\\u%04x", r)
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func notPrintable(r rune) bool { return !unicode.IsPrint(r) || r == '\\' }
 
 // Load decodes a capture file and checks its schema version.
 func Load(r io.Reader) (Result, error) {

@@ -1,0 +1,21 @@
+# Mutant 24-skill-helm-env: breaks the protection for "the skill script refuses helm overrides check-context never saw".
+# Bug introduced: HELM_KUBEAPISERVER and friends are passed to helm, which then talks to a server podpeers check-context never judged.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: -
+# unit-run: -
+# unit-expect: -
+# e2e-run: TestSkillHelmWorkflow/the_skill_script_refuses_a_helm
+# e2e-expect: naming HELM_KUBEAPISERVER
+--- a/skills/podpeers-netpol/scripts/netpol-check.sh
++++ b/skills/podpeers-netpol/scripts/netpol-check.sh
+@@ -107,7 +107,7 @@ guard
+ # different one, or with different credentials, that it never saw.
+ for v in HELM_KUBEAPISERVER HELM_KUBETOKEN HELM_KUBEASUSER HELM_KUBEASGROUPS HELM_KUBECAFILE \
+          HELM_KUBEINSECURE_SKIP_TLS_VERIFY HELM_KUBETLS_SERVER_NAME HELM_KUBECONTEXT; do
+-  if [ -n "${!v:-}" ]; then
++  if false; then
+     say "$v is set: helm would not use the context podpeers checked. Unset it; nothing was touched."
+     exit 2
+   fi

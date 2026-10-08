@@ -152,7 +152,7 @@ gates before any pod is touched:
 1. **Pre-flight, from the kubeconfig alone, with zero network traffic.** The
    context name must be one a local tool writes (`kind-*`, `k3d-*`,
    `minikube`, `docker-desktop`, …) **and** the API server must be on
-   loopback.
+   loopback, reached directly rather than through a `proxy-url`.
 2. **After connecting, read-only.** Every node must be a kind/k3s node. This
    catches a `localhost` port-forward or tunnel to a cloud cluster.
 
@@ -177,9 +177,10 @@ podpeers diff before.json after.json   # exit 0 OK · 4 BROKEN · 5 INCONCLUSIVE
 
 | line | meaning |
 |---|---|
-| `blocked` | worked before; after, connections never complete a handshake. **The policy dropped it.** |
+| `blocked` | worked before; after, connections opened under the policy never complete a handshake. **The policy dropped it.** |
 | `lost` | seen before, gone after, while its observer was still observed |
-| `preexisting` | only seen on connections opened *before* the policy, which the CNI never re-checks. **Proves nothing.** |
+| `preexisting` | only seen on connections opened *before* the policy, which the CNI never re-checks. **Proves nothing**, so the verdict is INCONCLUSIVE |
+| `unverifiable` | the pod that saw it was not observed the second time. **Proves nothing**, so the verdict is INCONCLUSIVE |
 | `new` | not seen before |
 | `glimpsed` | absent after, but seen so rarely before that missing it in every sample after is likely by chance (more than 1%; a DNS lookup seen in 2 of 31 samples goes unseen in 31 more 13% of the time); the line states the odds. Sampling noise, not breakage |
 
@@ -187,8 +188,9 @@ podpeers diff before.json after.json   # exit 0 OK · 4 BROKEN · 5 INCONCLUSIVE
 this: a policy that blocked every new connection verified "OK", because the
 app's one long-lived connection predated the policy, and CNIs don't
 re-evaluate established connections. So the workflow restarts workloads after
-applying a policy, and podpeers refuses to call a flow verified unless it was
-exercised under the policy.
+applying a policy, and podpeers refuses to call a flow verified unless a
+connection opened under the policy completed. If the old connection is still
+up but every new one fails, that is `blocked`, not OK.
 
 ## For agents: MCP server + Claude Code skill
 

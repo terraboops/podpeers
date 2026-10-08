@@ -10,9 +10,11 @@
 package gql
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/graphql-go/graphql"
@@ -306,10 +308,47 @@ func NewSchema(r graph.Result) (graphql.Schema, error) {
 			}},
 		"services": {Type: graphql.NewList(serviceT), Resolve: func(graphql.ResolveParams) (any, error) { return r.Services, nil }},
 	}})
-	return graphql.NewSchema(graphql.SchemaConfig{Query: query})
+	s, err := graphql.NewSchema(graphql.SchemaConfig{Query: query})
+	if err != nil {
+		return s, err
+	}
+	// The schema is cyclic (pod -> edges -> pod -> ...), so a short query can
+	// ask for work exponential in its nesting. Every field resolution draws on
+	// a per-query budget; once it is spent, fields fail instead of expanding.
+	for name, t := range s.TypeMap() {
+		o, ok := t.(*graphql.Object)
+		if !ok || strings.HasPrefix(name, "__") {
+			continue
+		}
+		for _, f := range o.Fields() {
+			if f.Resolve != nil {
+				f.Resolve = budgeted(f.Resolve)
+			}
+		}
+	}
+	return s, nil
+}
+
+// MaxFields bounds the field resolutions one query may cost. A full dump of
+// a large capture stays well inside it; a query nesting the cycle to blow up
+// does not.
+const MaxFields = 250000
+
+type budgetKey struct{}
+
+func budgeted(next graphql.FieldResolveFn) graphql.FieldResolveFn {
+	return func(p graphql.ResolveParams) (any, error) {
+		if left, ok := p.Context.Value(budgetKey{}).(*atomic.Int64); ok && left.Add(-1) < 0 {
+			return nil, fmt.Errorf("query too large: it resolves more than %d fields; select fewer fields, nest less, or filter", MaxFields)
+		}
+		return next(p)
+	}
 }
 
 // Do runs one query and returns the standard GraphQL response.
 func Do(s graphql.Schema, query string, vars map[string]any) *graphql.Result {
-	return graphql.Do(graphql.Params{Schema: s, RequestString: query, VariableValues: vars})
+	left := new(atomic.Int64)
+	left.Store(MaxFields)
+	ctx := context.WithValue(context.Background(), budgetKey{}, left)
+	return graphql.Do(graphql.Params{Schema: s, RequestString: query, VariableValues: vars, Context: ctx})
 }

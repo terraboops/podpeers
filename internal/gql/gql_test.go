@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/graphql-go/graphql"
 
@@ -148,4 +149,24 @@ func TestLimitsQuery(t *testing.T) {
 	if !strings.Contains(got, "sampling, not capture") || !strings.Contains(got, "CONNECTED socket") {
 		t.Fatal(got)
 	}
+}
+
+// The schema is cyclic: each level of edges { pod { ... } } multiplies the
+// work. A ~250-byte query must not cost exponential CPU and memory.
+func TestCyclicQueryIsBounded(t *testing.T) {
+	s := schema(t)
+	q := "id"
+	for i := 0; i < 14; i++ {
+		q = "id edges { pod { " + q + " } }"
+	}
+	start := time.Now()
+	r := Do(s, `{ pods { `+q+` } }`, nil)
+	if !r.HasErrors() || !strings.Contains(r.Errors[0].Message, "query too large") {
+		t.Fatalf("a query this nested should be refused, got %d errors", len(r.Errors))
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("refusing took %s", d)
+	}
+	// Ordinary queries are untouched.
+	run(t, s, `{ pods { id edges { peer { id pod { id labels { key value } } } } } }`)
 }

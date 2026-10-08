@@ -16,7 +16,8 @@
 # Exit codes: 0 OK, 1 usage/runtime error, 2 context refused,
 #             4 BROKEN (traffic blocked or lost), 5 BROKEN (helm test failed),
 #             6 baseline unusable (helm test already failing without a policy),
-#             7 INCONCLUSIVE (flows only seen on connections older than the policy).
+#             7 INCONCLUSIVE (flows the policy was never exercised for: only seen on
+#               connections older than it, or their pods were not observed after).
 set -euo pipefail
 
 PODPEERS="${PODPEERS:-podpeers}"
@@ -102,6 +103,15 @@ guard() {
 # Refuse first: before any other check, file read or cluster call, for every
 # subcommand.
 guard
+# check-context judged the context's server; these would point helm at a
+# different one, or with different credentials, that it never saw.
+for v in HELM_KUBEAPISERVER HELM_KUBETOKEN HELM_KUBEASUSER HELM_KUBEASGROUPS HELM_KUBECAFILE \
+         HELM_KUBEINSECURE_SKIP_TLS_VERIFY HELM_KUBETLS_SERVER_NAME HELM_KUBECONTEXT; do
+  if [ -n "${!v:-}" ]; then
+    say "$v is set: helm would not use the context podpeers checked. Unset it; nothing was touched."
+    exit 2
+  fi
+done
 
 # capture_with_test OUTFILE TESTLOG: capture the release while `helm test`
 # runs inside the window. Sets TEST_OK=1/0 and CAPTURE_CODE.
@@ -148,6 +158,12 @@ case "$CMD" in
     mkdir -p "$OUT"
     if [ "$APPLY" = 1 ]; then
       [ -f "$POLICY" ] || die "--policy file not found: $POLICY (or use --no-apply to verify the policy already in the cluster)"
+      # "Apply a policy" means NetworkPolicies and nothing else, whoever wrote
+      # the file and whatever ended up in it.
+      OBJS="$(kc apply -n "$NS" --dry-run=client -o name -f "$POLICY")" || die "cannot parse $POLICY"
+      OTHER="$(printf '%s\n' "$OBJS" | grep -v '^networkpolicy\.networking\.k8s\.io/' || true)"
+      [ -z "$OTHER" ] || die "$POLICY contains objects that are not NetworkPolicies; refusing to apply any of it: $(echo $OTHER)"
+      [ -n "$OBJS" ] || die "$POLICY contains no NetworkPolicy"
       say "verify: server-side dry run of $POLICY"
       kc apply -n "$NS" --dry-run=server -f "$POLICY" >/dev/null
       kc apply -n "$NS" -f "$POLICY"
@@ -186,7 +202,9 @@ case "$CMD" in
     elif [ "$DIFF_CODE" = 4 ]; then
       VERDICT="BROKEN: helm test passed, but traffic the app relied on is now blocked or missing" CODE=4
     elif [ "$DIFF_CODE" = 5 ]; then
-      VERDICT="INCONCLUSIVE: helm test passed, but some flows were only seen on connections opened before the policy" CODE=7
+      VERDICT="INCONCLUSIVE: helm test passed, but some flows were never exercised under the policy (only seen on connections opened before it, or their pods were not observed)" CODE=7
+    elif [ "$CAPTURE_CODE" = 3 ]; then
+      VERDICT="INCONCLUSIVE: helm test passed, but some pods could not be observed under the policy (see $OUT/after.json.log)" CODE=7
     fi
     {
       echo "verdict: $VERDICT"

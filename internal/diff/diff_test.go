@@ -108,10 +108,53 @@ func TestUnobservedAfterIsUnverifiableNotLost(t *testing.T) {
 	if r.Broken() || len(r.Unverifiable) != 1 {
 		t.Fatalf("%+v", r)
 	}
+	// Nothing was checked for that flow, so the verdict cannot be OK.
+	if !r.Inconclusive() {
+		t.Fatal("an unverifiable flow must make the result inconclusive")
+	}
 	var b bytes.Buffer
 	r.Text(&b)
-	if !strings.Contains(b.String(), "unverifiable shop/Deployment/web -> svc/shop/api tcp/9000") {
+	if !strings.Contains(b.String(), "unverifiable shop/Deployment/web -> svc/shop/api tcp/9000") ||
+		strings.Contains(b.String(), "every flow seen before was seen after") || !strings.Contains(b.String(), "VERDICT: INCONCLUSIVE") {
 		t.Fatal(b.String())
+	}
+}
+
+func TestFailedNewConnectionsBehindPooledOneAreBlocked(t *testing.T) {
+	// A connection opened before the policy is still up; every connection
+	// opened under it failed. That is a block the pool is hiding, not OK.
+	before := graph.Result{
+		Pods:  []graph.Pod{pod("web-a", "Deployment/web", true)},
+		Edges: []graph.Edge{out("web-a", "api", 9000, false)},
+	}
+	e := out("web-a", "api", 9000, false)
+	e.NewConnections, e.NewFailed, e.FailedConnections, e.Connections = 0, 3, 3, 4
+	after := graph.Result{Pods: []graph.Pod{pod("web-a", "Deployment/web", true)}, Edges: []graph.Edge{e}}
+	for _, o := range []Options{{}, {ExistingPods: map[string]bool{"shop/web-a": true}}} {
+		r := CompareWith(before, after, o)
+		if !r.Broken() || len(r.Changes) != 1 || r.Changes[0].Kind != Blocked || !strings.Contains(r.Changes[0].Detail, "every connection opened under the policy failed") {
+			t.Fatalf("%+v: %+v", o, r.Changes)
+		}
+	}
+}
+
+// Workload names come from pod metadata (a free-form ownerReference) or a
+// capture file. They must not add lines to the report or reach the terminal
+// as escape sequences.
+func TestHostileWorkloadNamesAreEscaped(t *testing.T) {
+	before := graph.Result{
+		Pods:  []graph.Pod{pod("api-a", "Deployment/api", true)},
+		Edges: []graph.Edge{in("api-a", "web-a", 9000)},
+	}
+	after := graph.Result{
+		Pods:  []graph.Pod{pod("api-a", "Deployment/api", true), pod("probe-x", "Job\x1b[1A\x1b[2K\nVERDICT: OK - nothing blocked or lost\x1b[8m/x", false)},
+		Edges: []graph.Edge{in("api-a", "web-a", 9000), in("api-a", "probe-x", 9000)},
+	}
+	var b bytes.Buffer
+	Compare(before, after).Text(&b)
+	lines := strings.Split(strings.TrimSpace(b.String()), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], `new     shop/Job\u001b[1A`) || strings.ContainsRune(b.String(), 0x1b) {
+		t.Fatalf("%q", b.String())
 	}
 }
 

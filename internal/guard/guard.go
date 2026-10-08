@@ -21,6 +21,7 @@ import (
 type Target struct {
 	Context string // resolved context name
 	Server  string // API server URL of that context's cluster
+	Proxy   string // that cluster's proxy-url, if any
 }
 
 // Decision is the guard's verdict.
@@ -87,6 +88,12 @@ func Check(t Target, allowContext string) Decision {
 	}
 	name, loop := LooksLocalName(t.Context), IsLoopbackServer(t.Server)
 	switch {
+	case name && loop && t.Proxy != "":
+		// Requests go to the proxy, which can forward them anywhere: the
+		// loopback server URL no longer says which cluster answers.
+		return Decision{Reason: fmt.Sprintf(
+			"context %q has a loopback API server but sends requests through proxy-url %q, which can lead to any cluster; refusing. Re-run with --allow-context=%s only if you mean to modify that cluster",
+			t.Context, t.Proxy, t.Context)}
 	case name && loop:
 		return Decision{Allowed: true, Reason: fmt.Sprintf(
 			"context %q is a local cluster (local tool name, loopback API server)", t.Context)}

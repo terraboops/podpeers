@@ -15,22 +15,24 @@ func TestCheckDefaultsToRefusal(t *testing.T) {
 		optIn   bool
 		reason  string
 	}{
-		{"kind on loopback", Target{"kind-dev", "https://127.0.0.1:6443"}, "", true, false, "local cluster"},
-		{"k3d on loopback v6", Target{"k3d-dev", "https://[::1]:6443"}, "", true, false, "local cluster"},
-		{"k3d on unspecified", Target{"k3d-dev", "https://0.0.0.0:6550"}, "", true, false, "local cluster"},
-		{"minikube on localhost", Target{"minikube", "https://localhost:8443"}, "", true, false, "local cluster"},
-		{"remote name remote server", Target{"prod-eu", "https://cluster.example.invalid"}, "", false, false, "not a recognised local cluster"},
-		{"remote name loopback server", Target{"prod-eu", "https://127.0.0.1:6443"}, "", false, false, "not a recognised local cluster"},
-		{"local name remote server", Target{"kind-dev", "https://cluster.example.invalid:6443"}, "", false, false, "not on loopback"},
-		{"local name private ip", Target{"k3d-dev", "https://192.0.2.10:6443"}, "", false, false, "not on loopback"},
-		{"bare prefix is not a name", Target{"kind-", "https://127.0.0.1:6443"}, "", false, false, "not a recognised"},
-		{"prefix must be a prefix", Target{"mykind-dev", "https://127.0.0.1:6443"}, "", false, false, "not a recognised"},
-		{"no context", Target{"", "https://127.0.0.1"}, "", false, false, "no kubeconfig context"},
-		{"unparseable server", Target{"kind-dev", "::not a url"}, "", false, false, "not on loopback"},
-		{"opt-in names the context", Target{"prod-eu", "https://cluster.example.invalid"}, "prod-eu", true, true, "explicitly allowed"},
-		{"opt-in for other context refuses", Target{"prod-eu", "https://cluster.example.invalid"}, "staging", false, false, "does not match"},
-		{"opt-in mismatch refuses even local", Target{"kind-dev", "https://127.0.0.1:6443"}, "kind-other", false, false, "does not match"},
-		{"opt-in is case sensitive", Target{"Prod", "https://cluster.example.invalid"}, "prod", false, false, "does not match"},
+		{"kind on loopback", Target{"kind-dev", "https://127.0.0.1:6443", ""}, "", true, false, "local cluster"},
+		{"k3d on loopback v6", Target{"k3d-dev", "https://[::1]:6443", ""}, "", true, false, "local cluster"},
+		{"k3d on unspecified", Target{"k3d-dev", "https://0.0.0.0:6550", ""}, "", true, false, "local cluster"},
+		{"minikube on localhost", Target{"minikube", "https://localhost:8443", ""}, "", true, false, "local cluster"},
+		{"remote name remote server", Target{"prod-eu", "https://cluster.example.invalid", ""}, "", false, false, "not a recognised local cluster"},
+		{"remote name loopback server", Target{"prod-eu", "https://127.0.0.1:6443", ""}, "", false, false, "not a recognised local cluster"},
+		{"local name remote server", Target{"kind-dev", "https://cluster.example.invalid:6443", ""}, "", false, false, "not on loopback"},
+		{"local name private ip", Target{"k3d-dev", "https://192.0.2.10:6443", ""}, "", false, false, "not on loopback"},
+		{"bare prefix is not a name", Target{"kind-", "https://127.0.0.1:6443", ""}, "", false, false, "not a recognised"},
+		{"prefix must be a prefix", Target{"mykind-dev", "https://127.0.0.1:6443", ""}, "", false, false, "not a recognised"},
+		{"no context", Target{"", "https://127.0.0.1", ""}, "", false, false, "no kubeconfig context"},
+		{"unparseable server", Target{"kind-dev", "::not a url", ""}, "", false, false, "not on loopback"},
+		{"local name loopback server via proxy", Target{"k3d-dev", "https://127.0.0.1:6443", "socks5://127.0.0.1:1080"}, "", false, false, "proxy-url"},
+		{"opt-in still allows a proxied context", Target{"k3d-dev", "https://127.0.0.1:6443", "socks5://127.0.0.1:1080"}, "k3d-dev", true, true, "explicitly allowed"},
+		{"opt-in names the context", Target{"prod-eu", "https://cluster.example.invalid", ""}, "prod-eu", true, true, "explicitly allowed"},
+		{"opt-in for other context refuses", Target{"prod-eu", "https://cluster.example.invalid", ""}, "staging", false, false, "does not match"},
+		{"opt-in mismatch refuses even local", Target{"kind-dev", "https://127.0.0.1:6443", ""}, "kind-other", false, false, "does not match"},
+		{"opt-in is case sensitive", Target{"Prod", "https://cluster.example.invalid", ""}, "prod", false, false, "does not match"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -46,16 +48,16 @@ func TestCheckDefaultsToRefusal(t *testing.T) {
 }
 
 func TestRefusalTellsOperatorHowToOptIn(t *testing.T) {
-	d := Check(Target{"prod-eu", "https://cluster.example.invalid"}, "")
+	d := Check(Target{"prod-eu", "https://cluster.example.invalid", ""}, "")
 	if !strings.Contains(d.Reason, "--allow-context=prod-eu") {
 		t.Fatalf("refusal should show the exact opt-in flag, got %q", d.Reason)
 	}
 }
 
 func TestCheckNodes(t *testing.T) {
-	local := Check(Target{"k3d-dev", "https://127.0.0.1:6550"}, "")
-	optIn := Check(Target{"prod-eu", "https://cluster.example.invalid"}, "prod-eu")
-	refused := Check(Target{"prod-eu", "https://cluster.example.invalid"}, "")
+	local := Check(Target{"k3d-dev", "https://127.0.0.1:6550", ""}, "")
+	optIn := Check(Target{"prod-eu", "https://cluster.example.invalid", ""}, "prod-eu")
+	refused := Check(Target{"prod-eu", "https://cluster.example.invalid", ""}, "")
 
 	cases := []struct {
 		name    string
@@ -85,7 +87,7 @@ func TestCheckNodes(t *testing.T) {
 }
 
 func TestRefusalDoesNotEchoProviderDetails(t *testing.T) {
-	local := Check(Target{"k3d-dev", "https://127.0.0.1:6550"}, "")
+	local := Check(Target{"k3d-dev", "https://127.0.0.1:6550", ""}, "")
 	d := CheckNodes(local, []string{"aws:///zone-a/i-0123456789abcdef0"}, nil)
 	if strings.Contains(d.Reason, "i-0123456789abcdef0") {
 		t.Fatalf("refusal leaked instance id: %q", d.Reason)

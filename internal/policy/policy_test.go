@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	netv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/yaml"
@@ -543,5 +544,98 @@ func TestClientSideIngress(t *testing.T) {
 	}
 	if !strings.Contains(ev, "web-a -> svc/shop/stats udp/8125") || !strings.Contains(ev, "seen from the CLIENT's side only") {
 		t.Errorf("evidence should say the rule rests on the client's view:\n%s", ev)
+	}
+}
+
+// A Service selects pods only in its own namespace. A client's traffic to a
+// same-labelled Service elsewhere is not evidence for this workload.
+func TestClientSideServiceIsNamespaced(t *testing.T) {
+	r := shop()
+	r.Services = append(r.Services, graph.Service{Namespace: "staging", Name: "stats", Selector: map[string]string{"app": "api"},
+		Ports: []graph.ServicePort{{Protocol: "udp", Port: 8125, TargetPort: "8125"}}})
+	e := edge("shop/web-a", graph.Outbound, svcPeer("staging", "stats"), 8125)
+	e.Protocol = "udp"
+	r.Edges = append(r.Edges, e)
+	api := find(t, Suggest(r, Options{}), "Deployment/api")
+	for _, in := range api.Policy.Spec.Ingress {
+		for _, p := range in.Ports {
+			if p.Port.String() == "8125" {
+				t.Fatalf("staging/stats does not select shop's api pods, yet ingress allows %+v", in)
+			}
+		}
+	}
+}
+
+// Deployment/web and a bare Pod/web would both be "podpeers-web"; applying
+// the stream would keep only the last, governing the other's pods.
+func TestPolicyNamesNeverCollide(t *testing.T) {
+	r := shop()
+	bare := obs("shop", "web", "", map[string]string{"app": "web"})
+	r.Pods = append(r.Pods, bare)
+	r.Edges = append(r.Edges, edge("shop/web", graph.Outbound, graph.Peer{Kind: graph.PeerExternal, IP: "203.0.113.66"}, 443))
+	long := strings.Repeat("a", 70)
+	for _, n := range []string{long + "-x", long + "-y"} {
+		r.Pods = append(r.Pods, obs("shop", n+"-0", "StatefulSet/"+n, map[string]string{"app": n[len(n)-1:]}))
+		r.Edges = append(r.Edges, edge("shop/"+n+"-0", graph.Outbound, graph.Peer{Kind: graph.PeerExternal, IP: "203.0.113.9"}, 443))
+	}
+	rep := Suggest(r, Options{})
+	seen := map[string]string{}
+	for _, s := range rep.Suggestions {
+		if s.Policy == nil {
+			t.Fatalf("%s refused: %s", s.Workload, s.Refused)
+		}
+		k := s.Policy.Namespace + "/" + s.Policy.Name
+		if other, dup := seen[k]; dup {
+			t.Errorf("%s and %s are both %s", other, s.Workload, k)
+		}
+		if len(s.Policy.Name) > 63 {
+			t.Errorf("name too long: %s", s.Policy.Name)
+		}
+		seen[k] = s.Workload
+	}
+	if len(seen) != 5 {
+		t.Fatalf("want 5 distinct policies, got %v", seen)
+	}
+	// Names that never collided keep their plain, stable form.
+	if find(t, rep, "Deployment/api").Policy.Name != "podpeers-api" {
+		t.Error("api's name changed though nothing collided with it")
+	}
+}
+
+// Capture strings end up in YAML comments. A line break must not end the
+// comment (and smuggle a document into what kubectl applies), and a control
+// character must not reach the terminal or break the YAML parser.
+func TestYAMLHostileNamesStayInComments(t *testing.T) {
+	r := shop()
+	inject := "gw\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRoleBinding\nmetadata:\n  name: x\n---\n# tail"
+	for i := range r.Pods {
+		if r.Pods[i].Name == "gateway-x" {
+			r.Pods[i].Workload = "Gateway\x1b]0;title\x07/" + inject
+		}
+	}
+	stray := obs("shop", "api-2", "Deployment/api", map[string]string{"app": "api", "tier": "back"})
+	stray.Probe = graph.Probe{Status: graph.ProbeFailed, Reason: "exit (\x1b[8mhidden\u009b2K\u2028)"}
+	r.Pods = append(r.Pods, stray)
+	y, err := Suggest(r, Options{}).YAML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range y {
+		if c != '\n' && !unicode.IsPrint(c) {
+			t.Fatalf("unprintable %U reached the YAML:\n%s", c, y)
+		}
+	}
+	docs := strings.Split(y, "\n---\n")
+	if len(docs) != 3 {
+		t.Fatalf("want a header and 2 NetworkPolicy documents, got %d:\n%s", len(docs), y)
+	}
+	for _, d := range docs[1:] {
+		var np netv1.NetworkPolicy
+		if err := yaml.UnmarshalStrict([]byte(d), &np); err != nil || np.Kind != "NetworkPolicy" {
+			t.Fatalf("document is not a NetworkPolicy (%v):\n%s", err, d)
+		}
+	}
+	if !strings.Contains(y, `edge/Gateway\u001b]0;title\u0007/gw\u000a---\u000aapiVersion`) {
+		t.Errorf("hostile name should be visible, escaped:\n%s", y)
 	}
 }

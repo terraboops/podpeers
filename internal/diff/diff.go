@@ -50,7 +50,7 @@ type Change struct {
 }
 
 func (c Change) String() string {
-	return fmt.Sprintf("%-7s %s -> %s %s/%d  (%s)", c.Kind, c.From, c.To, c.Protocol, c.Port, c.Detail)
+	return fmt.Sprintf("%-7s %s -> %s %s/%d  (%s)", c.Kind, graph.Printable(c.From), graph.Printable(c.To), c.Protocol, c.Port, c.Detail)
 }
 
 type Result struct {
@@ -61,8 +61,12 @@ type Result struct {
 }
 
 // Inconclusive reports whether some flow was only seen on connections that
-// predate the after-window, so the policy was never exercised for it.
+// predate the after-window, so the policy was never exercised for it, or
+// whether some flow's observer went unobserved, so nothing was checked at all.
 func (r Result) Inconclusive() bool {
+	if len(r.Unverifiable) > 0 {
+		return true
+	}
 	for _, c := range r.Changes {
 		if c.Kind == Preexisting {
 			return true
@@ -89,7 +93,8 @@ type key struct {
 type flowInfo struct {
 	established bool // at least one observation got past the handshake
 	attempted   bool // at least one observation was handshake-only
-	newConns    int  // connections opened during the window
+	newConns    int  // connections opened during the window that completed
+	newFailed   int  // connections opened during the window that never completed
 	samples     int  // most samples any observer saw it in
 	conns       int  // connections across observers
 	observers   map[string]bool
@@ -160,12 +165,13 @@ func workloadFlows(r graph.Result, o Options) (map[key]*flowInfo, map[string]boo
 			fi.established = true
 		}
 		fi.newConns += f.New
+		fi.newFailed += f.NewFailed
 		fi.conns += f.Conns
 		if f.Samples > fi.samples {
 			fi.samples = f.Samples
 		}
-		if o.startedAfterChange(f.From, known) || o.startedAfterChange(f.To, known) {
-			fi.newConns++ // an endpoint pod started under the change
+		if !f.Attempted && (o.startedAfterChange(f.From, known) || o.startedAfterChange(f.To, known)) {
+			fi.newConns++ // an endpoint pod started under the change, and this edge connected
 		}
 		fi.observers[name(f.ObservedOn)] = true
 		if f.Samples > fi.samplesBy[name(f.ObservedOn)] {
@@ -212,6 +218,9 @@ func CompareWith(before, after graph.Result, o Options) Result {
 			res.Changes = append(res.Changes, Change{Blocked, k.from, k.to, k.proto, k.port, detail})
 		case b == nil || !b.established:
 			res.Changes = append(res.Changes, Change{New, k.from, k.to, k.proto, k.port, "not seen before"})
+		case a.newConns == 0 && a.newFailed > 0:
+			res.Changes = append(res.Changes, Change{Blocked, k.from, k.to, k.proto, k.port,
+				"every connection opened under the policy failed (SYN_SENT/CLOSE); only connections opened before it still work"})
 		case a.newConns == 0:
 			res.Changes = append(res.Changes, Change{Preexisting, k.from, k.to, k.proto, k.port,
 				"only connections already open before the window; the policy was never exercised for this flow"})
@@ -231,7 +240,7 @@ func CompareWith(before, after graph.Result, o Options) Result {
 			}
 		}
 		if !verifiable {
-			res.Unverifiable = append(res.Unverifiable, fmt.Sprintf("%s -> %s %s/%d", k.from, k.to, k.proto, k.port))
+			res.Unverifiable = append(res.Unverifiable, fmt.Sprintf("%s -> %s %s/%d", graph.Printable(k.from), graph.Printable(k.to), k.proto, k.port))
 			continue
 		}
 		chance, seen, of, afterN := missChance(b, bTotal, aTotal, aObserved)
@@ -269,7 +278,7 @@ func CompareWith(before, after graph.Result, o Options) Result {
 
 // Text writes a human report.
 func (r Result) Text(w io.Writer) {
-	if len(r.Changes) == 0 {
+	if len(r.Changes) == 0 && len(r.Unverifiable) == 0 {
 		fmt.Fprintln(w, "no changes: every flow seen before was seen after, and nothing was blocked")
 	}
 	for _, c := range r.Changes {
@@ -282,8 +291,8 @@ func (r Result) Text(w io.Writer) {
 	case r.Broken():
 		fmt.Fprintln(w, "\nVERDICT: BROKEN - traffic that worked before is blocked or missing")
 	case r.Inconclusive():
-		fmt.Fprintln(w, "\nVERDICT: INCONCLUSIVE - some flows were only seen on connections opened before the policy;"+
-			" restart those workloads so they reconnect under it, then capture again")
+		fmt.Fprintln(w, "\nVERDICT: INCONCLUSIVE - some flows were only seen on connections opened before the policy,"+
+			" or their observer was not observed after; restart those workloads so they run under it, then capture again")
 	default:
 		fmt.Fprintln(w, "\nVERDICT: OK - nothing blocked or lost")
 	}

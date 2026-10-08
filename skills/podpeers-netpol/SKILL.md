@@ -123,7 +123,9 @@ later failure would prove nothing.
 
 ## Step 3: review the suggestions with the user
 
-Read `policy.yaml` (or `policy.json`) and present, per workload:
+Read `policy.yaml`, the file `verify` applies (`policy.json` is the same
+content for a program to read, but review what is applied), and check that
+every document in it is a `NetworkPolicy`. Present, per workload:
 
 - **What it allows**: each rule and its evidence ("web -> api tcp/9000, 3
   connections, open at window end").
@@ -186,8 +188,8 @@ only if restarting is unacceptable; expect INCONCLUSIVE.
 | 0 | OK | helm test passed **and** no flow was blocked or lost |
 | 5 | BROKEN: helm test failed | the user-visible path is broken; read `after-helm-test.log` and `diff.txt`. The diff may show nothing blocked: a test pod's one short connection is sampled too rarely to tell blocked from unseen, and the report says so. The test log is the evidence |
 | 4 | BROKEN: helm test passed, traffic blocked/lost | the test does not exercise what broke; the diff names the flow |
-| 7 | INCONCLUSIVE | some flows were only seen on connections older than the policy (`preexisting` lines): the policy was never exercised for them. Restart those workloads and verify again. Never report this as OK |
-| 2 | context refused | nothing was touched |
+| 7 | INCONCLUSIVE | the policy was never exercised for some flows: they were only seen on connections older than it (`preexisting` lines), or the pods that saw them were not observed the second time (`unverifiable` lines, or a partial capture). Restart those workloads, or find out why their pods were not observed, and verify again. Never report this as OK |
+| 2 | context refused | nothing was touched. Also returned when a `HELM_KUBE*` override (such as `HELM_KUBEAPISERVER`) is set: helm would talk to a server `check-context` never judged |
 
 **On OK, still read `after-helm-test.log`.** If the test only passed after a
 retry ("attempt 1 got no answer"), you are probably seeing the new-pod race
@@ -215,7 +217,8 @@ second time. `preexisting` lines mean the flow was only seen on connections
 opened before the policy. `glimpsed` lines are flows the baseline caught so
 rarely (typically DNS lookups) that missing them afterwards is likely by
 chance; each line states the odds. None of these says anything about whether
-the policy allows the flow.
+the policy allows the flow, which is why `unverifiable` and `preexisting`
+lines make the verdict INCONCLUSIVE rather than OK.
 
 **Rule out the new-pod race before blaming the policy.** CNIs program a
 policy's allow-list for a *newly created* pod asynchronously. A client pod
@@ -294,7 +297,9 @@ the release and `helm test` keeps guarding it:
      | "\($np): \(if ($sel | to_entries | all(.value == $test[.key])) then "admits the test pod" else "does not admit the test pod" end)"'
    ```
 2. **Name the templated policies differently from the `podpeers-<workload>`
-   ones `verify` applied** (e.g. `{{ .Release.Name }}-web`). Same names make
+   ones `verify` applied** (two workloads with the same name, such as a
+   Deployment and a bare Pod, get a short hash suffix so neither overwrites
+   the other) (e.g. `{{ .Release.Name }}-web`). Same names make
    `helm upgrade` fail: Helm will not adopt objects it did not create.
 3. Check the template renders exactly what was verified. `helm template` is
    offline; the `kubectl create --dry-run=client` used to normalise both

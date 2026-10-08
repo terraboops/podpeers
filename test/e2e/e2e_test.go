@@ -460,6 +460,27 @@ spec:
 		if d.code != 5 || !strings.Contains(d.stdout, "preexisting pp-app/Pod/web -> svc/pp-app/api tcp/9000") || !strings.Contains(d.stdout, "INCONCLUSIVE") {
 			t.Fatalf("want INCONCLUSIVE (exit 5) naming web -> api, got exit %d", d.code)
 		}
+
+		// Now web also tries new connections while the old one stays up. The
+		// failed connects must not count as the policy being exercised: the
+		// pool hides a block, and the verdict is BROKEN, not OK.
+		retry := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfig, "--context", kubeCtx, "exec", "-n", "pp-app", "web", "-c", "main", "--",
+			"sh", "-c", "for i in 1 2 3 4 5 6 7 8 9 10; do timeout 2 nc -z -w 1 "+apiIP+" 9000; sleep 0.5; done")
+		if err := retry.Start(); err != nil {
+			t.Fatal(err)
+		}
+		pooled := filepath.Join(outDir, "e2e-after-deny-retry.json")
+		r = podpeers(ctx, t, "capture", "-n", "pp-app", "-l", "app=web", "--duration", "8s", "--interval", "1s", "-o", pooled, "--summary", "none")
+		_ = retry.Wait()
+		if r.code != 0 {
+			t.Fatalf("capture: %s", r.stderr)
+		}
+		d = podpeers(ctx, t, "diff", filepath.Join(outDir, "e2e-capture.json"), pooled)
+		t.Logf("diff with failed reconnects exit=%d\n%s", d.code, d.stdout)
+		if d.code != 4 || !strings.Contains(d.stdout, "blocked pp-app/Pod/web -> svc/pp-app/api tcp/9000") ||
+			!strings.Contains(d.stdout, "every connection opened under the policy failed") {
+			t.Fatalf("want BROKEN (exit 4): web -> api blocked behind its old connection, got exit %d", d.code)
+		}
 	})
 
 	t.Run("UDP: connected sockets are seen, an unconnected server's clients only from the client side", func(t *testing.T) {

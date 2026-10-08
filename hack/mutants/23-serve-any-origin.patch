@@ -1,0 +1,21 @@
+# Mutant 23-serve-any-origin: breaks the protection for "serve answers only its own origin".
+# Bug introduced: serve answers any Host and Origin, so a DNS-rebinding or cross-site page can read the capture.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./cmd/podpeers/
+# unit-run: TestServeRefusesRebindingAndCrossSite
+# unit-expect: 200, want (421|403)
+# e2e-run: -
+# e2e-expect: -
+--- a/cmd/podpeers/main.go
++++ b/cmd/podpeers/main.go
+@@ -431,7 +431,7 @@ func Handler(res graph.Result) (http.Handler, error) {
+ 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+ 		_ = render.HTML(w, res, "graphql")
+ 	})
+-	return sameOrigin(mux), nil
++	return mux, nil
+ }
+ 
+ // sameOrigin answers only requests addressed to an IP literal or localhost

@@ -284,4 +284,42 @@ func TestSkillHelmWorkflow(t *testing.T) {
 			t.Fatalf("want refusal (exit 2) before any apply, got %d", code)
 		}
 	})
+
+	t.Run("the skill script refuses a helm API-server override check-context never saw", func(t *testing.T) {
+		script, _ := filepath.Abs("../../skills/podpeers-netpol/scripts/netpol-check.sh")
+		cmd := exec.CommandContext(context.Background(), script, "verify", "--release", "shop", "--namespace", helmNS,
+			"--kubeconfig", kubeconfig, "--context", kubeCtx, "--policy", suggested, "--baseline", baseline)
+		cmd.Env = append(os.Environ(), "PODPEERS="+binary, "HELM_KUBEAPISERVER=https://192.0.2.1:6443")
+		out, err := cmd.CombinedOutput()
+		code := 0
+		if ee, ok := err.(*exec.ExitError); ok {
+			code = ee.ExitCode()
+		}
+		t.Logf("exit=%d\n%s", code, out)
+		if code != 2 || !strings.Contains(string(out), "HELM_KUBEAPISERVER is set") || strings.Contains(string(out), "dry run") {
+			t.Fatalf("want refusal (exit 2) naming HELM_KUBEAPISERVER before any apply, got %d", code)
+		}
+	})
+
+	t.Run("the skill script applies NetworkPolicies and nothing else", func(t *testing.T) {
+		pol, _ := os.ReadFile(suggested)
+		smuggled := filepath.Join(t.TempDir(), "policy.yaml")
+		os.WriteFile(smuggled, append(pol, []byte("\n---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: e2e-smuggled}\ndata: {a: b}\n")...), 0o644)
+		script, _ := filepath.Abs("../../skills/podpeers-netpol/scripts/netpol-check.sh")
+		cmd := exec.CommandContext(context.Background(), script, "verify", "--release", "shop", "--namespace", helmNS,
+			"--kubeconfig", kubeconfig, "--context", kubeCtx, "--policy", smuggled, "--baseline", baseline)
+		cmd.Env = append(os.Environ(), "PODPEERS="+binary)
+		out, err := cmd.CombinedOutput()
+		code := 0
+		if ee, ok := err.(*exec.ExitError); ok {
+			code = ee.ExitCode()
+		}
+		t.Logf("exit=%d\n%s", code, out)
+		if code != 1 || !strings.Contains(string(out), "not NetworkPolicies") || !strings.Contains(string(out), "configmap/e2e-smuggled") {
+			t.Fatalf("want refusal (exit 1) naming the ConfigMap, got %d", code)
+		}
+		if got := kubectl(t, "get", "configmap", "-n", helmNS, "-o", "name"); strings.Contains(got, "e2e-smuggled") || strings.Contains(string(out), "dry run") {
+			t.Fatalf("something was applied despite the refusal: %s", got)
+		}
+	})
 }
