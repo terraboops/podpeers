@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -398,6 +399,9 @@ func TestBarePodWorkload(t *testing.T) {
 func TestPolicyName(t *testing.T) {
 	if n := policyName("Deployment/Web"); n != "podpeers-web" {
 		t.Error(n)
+	}
+	if n := policyName("Gateway/gw\x1b]0;x\a\n---\nkind: ConfigMap"); !regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`).MatchString(n) || len(n) > 63 {
+		t.Errorf("not a valid object name: %q", n)
 	}
 	long := policyName("StatefulSet/" + strings.Repeat("a", 80))
 	if len(long) > 63 || !strings.HasPrefix(long, "podpeers-aaa") {

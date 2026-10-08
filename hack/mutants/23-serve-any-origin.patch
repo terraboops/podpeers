@@ -6,8 +6,8 @@
 # unit-pkg: ./cmd/podpeers/
 # unit-run: TestServeRefusesRebindingAndCrossSite
 # unit-expect: 200, want (421|403)
-# e2e-run: -
-# e2e-expect: -
+# e2e-run: TestAuditFixes/serve_on
+# e2e-expect: a rebound name got 200
 --- a/cmd/podpeers/main.go
 +++ b/cmd/podpeers/main.go
 @@ -431,7 +431,7 @@ func Handler(res graph.Result) (http.Handler, error) {

@@ -757,8 +757,17 @@ func policyName(workload string) string {
 		name = workload[i+1:]
 	}
 	n := "podpeers-" + strings.ToLower(name)
-	if len(n) > 63 {
-		n = withHash(n, workload)
+	// Controller names come from a free-form ownerReference, so they need
+	// not be valid object names: anything else becomes '-', and the name
+	// gets a hash so two such workloads stay apart.
+	clean := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
+			return r
+		}
+		return '-'
+	}, n)
+	if clean != n || len(n) > 63 {
+		n = withHash(clean, workload)
 	}
 	return n
 }

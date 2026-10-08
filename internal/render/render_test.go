@@ -2,6 +2,9 @@ package render
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -179,5 +182,50 @@ func TestHostileStringsAreInert(t *testing.T) {
 	}
 	if !strings.Contains(dot.String(), `"] X [label=INJ] y [k=`+`\`+`u005c" [label=`) {
 		t.Fatalf("capture text escaped its DOT string:\n%s", dot.String())
+	}
+}
+
+// The DOT above must also survive a real Graphviz lexer: the hostile peer
+// stays one node with its text as its name, and no node X or y appears. CI
+// installs Graphviz and sets PODPEERS_REQUIRE_DOT, so there this cannot skip.
+func TestHostileDOTParsesInGraphviz(t *testing.T) {
+	dotBin, err := exec.LookPath("dot")
+	if err != nil {
+		if os.Getenv("PODPEERS_REQUIRE_DOT") != "" {
+			t.Fatal("Graphviz (dot) is required here but not installed")
+		}
+		t.Skip("Graphviz (dot) is not installed, so DOT output is not parsed by a real Graphviz here; CI installs it")
+	}
+	r := fixture(t)
+	r.Pods = append(r.Pods, graph.Pod{Namespace: "n", Name: "a\\", Probe: graph.Probe{Status: graph.ProbeFailed}})
+	r.Edges = append(r.Edges, graph.Edge{Pod: "n/a\\", Direction: graph.Outbound, Protocol: "tcp", Port: 443,
+		Peer: graph.Peer{Kind: graph.PeerExternal, IP: `] X [label=INJ] y [k=\`}})
+	var dot bytes.Buffer
+	if err := DOT(&dot, r); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(dotBin, "-Tjson")
+	cmd.Stdin = &dot
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Graphviz rejected the DOT: %v\n%s", err, out)
+	}
+	var g struct {
+		Objects []struct{ Name string } `json:"objects"`
+	}
+	if err := json.Unmarshal(out, &g); err != nil {
+		t.Fatal(err)
+	}
+	hostile := false
+	for _, o := range g.Objects {
+		if o.Name == "X" || o.Name == "y" {
+			t.Fatalf("capture text became DOT statements: node %q", o.Name)
+		}
+		if strings.HasPrefix(o.Name, "] X [label=INJ] y [k=") {
+			hostile = true
+		}
+	}
+	if !hostile {
+		t.Fatalf("the hostile peer should be one node named by its text; nodes: %+v", g.Objects)
 	}
 }

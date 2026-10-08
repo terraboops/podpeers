@@ -154,9 +154,12 @@ func TestLimitsQuery(t *testing.T) {
 // The schema is cyclic: each level of edges { pod { ... } } multiplies the
 // work. A ~250-byte query must not cost exponential CPU and memory.
 func TestCyclicQueryIsBounded(t *testing.T) {
+	// A small budget keeps the test cheap even when the bound is broken.
+	defer func(n int64) { MaxFields = n }(MaxFields)
+	MaxFields = 5000
 	s := schema(t)
 	q := "id"
-	for i := 0; i < 14; i++ {
+	for i := 0; i < 9; i++ {
 		q = "id edges { pod { " + q + " } }"
 	}
 	start := time.Now()

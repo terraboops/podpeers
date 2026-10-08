@@ -6,8 +6,8 @@
 # unit-pkg: ./internal/policy/
 # unit-run: TestPolicyNamesNeverCollide
 # unit-expect: are both shop/podpeers-web
-# e2e-run: -
-# e2e-expect: -
+# e2e-run: TestAuditFixes/suggest_keeps
+# e2e-expect: share the name|one overwrote another
 --- a/internal/policy/policy.go
 +++ b/internal/policy/policy.go
 @@ -341,7 +341,6 @@ func Suggest(r graph.Result, o Options) Report {

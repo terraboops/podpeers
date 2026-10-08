@@ -6,8 +6,8 @@
 # unit-pkg: ./internal/guard/ ./cmd/podpeers/
 # unit-run: TestCheckDefaultsToRefusal|TestCaptureRefusesLoopbackServerBehindAProxy
 # unit-expect: allowed=false|proxy-url
-# e2e-run: -
-# e2e-expect: -
+# e2e-run: TestAuditFixes/a_loopback_API_server
+# e2e-expect: naming the proxy-url
 --- a/internal/guard/guard.go
 +++ b/internal/guard/guard.go
 @@ -88,7 +88,7 @@ func Check(t Target, allowContext string) Decision {

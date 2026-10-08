@@ -307,6 +307,15 @@ Named cases:
 | connection older than a policy | INCONCLUSIVE, while new connects are blocked |
 | MCP over stdio | answers from the real capture |
 | Helm skill workflow | good policy OK; intruder blocked; break invisible to `helm test` caught by diff; break visible to `helm test` caught and rolled back |
+| connection older than a policy, while new connects fail | BROKEN (`blocked`), not OK: failed reconnects are not the policy being exercised |
+| skill script given a `HELM_KUBEAPISERVER` override, or a policy file with a ConfigMap in it | refused before anything is applied |
+| pod whose controller ownerReference carries ESC, BEL and a `---` document | the API server accepts it (k3s 1.31); `suggest` keeps it inside comments, escaped; `kubectl apply` of the output creates NetworkPolicies only |
+| a Deployment and a bare Pod with the same name | two policies with two names, both present after `kubectl apply` |
+| a client in one namespace calling a same-labelled Service in another | no rule for the namespace the Service does not select (control: the right namespace gets it) |
+| a finished pod still reporting an address the node's IPAM gave to a running pod | the running pod owns it: edges and rules name it, not the finished pod's namespace |
+| flows whose observers were not captured the second time | INCONCLUSIVE (exit 5), not OK |
+| `serve` on a real capture | its own origin answered; a rebound Host (421) and a foreign Origin (403) refused; a 20-deep cyclic GraphQL query cut off in under a second |
+| a local context whose loopback API server is reached through a `proxy-url` | refused, exit 2, nothing modified |
 
 CI runs both suites on every push. The e2e suite runs on a k3d cluster on the
 runner.
@@ -316,7 +325,8 @@ the safety guard, the skill script's own context refusal, admission under Pod
 Security `restricted`, and every protection added since (UDP flows, sub-second
 intervals, samples surviving log rotation, CronJob grouping, cross-namespace
 selectors, node pod-network addresses, UDP clients seen only from their own
-side, the DNS rule's reach, rarely sampled flows not called lost) has a mutant in [`hack/mutants/`](hack/mutants): a
+side, the DNS rule's reach, rarely sampled flows not called lost, and each
+fix from the security audit) has a mutant in [`hack/mutants/`](hack/mutants): a
 small patch that breaks exactly that protection. `make mutants-e2e` applies
 each one in a scratch worktree and requires the unit **and** real-cluster tests
 to fail **for the expected reason** (log rotation exists only on a real
@@ -326,6 +336,32 @@ unmutated. CI runs it on every push. Writing the mutants found one test that cau
 only by accident (ignoring the label selector injected into `kube-system`
 pods). That test now checks the cluster-wide invariant directly: no pod
 outside the selector is touched.
+
+### What the tests do not prove on a cluster, and why
+
+Silence is not a pass, so these are written down:
+
+- **The skill script's downgrade of a partial capture to INCONCLUSIVE.** It
+  needs exactly one replica's debug container to fail during `verify` while its
+  siblings are observed. The script offers no way to cause that, and a wrapper
+  that fakes it would test the wrapper. The diff it relies on is proven on the
+  cluster (flows nobody re-observed are INCONCLUSIVE); the script branch is
+  read, not run.
+- **DNS rebinding through a real browser.** The server side is proven against
+  the real binary (foreign Host and Origin refused); whether a given browser
+  would deliver a rebound request is the browser's behaviour, not podpeers'.
+- **The GraphQL bound, broken.** The e2e test proves the bound holds through
+  the real binary; the mutant that removes it is unit-only, because unbounded
+  the real query would run the test machine's memory into gigabytes.
+- **Graphviz versions other than the ones tried.** CI parses hostile DOT
+  output with Ubuntu's Graphviz (2.43); 9.0 was also tried. Both read even the
+  older `%q` quoting safely, so the escaping is defence in depth; other
+  versions were not tested.
+- **Address reuse on a busy node.** The e2e test fast-forwards the k3d node's
+  host-local IPAM to the finished pod's address rather than churning ~250 pods;
+  the reuse itself, and the finished pod still claiming the address, are real.
+- **Whether a model heeds** the MCP server's note that cluster strings are
+  data. That is model behaviour; the note's presence is tested.
 
 ## Limits, honestly
 

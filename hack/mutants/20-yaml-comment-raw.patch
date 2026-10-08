@@ -6,8 +6,8 @@
 # unit-pkg: ./internal/policy/
 # unit-run: TestYAMLHostileNamesStayInComments
 # unit-expect: reached the YAML
-# e2e-run: -
-# e2e-expect: -
+# e2e-run: TestAuditFixes/suggest_keeps
+# e2e-expect: unprintable U\+001B in policy.yaml
 --- a/internal/policy/policy.go
 +++ b/internal/policy/policy.go
 @@ -819,7 +819,7 @@ func (rep Report) YAML() (string, error) {

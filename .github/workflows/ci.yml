@@ -16,14 +16,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: install OCR for the image hygiene check
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr ffmpeg >/dev/null
+      - name: install OCR for the image hygiene check, and Graphviz to parse the DOT output
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr ffmpeg graphviz >/dev/null
       - name: hygiene (no real IPs or credentials in a public repo, text and images)
         run: HYGIENE_IMAGES=1 ./hack/hygiene.sh
       - name: vet and gofmt
         run: make vet
       - name: unit tests
-        run: go test -race -count=1 ./...
+        run: PODPEERS_REQUIRE_DOT=1 go test -race -count=1 ./...
       - name: mutants (each negative case's protection, broken, must fail the unit tests)
         run: ./hack/mutants.sh
       - name: shell syntax

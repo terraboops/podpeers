@@ -6,8 +6,8 @@
 # unit-pkg: ./internal/policy/
 # unit-run: TestClientSideServiceIsNamespaced
 # unit-expect: does not select shop's api pods
-# e2e-run: -
-# e2e-expect: -
+# e2e-run: TestAuditFixes/a_Service_is
+# e2e-expect: never talked to pp-xa's web
 --- a/internal/policy/policy.go
 +++ b/internal/policy/policy.go
 @@ -235,7 +235,7 @@ func (b *builder) clientSide(own []graph.Edge, ids map[string]bool, pods []graph

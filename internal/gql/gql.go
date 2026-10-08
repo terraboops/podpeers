@@ -332,7 +332,7 @@ func NewSchema(r graph.Result) (graphql.Schema, error) {
 // MaxFields bounds the field resolutions one query may cost. A full dump of
 // a large capture stays well inside it; a query nesting the cycle to blow up
 // does not.
-const MaxFields = 250000
+var MaxFields int64 = 250000
 
 type budgetKey struct{}
 

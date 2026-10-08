@@ -6,8 +6,8 @@
 # unit-pkg: ./internal/diff/
 # unit-run: TestUnobservedAfterIsUnverifiableNotLost
 # unit-expect: an unverifiable flow must make the result inconclusive
-# e2e-run: -
-# e2e-expect: -
+# e2e-run: TestAuditFixes/diff_and_render
+# e2e-expect: want INCONCLUSIVE \(exit 5\)
 --- a/internal/diff/diff.go
 +++ b/internal/diff/diff.go
 @@ -64,9 +64,6 @@ type Result struct {

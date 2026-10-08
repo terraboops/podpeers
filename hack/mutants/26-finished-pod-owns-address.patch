@@ -1,0 +1,21 @@
+# Mutant 26-finished-pod-owns-address: breaks the protection for "a running pod owns an address a finished pod still reports".
+# Bug introduced: the pod listed last for an address wins, so a finished pod in another namespace takes over a running pod's flows and policy rules.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/graph/
+# unit-run: TestRunningPodOwnsAReusedAddress
+# unit-expect: resolved to
+# e2e-run: TestAuditFixes/a_running_pod
+# e2e-expect: should resolve to pp-xa/reuser
+--- a/internal/graph/graph.go
++++ b/internal/graph/graph.go
+@@ -265,7 +265,7 @@ func NewResolver(inv Inventory) *Resolver {
+ 			if a, err := netip.ParseAddr(ip); err == nil {
+ 				// A finished pod can still report an address IPAM has since
+ 				// given to a running one; the running pod owns it.
+-				if held, ok := r.pods[a.Unmap()]; ok && finished(p) && !finished(held) {
++				if held, ok := r.pods[a.Unmap()]; ok && false && finished(p) && !finished(held) {
+ 					continue
+ 				}
+ 				r.pods[a.Unmap()] = p
