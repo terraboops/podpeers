@@ -360,3 +360,28 @@ func TestMCPCLI(t *testing.T) {
 		t.Error("no capture should fail")
 	}
 }
+
+// The MCP server reports the same version as `podpeers version`; it once
+// reported the raw ldflags default ("dev") for `go install` builds.
+func TestMCPReportsTheBuildVersion(t *testing.T) {
+	saved := buildVersion
+	defer func() { buildVersion = saved }()
+	buildVersion = func() string { return "v0.0.0-20990101000000-abcdef123456" }
+	_, v, _ := runCLI("version")
+	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}` + "\n")
+	var out, errb bytes.Buffer
+	if code := cmdMCP([]string{fixture}, in, &out, &errb); code != exitOK {
+		t.Fatalf("mcp exit %d: %s", code, errb.String())
+	}
+	var resp struct {
+		Result struct {
+			ServerInfo struct{ Version string } `json:"serverInfo"`
+		}
+	}
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("%v: %s", err, out.String())
+	}
+	if want := strings.TrimSpace(strings.TrimPrefix(v, "podpeers ")); resp.Result.ServerInfo.Version != want {
+		t.Errorf("MCP serverInfo.version = %q; `podpeers version` says %q", resp.Result.ServerInfo.Version, want)
+	}
+}

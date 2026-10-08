@@ -48,8 +48,9 @@ var version = "dev"
 
 // buildVersion reports the module version for `go install …@version` builds
 // (e.g. a v0.0.0-<date>-<commit> pseudo-version), where no -ldflags version
-// was set.
-func buildVersion() string {
+// was set. Everything that reports a version uses it: `podpeers version`, the
+// MCP server's serverInfo and the API client's user agent.
+var buildVersion = func() string {
 	if version != "dev" {
 		return version
 	}
@@ -173,7 +174,7 @@ func connect(ctx context.Context, cf clusterFlags, stderr io.Writer) (*connectio
 		fmt.Fprintf(stderr, "podpeers: building client config: %v\n", err)
 		return nil, exitError
 	}
-	rc.UserAgent = "podpeers/" + version
+	rc.UserAgent = "podpeers/" + buildVersion()
 	// Injection and polling touch every targeted pod; client-go's default
 	// 5 QPS makes that slow and logs throttling warnings mid-output.
 	rc.QPS, rc.Burst = 50, 100
@@ -575,7 +576,7 @@ func cmdMCP(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "podpeers: %v\n", err)
 		return exitError
 	}
-	srv := &mcp.Server{CapturePath: fs.Arg(0), Version: version}
+	srv := &mcp.Server{CapturePath: fs.Arg(0), Version: buildVersion()}
 	if err := srv.Serve(stdin, stdout); err != nil {
 		fmt.Fprintf(stderr, "podpeers: mcp: %v\n", err)
 		return exitError
