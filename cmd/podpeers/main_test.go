@@ -244,7 +244,7 @@ func TestServeHandler(t *testing.T) {
 	if !strings.Contains(page.String(), `const GRAPHQL = "graphql";`) {
 		t.Fatal("served page should enable the GraphQL console")
 	}
-	for path, want := range map[string]int{"/nope": 404} {
+	for path, want := range map[string]int{"/nope": 404, "/favicon.ico": 204} {
 		r, _ := http.Get(srv.URL + path)
 		if r.StatusCode != want {
 			t.Errorf("%s = %d", path, r.StatusCode)

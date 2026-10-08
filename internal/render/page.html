@@ -148,7 +148,9 @@ function build(view) {
       return [[id, port]];
     }
     const id = peer.kind === "node" ? "node/" + peer.name : peer.ip;
-    if (!nodes.has(id)) nodes.set(id, { id, kind: peer.kind, ns: "(outside the cluster)", label: peer.name || peer.ip, members: [] });
+    // Nodes are the cluster's own machines, not "outside the cluster".
+    const group = peer.kind === "node" ? "(cluster nodes)" : "(outside the cluster)";
+    if (!nodes.has(id)) nodes.set(id, { id, kind: peer.kind, ns: group, label: peer.name || peer.ip, members: [] });
     return [[id, port]];
   };
   for (const e of edges) {

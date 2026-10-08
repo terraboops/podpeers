@@ -42,6 +42,11 @@ jobs:
           node-version: 22
       - name: render mermaid diagrams
         run: ./hack/check-docs.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: drive the web UI in headless Chrome (groups, views, GraphQL console)
+        run: ./hack/check-ui.sh
 
   e2e:
     # A real, throwaway, single-node k3d cluster on the runner. Nothing here

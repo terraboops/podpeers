@@ -417,6 +417,9 @@ func Handler(res graph.Result) (http.Handler, error) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(gql.Do(schema, req.Query, req.Variables))
 	})
+	// Browsers ask every server for a favicon; answering 404 puts an error in
+	// the console of a page that has none.
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)

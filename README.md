@@ -277,7 +277,8 @@ policy.
 
 ```bash
 make test   # unit tests, race detector
-make e2e    # spins up a throwaway single-node k3d cluster and runs the real-cluster suite
+make e2e    # spins up a throwaway two-node k3d cluster and runs the real-cluster suite
+make ui     # drives the web UI in headless Chrome: groups, both views, the GraphQL console
 ```
 
 The end-to-end suite runs the real binary against **real pods with known
@@ -309,12 +310,16 @@ CI runs both suites on every push. The e2e suite runs on a k3d cluster on the
 runner.
 
 **The tests have teeth, and that's checked too.** Each named negative case,
-the safety guard, the skill script's own context refusal, and admission under
-Pod Security `restricted` has a mutant in [`hack/mutants/`](hack/mutants): a
-one-line patch that breaks exactly that protection. `make mutants-e2e` applies
+the safety guard, the skill script's own context refusal, admission under Pod
+Security `restricted`, and every protection added since (UDP flows, sub-second
+intervals, samples surviving log rotation, CronJob grouping, cross-namespace
+selectors, node pod-network addresses, UDP clients seen only from their own
+side, the DNS rule's reach) has a mutant in [`hack/mutants/`](hack/mutants): a
+small patch that breaks exactly that protection. `make mutants-e2e` applies
 each one in a scratch worktree and requires the unit **and** real-cluster tests
-to fail **for the expected reason**; it also checks that they pass unmutated.
-CI runs it on every push. Writing the mutants found one test that caught a bug
+to fail **for the expected reason** (log rotation exists only on a real
+cluster, so that one is real-cluster only); it also checks that they pass
+unmutated. CI runs it on every push. Writing the mutants found one test that caught a bug
 only by accident (ignoring the label selector injected into `kube-system`
 pods). That test now checks the cluster-wide invariant directly: no pod
 outside the selector is touched.

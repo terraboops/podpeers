@@ -1,4 +1,4 @@
-.PHONY: build test vet docs mutants mutants-e2e e2e e2e-cluster e2e-down clean
+.PHONY: build test vet docs ui mutants mutants-e2e e2e e2e-cluster e2e-down clean
 
 build:
 	go build -o bin/podpeers ./cmd/podpeers
@@ -23,6 +23,10 @@ mutants-e2e: e2e-cluster
 # PUPPETEER_EXECUTABLE_PATH to a local Chrome to skip the browser download).
 docs:
 	./hack/check-docs.sh
+
+# Drives the web UI in headless Chrome (needs node; see hack/check-ui.sh).
+ui:
+	./hack/check-ui.sh
 
 # Creates (or reuses) the throwaway local k3d cluster, then runs the real-cluster
 # suite against it. The cluster's kubeconfig lives in .e2e/ and is never merged
