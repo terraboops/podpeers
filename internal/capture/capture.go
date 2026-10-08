@@ -580,7 +580,10 @@ func inventory(ctx context.Context, cs kubernetes.Interface, targets []corev1.Po
 		opts.Logf("note: cannot list services (%v); service IPs will show as addresses", shortErr(err))
 	}
 	for _, n := range nodes {
-		gn := graph.Node{Name: n.Name}
+		gn := graph.Node{Name: n.Name, PodCIDRs: n.Spec.PodCIDRs}
+		if len(gn.PodCIDRs) == 0 && n.Spec.PodCIDR != "" {
+			gn.PodCIDRs = []string{n.Spec.PodCIDR}
+		}
 		for _, a := range n.Status.Addresses {
 			if a.Type == corev1.NodeInternalIP || a.Type == corev1.NodeExternalIP {
 				gn.IPs = append(gn.IPs, a.Address)

@@ -309,7 +309,9 @@ func TestNodeAndExternalIngress(t *testing.T) {
 	r := shop()
 	r.Edges = append(r.Edges,
 		edge("shop/api-1", graph.Inbound, graph.Peer{Kind: graph.PeerNode, Name: "node-a", IP: "198.51.100.1"}, 8080),
-		edge("shop/api-1", graph.Inbound, graph.Peer{Kind: graph.PeerExternal, IP: "2001:db8::7"}, 8080))
+		edge("shop/api-1", graph.Inbound, graph.Peer{Kind: graph.PeerExternal, IP: "2001:db8::7"}, 8080),
+		edge("shop/api-1", graph.Inbound, graph.Peer{Kind: graph.PeerNode, Name: "node-b", IP: "198.51.100.128", PodRange: true}, 8080),
+		edge("shop/api-1", graph.Outbound, graph.Peer{Kind: graph.PeerNode, Name: "node-a", IP: "198.51.100.1"}, 7100))
 	api := find(t, Suggest(r, Options{}), "Deployment/api")
 	cidrs := map[string]bool{}
 	for _, in := range api.Policy.Spec.Ingress {
@@ -317,11 +319,24 @@ func TestNodeAndExternalIngress(t *testing.T) {
 			cidrs[in.From[0].IPBlock.CIDR] = true
 		}
 	}
-	if !cidrs["198.51.100.1/32"] || !cidrs["2001:db8::7/128"] {
+	if !cidrs["198.51.100.1/32"] || !cidrs["2001:db8::7/128"] || !cidrs["198.51.100.128/32"] {
 		t.Fatalf("cidrs = %v", cidrs)
 	}
 	if !hasGap(api, "node IPs change") || !hasGap(api, "did not resolve to any pod") {
 		t.Errorf("gaps = %v", api.Gaps)
+	}
+	// The node's pod-network address is named as the node, and says why.
+	if !hasGap(api, "Ingress from node node-b on its pod network (198.51.100.128/32)") || !hasGap(api, "no pod held it") {
+		t.Errorf("pod-range node gap missing: %v", api.Gaps)
+	}
+	// A node is not "an external endpoint behind DNS".
+	if !hasGap(api, "Egress to node node-a (198.51.100.1/32) is allowed") {
+		t.Errorf("node egress gap missing: %v", api.Gaps)
+	}
+	for _, g := range api.Gaps {
+		if strings.Contains(g, "node") && strings.Contains(g, "CDNs") {
+			t.Errorf("node egress described as an external endpoint: %q", g)
+		}
 	}
 }
 

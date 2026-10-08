@@ -1,0 +1,21 @@
+# Mutant 13-namespace-selector-widened: breaks the protection for "a cross-namespace rule admits only its namespace".
+# Bug introduced: a peer in another namespace is selected in ANY namespace, so a pod with the same labels elsewhere is admitted.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/policy/
+# unit-run: TestSuggestShop
+# unit-expect: ingress rule =
+# e2e-run: TestPolicyEnforcement
+# e2e-expect: ENFORCEMENT DOES NOT MATCH INTENT: an impostor with web's labels in another namespace -> api is allowed
+--- a/internal/policy/policy.go
++++ b/internal/policy/policy.go
+@@ -168,7 +168,7 @@
+ }
+ 
+ func nsSelector(ns string) *metav1.LabelSelector {
+-	return &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": ns}}
++	return &metav1.LabelSelector{} // any namespace
+ }
+ 
+ func ipBlock(ip string) (*netv1.IPBlock, string) {

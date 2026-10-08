@@ -24,7 +24,7 @@ var (
 			{Namespace: "shop", Name: "api", ClusterIPs: []string{"192.0.2.200"}},
 			{Namespace: "shop", Name: "unused", ClusterIPs: []string{"192.0.2.201"}},
 		},
-		Nodes: []Node{{Name: "node-a", IPs: []string{"198.51.100.1"}}},
+		Nodes: []Node{{Name: "node-a", IPs: []string{"198.51.100.1"}, PodCIDRs: []string{"192.0.2.0/25"}}},
 	}
 )
 
@@ -48,7 +48,10 @@ func TestResolver(t *testing.T) {
 		"192.0.2.200":       {Kind: PeerService, Namespace: "shop", Name: "api", IP: "192.0.2.200"},
 		"198.51.100.1":      {Kind: PeerNode, Name: "node-a", IP: "198.51.100.1"}, // hostNetwork pod resolves to node
 		"203.0.113.9":       {Kind: PeerExternal, IP: "203.0.113.9"},
-		"2001:db8::1":       {Kind: PeerExternal, IP: "2001:db8::1"},
+		// In node-a's pod range, held by no pod: the node's pod-network address.
+		"192.0.2.0":   {Kind: PeerNode, Name: "node-a", IP: "192.0.2.0", PodRange: true},
+		"192.0.2.128": {Kind: PeerExternal, IP: "192.0.2.128"}, // outside the range
+		"2001:db8::1": {Kind: PeerExternal, IP: "2001:db8::1"},
 	}
 	for ip, want := range cases {
 		if got := r.Resolve(netip.MustParseAddr(ip)); got != want {

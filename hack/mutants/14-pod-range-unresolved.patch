@@ -1,0 +1,21 @@
+# Mutant 14-pod-range-unresolved: breaks the protection for "a node's own pod-network address is named as that node".
+# Bug introduced: an address in a node's pod range that no pod held is reported as an unknown external address.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/graph/
+# unit-run: TestResolver
+# unit-expect: Resolve\(192.0.2.0\)
+# e2e-run: TestPolicyEnforcement
+# e2e-expect: is not identified as that node
+--- a/internal/graph/graph.go
++++ b/internal/graph/graph.go
+@@ -295,7 +295,7 @@
+ 		return Peer{Kind: PeerNode, Name: n, IP: a.String()}
+ 	}
+ 	for _, nr := range r.ranges {
+-		if nr.prefix.Contains(a) {
++		if false && nr.prefix.Contains(a) {
+ 			return Peer{Kind: PeerNode, Name: nr.node, IP: a.String(), PodRange: true}
+ 		}
+ 	}

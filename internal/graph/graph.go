@@ -151,6 +151,12 @@ type Peer struct {
 	Namespace string   `json:"namespace,omitempty"`
 	Name      string   `json:"name,omitempty"`
 	IP        string   `json:"ip"`
+	// PodRange marks a node peer found by its pod range rather than its
+	// node address: an address inside the node's pod CIDR that no pod held.
+	// That is the node itself on its pod-network interface (how a
+	// host-network process or the kubelet reaches a pod on another node,
+	// e.g. flannel's VXLAN address), or a pod podpeers never saw.
+	PodRange bool `json:"podRange,omitempty"`
 }
 
 // ID is a stable identifier: "ns/name" for pods (matching Pod.ID),
@@ -211,8 +217,9 @@ type Inventory struct {
 }
 
 type Node struct {
-	Name string
-	IPs  []string
+	Name     string
+	IPs      []string
+	PodCIDRs []string `json:",omitempty"`
 }
 
 // Observation is the sampler output for one targeted pod.
@@ -226,6 +233,12 @@ type Resolver struct {
 	pods     map[netip.Addr]Pod
 	services map[netip.Addr]Service
 	nodes    map[netip.Addr]string
+	ranges   []nodeRange
+}
+
+type nodeRange struct {
+	prefix netip.Prefix
+	node   string
 }
 
 // NewResolver indexes an inventory. Host-network pods share their node's IP, so
@@ -261,6 +274,11 @@ func NewResolver(inv Inventory) *Resolver {
 				r.nodes[a.Unmap()] = n.Name
 			}
 		}
+		for _, c := range n.PodCIDRs {
+			if p, err := netip.ParsePrefix(c); err == nil {
+				r.ranges = append(r.ranges, nodeRange{p.Masked(), n.Name})
+			}
+		}
 	}
 	return r
 }
@@ -275,6 +293,11 @@ func (r *Resolver) Resolve(a netip.Addr) Peer {
 	}
 	if n, ok := r.nodes[a]; ok {
 		return Peer{Kind: PeerNode, Name: n, IP: a.String()}
+	}
+	for _, nr := range r.ranges {
+		if nr.prefix.Contains(a) {
+			return Peer{Kind: PeerNode, Name: nr.node, IP: a.String(), PodRange: true}
+		}
 	}
 	return Peer{Kind: PeerExternal, IP: a.String()}
 }

@@ -296,6 +296,7 @@ Named cases:
 | namespace you may read but not modify | per-pod `forbidden` naming the missing permission |
 | namespace you may not read | clean failure, exit 1 |
 | StatefulSet, DaemonSet and CronJob targets | each captured under its controller (`StatefulSet/db`, `DaemonSet/node-agent` on both nodes, `CronJob/report` rather than its per-run Job); headless DNS peers resolve to the pod; one policy per workload, no per-pod or per-run labels in any selector; all formats render |
+| suggested policies, **applied** and enforced (k3s network policy controller) | web in one namespace calls api in another, a node's address and nothing else; api calls a server outside the cluster; a host-network process on the other node calls api. With no policy, all 13 test connections succeed (control). With podpeers' policies applied, the 4 observed flows still connect and 9 must-block ones are blocked: a stranger in web's namespace, an impostor carrying web's labels in a third namespace, the right addresses on unused ports, a second outside address, and paths a workload never used. Removing just the 3 address rules blocks exactly their 3 flows. |
 | namespace enforcing Pod Security `restricted` | enforcement proven on (a plain pod is rejected); podpeers' debug container is admitted and observes the known flow |
 | non-local context name for a reachable cluster | refused, exit 2, nothing modified |
 | suggestions from real traffic | API server accepts every policy (dry run) |

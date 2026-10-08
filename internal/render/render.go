@@ -88,7 +88,7 @@ func Text(w io.Writer, r graph.Result) error {
 			case !e.Open:
 				state = "closed in window"
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s/%d\t%d\t%s\n", arrow, e.Peer.ID(), e.Peer.Kind, e.Protocol, e.Port, e.Connections, state)
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s/%d\t%d\t%s\n", arrow, e.Peer.ID(), peerKind(e.Peer), e.Protocol, e.Port, e.Connections, state)
 		}
 		tw.Flush()
 		fmt.Fprintln(w)
@@ -200,4 +200,13 @@ func HTML(w io.Writer, r graph.Result, graphqlPath string) error {
 	page = strings.Replace(page, "/*__GRAPHQL__*/\"\"", string(gp), 1)
 	_, err = io.WriteString(w, page)
 	return err
+}
+
+// peerKind is the KIND column; a node seen on its pod-network address says
+// so, since that address is not the node's IP.
+func peerKind(p graph.Peer) string {
+	if p.PodRange {
+		return fmt.Sprintf("node (pod network %s)", p.IP)
+	}
+	return string(p.Kind)
 }

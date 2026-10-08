@@ -206,6 +206,8 @@ func NewSchema(r graph.Result) (graphql.Schema, error) {
 				"namespace": {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Peer).Namespace, nil }},
 				"name":      {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Peer).Name, nil }},
 				"ip":        {Type: graphql.String, Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Peer).IP, nil }},
+				"podRange": {Type: graphql.NewNonNull(graphql.Boolean), Description: "a node found by its pod range, not its IP: the node's own pod-network address",
+					Resolve: func(p graphql.ResolveParams) (any, error) { return p.Source.(graph.Peer).PodRange, nil }},
 				"pod": {Type: podT, Resolve: func(p graphql.ResolveParams) (any, error) {
 					pr := p.Source.(graph.Peer)
 					if pod, ok := ix.pods[pr.ID()]; ok && pr.Kind == graph.PeerPod {

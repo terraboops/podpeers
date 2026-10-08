@@ -94,6 +94,25 @@ outside the selector, only the matched end's view exists, and the `TIME_WAIT`
 memory may be on the other end. If neither end was matched, the connection is
 not seen at all.
 
+## Node traffic does not come from the node's IP
+
+A process on a node (a host-network pod, the kubelet) that reaches a pod on
+**another** node arrives from the node's address on the pod network, not
+from its InternalIP. With flannel (k3s's default) that is the first address
+of the node's pod range, the VXLAN interface. Measured on a two-node cluster:
+a host-network client on the agent node reached a pod on the server node from
+the `.0` address of the agent's pod range, not from the agent's node IP (a
+different network altogether). A rule allowing the node by its IP would not
+admit that traffic.
+
+podpeers resolves an address inside a node's pod range (`spec.podCIDRs`) that
+no pod held to that node, marked "pod network", and writes the rule for the
+address it actually saw. `podpeers suggest` says what that address is. The
+end-to-end suite applies such a rule and shows it admits the node's traffic,
+and that removing it blocks that traffic. One caution: a pod that existed only
+between podpeers' two inventories also leaves an unknown address in a pod
+range, and is reported as the node.
+
 ## Busy pods and log size
 
 Each sample is written to the debug container's log: about 155 bytes per

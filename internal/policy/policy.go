@@ -184,6 +184,21 @@ func ipBlock(ip string) (*netv1.IPBlock, string) {
 	return &netv1.IPBlock{CIDR: cidr}, cidr
 }
 
+func nodeDesc(p graph.Peer, cidr string) string {
+	if p.PodRange {
+		return fmt.Sprintf("node %s on its pod network (%s)", p.Name, cidr)
+	}
+	return fmt.Sprintf("node %s (%s)", p.Name, cidr)
+}
+
+// nodeCaveat says why a node address in a policy needs care.
+func nodeCaveat(p graph.Peer) string {
+	if p.PodRange {
+		return fmt.Sprintf("it is inside node %s's pod range but no pod held it, so it is the node's own pod-network address (a host-network process or the kubelet reaching a pod on another node arrives from it, not from the node's IP; with flannel it is the range's first address). It changes if the node is replaced. If a short-lived pod held it instead, this rule is wrong.", p.Name)
+	}
+	return "node IPs change when nodes are replaced."
+}
+
 // podPeer builds a peer selecting the workload a peer pod belongs to.
 func (b *builder) podPeer(peerID, policyNS string) (netv1.NetworkPolicyPeer, string, string) {
 	pp, ok := b.pods[peerID]
@@ -375,8 +390,8 @@ func (b *builder) suggest(pods []graph.Pod, o Options) Suggestion {
 				}
 				desc := fmt.Sprintf("%s %s", e.Peer.Kind, cidr)
 				if e.Peer.Kind == graph.PeerNode {
-					desc = fmt.Sprintf("node %s (%s)", e.Peer.Name, cidr)
-					gap(fmt.Sprintf("Ingress from node %s is allowed by its IP (%s); node IPs change when nodes are replaced.", e.Peer.Name, cidr))
+					desc = nodeDesc(e.Peer, cidr)
+					gap(fmt.Sprintf("Ingress from %s is allowed as the single address %s; %s", desc, cidr, nodeCaveat(e.Peer)))
 				} else {
 					gap(fmt.Sprintf("Ingress from %s did not resolve to any pod, service or node; it is allowed as the single address %s. If it was a pod that has since been replaced, this rule is wrong.", e.Peer.IP, cidr))
 				}
@@ -429,9 +444,11 @@ func (b *builder) suggest(pods []graph.Pod, o Options) Suggestion {
 			}
 			desc := fmt.Sprintf("%s %s", e.Peer.Kind, cidr)
 			if e.Peer.Kind == graph.PeerNode {
-				desc = fmt.Sprintf("node %s (%s)", e.Peer.Name, cidr)
+				desc = nodeDesc(e.Peer, cidr)
+				gap(fmt.Sprintf("Egress to %s is allowed as the single address %s; %s", desc, cidr, nodeCaveat(e.Peer)))
+			} else {
+				gap(fmt.Sprintf("Egress to %s is allowed as the single address %s. External endpoints behind DNS (CDNs, cloud APIs) change address; expect this rule to go stale.", e.Peer.ID(), cidr))
 			}
-			gap(fmt.Sprintf("Egress to %s is allowed as the single address %s. External endpoints behind DNS (CDNs, cloud APIs) change address; expect this rule to go stale.", e.Peer.ID(), cidr))
 			add(egress, &egressOrder, "ip:"+cidr, netv1.NetworkPolicyPeer{IPBlock: blk}, desc, p, ev, false)
 		}
 	}
