@@ -12,7 +12,9 @@
 #   hack/mutants.sh --e2e 03   only mutants whose name contains "03"
 #
 # A mutant only a real cluster can catch (e.g. kubelet log rotation) sets
-# `unit-run: -`; its unit result is n/a and the e2e kill is what counts.
+# `unit-run: -`; its unit result is n/a and the e2e kill is what counts. A
+# mutant only a unit test can catch deterministically (e.g. a statistical rule
+# whose real-cluster trigger is sampling luck) sets `e2e-run: -`.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -48,7 +50,7 @@ field() { sed -n "s/^# $1: //p" "$2"; }
 e2e_tops() {
   local p
   for p in hack/mutants/*.patch; do
-    if [[ "$(basename "$p")" == *"$FILTER"* ]]; then field e2e-run "$p" | cut -d/ -f1; fi
+    if [[ "$(basename "$p")" == *"$FILTER"* ]]; then field e2e-run "$p" | cut -d/ -f1 | grep -vx -- -; fi
   done
 }
 
@@ -115,7 +117,9 @@ for p in hack/mutants/*.patch; do
     u="$(check "$name" unit "$wt" "$(field unit-expect "$p")" go test -count=1 -run "$(field unit-run "$p")" $(field unit-pkg "$p"))"
   fi
   e="skipped"
-  if [ "$E2E" = 1 ]; then
+  if [ "$(field e2e-run "$p")" = "-" ]; then
+    e="n/a"
+  elif [ "$E2E" = 1 ]; then
     e="$(check "$name" e2e "$wt" "$(field e2e-expect "$p")" env PODPEERS_E2E_KUBECONFIG="$ROOT/.e2e/kubeconfig" \
           PODPEERS_E2E_OUT="$wt/.e2e-out" go test -tags e2e -count=1 -v -timeout 15m -run "$(field e2e-run "$p")" ./test/e2e/)"
   fi

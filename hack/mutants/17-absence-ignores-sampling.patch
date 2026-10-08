@@ -1,0 +1,23 @@
+# Mutant 17-absence-ignores-sampling: breaks the protection for "a rarely sampled flow's absence is not called lost".
+# Bug introduced: a flow seen in a few samples before and none after is reported lost (BROKEN), although missing it by chance is likely.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# Unit-only: on a real cluster the trigger is sampling luck, which a test
+# cannot make happen on demand.
+# unit-pkg: ./internal/diff/
+# unit-run: TestRarelySampledFlowIsGlimpsedNotLost
+# unit-expect: seen in 2 of 31 before, absent after: got "lost
+# e2e-run: -
+# e2e-expect: -
+--- a/internal/diff/diff.go
++++ b/internal/diff/diff.go
+@@ -235,7 +235,7 @@
+ 			continue
+ 		}
+ 		chance, seen, of, afterN := missChance(b, bTotal, aTotal, aObserved)
+-		if chance >= MissChance {
++		if false && chance >= MissChance {
+ 			res.Changes = append(res.Changes, Change{Glimpsed, k.from, k.to, k.proto, k.port, fmt.Sprintf(
+ 				"absent after, but before it was seen in only %d of %d samples: missing it in all %d samples after happens by chance %.0f%% of the time; sampling noise, not evidence of a block",
+ 				seen, of, afterN, chance*100)})

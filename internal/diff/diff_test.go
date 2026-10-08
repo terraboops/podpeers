@@ -184,3 +184,48 @@ func TestExistingPodsCountsRestartedPods(t *testing.T) {
 		t.Fatal("unlisted namespace must not count as new")
 	}
 }
+
+// A flow's absence after is evidence only when missing it by chance is
+// unlikely, given how often it was sampled before.
+func TestRarelySampledFlowIsGlimpsedNotLost(t *testing.T) {
+	webPod := func(samples int) graph.Pod {
+		p := pod("web-a", "Deployment/web", true)
+		p.Probe.Samples = samples
+		return p
+	}
+	dns := func(samples int) graph.Edge {
+		e := out("web-a", "dns", 53, false)
+		e.Protocol, e.Samples, e.Connections, e.NewConnections, e.Open = "udp", samples, samples, samples, false
+		return e
+	}
+	api := out("web-a", "api", 80, false)
+	api.Samples = 31
+	after := graph.Result{Pods: []graph.Pod{webPod(31)}, Edges: []graph.Edge{api}}
+	for _, c := range []struct {
+		seen int
+		want string
+	}{
+		{2, Glimpsed}, // 2 of 31: unseen in 31 after by chance 13% of the time
+		{1, Glimpsed}, // the old single-sample case
+		{12, Lost},    // 12 of 31: by chance 0.02% of the time
+		{31, Lost},    // always there before
+	} {
+		before := graph.Result{Pods: []graph.Pod{webPod(31)}, Edges: []graph.Edge{api, dns(c.seen)}}
+		res := Compare(before, after)
+		got := ""
+		for _, ch := range res.Changes {
+			if ch.To == "svc/shop/dns" {
+				got = ch.Kind + ": " + ch.Detail
+			}
+		}
+		if !strings.HasPrefix(got, c.want+":") {
+			t.Errorf("seen in %d of 31 before, absent after: got %q; want %s", c.seen, got, c.want)
+		}
+		if c.want == Glimpsed && c.seen == 2 && !strings.Contains(got, "by chance 13%") {
+			t.Errorf("glimpsed should state the chance: %q", got)
+		}
+		if res.Broken() != (c.want == Lost) {
+			t.Errorf("seen in %d of 31: Broken() = %v", c.seen, res.Broken())
+		}
+	}
+}

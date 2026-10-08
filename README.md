@@ -181,7 +181,7 @@ podpeers diff before.json after.json   # exit 0 OK · 4 BROKEN · 5 INCONCLUSIVE
 | `lost` | seen before, gone after, while its observer was still observed |
 | `preexisting` | only seen on connections opened *before* the policy, which the CNI never re-checks. **Proves nothing.** |
 | `new` | not seen before |
-| `glimpsed` | absent after, but before it was one short connection in one sample (a DNS lookup): sampling noise, not breakage |
+| `glimpsed` | absent after, but seen so rarely before that missing it in every sample after is likely by chance (more than 1%; a DNS lookup seen in 2 of 31 samples goes unseen in 31 more 13% of the time); the line states the odds. Sampling noise, not breakage |
 
 **INCONCLUSIVE** exists because of something we hit for real while building
 this: a policy that blocked every new connection verified "OK", because the
@@ -314,11 +314,12 @@ the safety guard, the skill script's own context refusal, admission under Pod
 Security `restricted`, and every protection added since (UDP flows, sub-second
 intervals, samples surviving log rotation, CronJob grouping, cross-namespace
 selectors, node pod-network addresses, UDP clients seen only from their own
-side, the DNS rule's reach) has a mutant in [`hack/mutants/`](hack/mutants): a
+side, the DNS rule's reach, rarely sampled flows not called lost) has a mutant in [`hack/mutants/`](hack/mutants): a
 small patch that breaks exactly that protection. `make mutants-e2e` applies
 each one in a scratch worktree and requires the unit **and** real-cluster tests
 to fail **for the expected reason** (log rotation exists only on a real
-cluster, so that one is real-cluster only); it also checks that they pass
+cluster, so that one is real-cluster only; the rarely-sampled rule is triggered
+on a cluster only by sampling luck, so that one is unit-only); it also checks that they pass
 unmutated. CI runs it on every push. Writing the mutants found one test that caught a bug
 only by accident (ignoring the label selector injected into `kube-system`
 pods). That test now checks the cluster-wide invariant directly: no pod

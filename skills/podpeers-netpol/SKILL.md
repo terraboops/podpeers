@@ -212,9 +212,10 @@ Use all three signals; any one is enough to call it broken:
 
 `unverifiable` lines mean the pod that saw the flow was not observed the
 second time. `preexisting` lines mean the flow was only seen on connections
-opened before the policy. `glimpsed` lines are one short connection caught by
-luck in the baseline (typically a DNS lookup). None of these says anything
-about whether the policy allows the flow.
+opened before the policy. `glimpsed` lines are flows the baseline caught so
+rarely (typically DNS lookups) that missing them afterwards is likely by
+chance; each line states the odds. None of these says anything about whether
+the policy allows the flow.
 
 **Rule out the new-pod race before blaming the policy.** CNIs program a
 policy's allow-list for a *newly created* pod asynchronously. A client pod

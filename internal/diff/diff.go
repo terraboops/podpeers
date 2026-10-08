@@ -9,6 +9,7 @@ package diff
 import (
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strings"
 
@@ -25,11 +26,19 @@ const (
 	// do not re-evaluate established connections, so they prove nothing about
 	// whether the policy allows this flow.
 	Preexisting = "preexisting"
-	// Glimpsed: absent after, but before it was only a single short
-	// connection caught in a single sample (a DNS lookup, a one-off call).
-	// Its absence is expected sampling noise, not evidence of a block.
+	// Glimpsed: absent after, but before it was seen so rarely that missing
+	// it in every sample after is likely by chance alone (a DNS lookup, a
+	// one-off call). Its absence is sampling noise, not evidence of a block.
 	Glimpsed = "glimpsed"
 )
+
+// MissChance is the threshold for calling an absent flow lost: a flow seen in
+// a fraction p of the observer's samples before goes unseen in all N samples
+// after with probability (1-p)^N even when nothing changed. Only when that is
+// below MissChance is its absence evidence. Short UDP exchanges (DNS) are
+// sampled rarely: seen in 2 of 31 samples before, 31 empty samples after
+// happen 13% of the time.
+const MissChance = 0.01
 
 type Change struct {
 	Kind     string `json:"kind"`
@@ -84,6 +93,7 @@ type flowInfo struct {
 	samples     int  // most samples any observer saw it in
 	conns       int  // connections across observers
 	observers   map[string]bool
+	samplesBy   map[string]int // observing workload -> most samples it saw the flow in
 }
 
 // Options refine a comparison.
@@ -113,16 +123,21 @@ func (o Options) startedAfterChange(id string, known map[string]bool) bool {
 	return false
 }
 
-// workloadFlows aggregates a capture's flows by workload endpoints.
-func workloadFlows(r graph.Result, o Options) (map[key]*flowInfo, map[string]bool) {
+// workloadFlows aggregates a capture's flows by workload endpoints. It also
+// returns, per observed workload, the most samples any of its pods took.
+func workloadFlows(r graph.Result, o Options) (map[key]*flowInfo, map[string]bool, map[string]int) {
 	wl := map[string]string{}
 	observed := map[string]bool{}
 	known := map[string]bool{}
+	total := map[string]int{}
 	for _, p := range r.Pods {
 		known[p.ID()] = true
 		wl[p.ID()] = p.WorkloadID()
 		if p.Probe.Status == graph.ProbeObserved {
 			observed[p.WorkloadID()] = true
+			if p.Probe.Samples > total[p.WorkloadID()] {
+				total[p.WorkloadID()] = p.Probe.Samples
+			}
 		}
 	}
 	name := func(id string) string {
@@ -136,7 +151,7 @@ func workloadFlows(r graph.Result, o Options) (map[key]*flowInfo, map[string]boo
 		k := key{name(f.From), name(f.To), f.Protocol, f.Port}
 		fi := out[k]
 		if fi == nil {
-			fi = &flowInfo{observers: map[string]bool{}}
+			fi = &flowInfo{observers: map[string]bool{}, samplesBy: map[string]int{}}
 			out[k] = fi
 		}
 		if f.Attempted {
@@ -153,8 +168,29 @@ func workloadFlows(r graph.Result, o Options) (map[key]*flowInfo, map[string]boo
 			fi.newConns++ // an endpoint pod started under the change
 		}
 		fi.observers[name(f.ObservedOn)] = true
+		if f.Samples > fi.samplesBy[name(f.ObservedOn)] {
+			fi.samplesBy[name(f.ObservedOn)] = f.Samples
+		}
 	}
-	return out, observed
+	return out, observed, total
+}
+
+// missChance is the probability that a flow seen before goes unseen in every
+// sample after by chance alone, judged by the observer with the strongest
+// evidence; -1 when sample totals are unknown (older captures).
+func missChance(b *flowInfo, before, after map[string]int, aObserved map[string]bool) (chance float64, seen, of, afterN int) {
+	chance = -1
+	for o, s := range b.samplesBy {
+		tb, ta := before[o], after[o]
+		if tb == 0 || ta == 0 || !aObserved[o] {
+			continue
+		}
+		p := math.Min(1, float64(s)/float64(tb))
+		if m := math.Pow(1-p, float64(ta)); chance < 0 || m < chance {
+			chance, seen, of, afterN = m, s, tb, ta
+		}
+	}
+	return
 }
 
 // Compare reports what changed from before to after.
@@ -162,8 +198,8 @@ func Compare(before, after graph.Result) Result { return CompareWith(before, aft
 
 // CompareWith is Compare with options.
 func CompareWith(before, after graph.Result, o Options) Result {
-	bf, _ := workloadFlows(before, Options{})
-	af, aObserved := workloadFlows(after, o)
+	bf, _, bTotal := workloadFlows(before, Options{})
+	af, aObserved, aTotal := workloadFlows(after, o)
 	var res Result
 	for k, a := range af {
 		b := bf[k]
@@ -198,7 +234,14 @@ func CompareWith(before, after graph.Result, o Options) Result {
 			res.Unverifiable = append(res.Unverifiable, fmt.Sprintf("%s -> %s %s/%d", k.from, k.to, k.proto, k.port))
 			continue
 		}
-		if b.samples < 2 && b.conns < 2 {
+		chance, seen, of, afterN := missChance(b, bTotal, aTotal, aObserved)
+		if chance >= MissChance {
+			res.Changes = append(res.Changes, Change{Glimpsed, k.from, k.to, k.proto, k.port, fmt.Sprintf(
+				"absent after, but before it was seen in only %d of %d samples: missing it in all %d samples after happens by chance %.0f%% of the time; sampling noise, not evidence of a block",
+				seen, of, afterN, chance*100)})
+			continue
+		}
+		if chance < 0 && b.samples < 2 && b.conns < 2 {
 			res.Changes = append(res.Changes, Change{Glimpsed, k.from, k.to, k.proto, k.port,
 				"absent after, but before it was one short connection in one sample; sampling noise, not evidence of a block"})
 			continue
