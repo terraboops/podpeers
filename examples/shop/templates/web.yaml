@@ -26,7 +26,10 @@ spec:
         - |
           nc -lk -p 8080 -e cat &
           while true; do
-            sleep {{ .Values.reconnectSeconds }} | nc -w 2 {{ include "shop.fqdn" (dict "Release" .Release "component" "api" "ns" .Release.Namespace) }} 80
+            # busybox nc can keep a connection open after its input ends (the
+            # first one after the pod starts, every time); timeout ends it so
+            # web really reconnects every few seconds.
+            sleep {{ .Values.reconnectSeconds }} | timeout {{ add .Values.reconnectSeconds 2 }} nc -w 2 {{ include "shop.fqdn" (dict "Release" .Release "component" "api" "ns" .Release.Namespace) }} 80
             sleep 1
           done
         ports:
