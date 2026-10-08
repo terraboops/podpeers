@@ -248,6 +248,11 @@ type target struct {
 	injectedAt time.Time
 	done       bool
 	note       string
+	// The sampler's log, followed while the capture runs so that kubelet log
+	// rotation (10Mi by default) cannot take samples away before they are read.
+	streamDone chan struct{}
+	streamed   procnet.SamplerOutput
+	streamErr  error
 }
 
 func (t *target) id() string { return t.pod.Namespace + "/" + t.pod.Name }
@@ -289,6 +294,14 @@ func Run(ctx context.Context, cs kubernetes.Interface, nodes []corev1.Node, opts
 	name := ContainerName(opts.RunID)
 	inject(ctx, cs, targets, name, opts)
 	hardDeadline := time.Now().Add(opts.StartTimeout + opts.Duration + 30*time.Second)
+	streamCtx, stopStreams := context.WithDeadline(ctx, hardDeadline.Add(30*time.Second))
+	defer stopStreams()
+	for _, t := range targets {
+		if !t.done {
+			t.streamDone = make(chan struct{})
+			go follow(streamCtx, cs, t, name, opts)
+		}
+	}
 	if err := wait(ctx, cs, targets, name, opts, hardDeadline); err != nil {
 		return graph.Result{}, err
 	}
@@ -420,19 +433,74 @@ func wait(ctx context.Context, cs kubernetes.Interface, targets []*target, name 
 	}
 }
 
+// follow streams the sampler's log as it is written and parses it. It retries
+// until the debug container has started, and returns when the container
+// exits (the stream ends) or ctx is done.
+func follow(ctx context.Context, cs kubernetes.Interface, t *target, name string, opts Options) {
+	defer close(t.streamDone)
+	for {
+		rc, err := cs.CoreV1().Pods(t.pod.Namespace).GetLogs(t.pod.Name, &corev1.PodLogOptions{Container: name, Follow: true}).Stream(ctx)
+		if err == nil {
+			t.streamed, t.streamErr = procnet.ParseSamplerOutput(rc)
+			rc.Close()
+			return
+		}
+		t.streamErr = err
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(opts.PollInterval):
+		}
+	}
+}
+
+// best picks the more complete of two parses of the same sampler log.
+func best(a procnet.SamplerOutput, aerr error, b procnet.SamplerOutput, berr error) (procnet.SamplerOutput, error) {
+	switch {
+	case aerr != nil && berr != nil:
+		return a, aerr
+	case aerr != nil:
+		return b, nil
+	case berr != nil:
+		return a, nil
+	case a.Complete != b.Complete:
+		if a.Complete {
+			return a, nil
+		}
+		return b, nil
+	case len(b.Samples) > len(a.Samples):
+		return b, nil
+	}
+	return a, nil
+}
+
 func collect(ctx context.Context, cs kubernetes.Interface, targets []*target, name string, opts Options) []graph.Observation {
 	var obs []graph.Observation
 	for _, t := range targets {
 		if t.probe.Status != "" { // skipped or failed already
 			continue
 		}
-		raw, err := cs.CoreV1().Pods(t.pod.Namespace).GetLogs(t.pod.Name, &corev1.PodLogOptions{Container: name}).DoRaw(ctx)
-		if err != nil {
-			t.probe = graph.Probe{Status: graph.ProbeFailed, Reason: "reading sampler log: " + describeErr(err)}
-			opts.Logf("  fail %s: %s", t.id(), t.probe.Reason)
-			continue
+		var out procnet.SamplerOutput
+		err := errors.New("sampler log was not streamed")
+		if t.streamDone != nil {
+			select {
+			case <-t.streamDone:
+				out, err = t.streamed, t.streamErr
+			case <-time.After(30 * time.Second):
+				err = errors.New("sampler log stream did not finish")
+			}
 		}
-		out, err := procnet.ParseSamplerOutput(bytes.NewReader(raw))
+		if err != nil || !out.Complete {
+			// Fall back to (or compare with) a plain read of the log.
+			raw, rerr := cs.CoreV1().Pods(t.pod.Namespace).GetLogs(t.pod.Name, &corev1.PodLogOptions{Container: name}).DoRaw(ctx)
+			var rout procnet.SamplerOutput
+			if rerr == nil {
+				rout, rerr = procnet.ParseSamplerOutput(bytes.NewReader(raw))
+			} else {
+				rerr = errors.New("reading sampler log: " + describeErr(rerr))
+			}
+			out, err = best(out, err, rout, rerr)
+		}
 		if err == nil && len(out.Samples) == 0 {
 			err = errors.New("sampler produced no samples")
 		}
@@ -445,7 +513,11 @@ func collect(ctx context.Context, cs kubernetes.Interface, targets []*target, na
 			opts.Logf("  fail %s: %s", t.id(), reason)
 			continue
 		}
-		t.probe = graph.Probe{Status: graph.ProbeObserved, Samples: len(out.Samples), Complete: out.Complete, Reason: t.note}
+		note := t.note
+		if out.Truncated {
+			note = strings.TrimPrefix(note+"; only the latest samples survived: the log's beginning was lost (kubelet log rotation?)", "; ")
+		}
+		t.probe = graph.Probe{Status: graph.ProbeObserved, Samples: len(out.Samples), Complete: out.Complete, Reason: note}
 		opts.Logf("  done %s: %d sample(s)", t.id(), len(out.Samples))
 		obs = append(obs, graph.Observation{Pod: t.id(), Samples: out.Samples})
 	}

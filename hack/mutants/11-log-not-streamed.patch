@@ -1,0 +1,23 @@
+# Mutant 11-log-not-streamed: breaks the protection for "samples surviving kubelet log rotation".
+# Bug introduced: the sampler log is only read once, after the capture, so a busy pod's log rotates (10Mi) before it is read and the early samples are lost.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: -
+# unit-run: -
+# unit-expect: -
+# (no unit test can rotate a real kubelet log: this mutant is real-cluster only)
+# e2e-run: TestE2E/a_busy_pod
+# e2e-expect: want all ~301 samples, complete, despite rotation
+--- a/internal/capture/capture.go
++++ b/internal/capture/capture.go
+@@ -299,7 +299,8 @@
+ 	for _, t := range targets {
+ 		if !t.done {
+ 			t.streamDone = make(chan struct{})
+-			go follow(streamCtx, cs, t, name, opts)
++			_ = streamCtx
++			close(t.streamDone) // streaming disabled: logs are only read at the end
+ 		}
+ 	}
+ 	if err := wait(ctx, cs, targets, name, opts, hardDeadline); err != nil {

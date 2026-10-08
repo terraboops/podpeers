@@ -10,6 +10,9 @@
 #   hack/mutants.sh            unit tests only (fast; runs in CI)
 #   hack/mutants.sh --e2e      also the real-cluster e2e tests (needs make e2e-cluster)
 #   hack/mutants.sh --e2e 03   only mutants whose name contains "03"
+#
+# A mutant only a real cluster can catch (e.g. kubelet log rotation) sets
+# `unit-run: -`; its unit result is n/a and the e2e kill is what counts.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -104,8 +107,13 @@ for p in hack/mutants/*.patch; do
     echo "$name: mutant does not compile; see $LOGS/$name-build.log" >&2
     git worktree remove --force "$wt"; fail=1; continue
   fi
-  # shellcheck disable=SC2046
-  u="$(check "$name" unit "$wt" "$(field unit-expect "$p")" go test -count=1 -run "$(field unit-run "$p")" $(field unit-pkg "$p"))"
+  # A mutant that only a real cluster can catch says `unit-run: -`.
+  if [ "$(field unit-run "$p")" = "-" ]; then
+    u="n/a"
+  else
+    # shellcheck disable=SC2046
+    u="$(check "$name" unit "$wt" "$(field unit-expect "$p")" go test -count=1 -run "$(field unit-run "$p")" $(field unit-pkg "$p"))"
+  fi
   e="skipped"
   if [ "$E2E" = 1 ]; then
     e="$(check "$name" e2e "$wt" "$(field e2e-expect "$p")" env PODPEERS_E2E_KUBECONFIG="$ROOT/.e2e/kubeconfig" \

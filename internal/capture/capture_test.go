@@ -18,6 +18,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/terraboops/podpeers/internal/graph"
+	"github.com/terraboops/podpeers/internal/procnet"
 )
 
 func TestValidate(t *testing.T) {
@@ -338,5 +339,24 @@ func TestSubSecondIntervalsAreAccepted(t *testing.T) {
 	}
 	if c := SamplingCost(time.Second); !strings.HasPrefix(c, "2 process starts per second") {
 		t.Errorf("cost at 1s = %q", c)
+	}
+}
+
+func TestBestPicksTheMoreCompleteLog(t *testing.T) {
+	complete := procnet.SamplerOutput{Complete: true, Samples: make([]procnet.Sample, 3)}
+	partialMore := procnet.SamplerOutput{Samples: make([]procnet.Sample, 5)}
+	partialLess := procnet.SamplerOutput{Samples: make([]procnet.Sample, 2)}
+	bad := errors.New("x")
+	if o, err := best(partialMore, nil, complete, nil); err != nil || !o.Complete {
+		t.Error("complete beats partial")
+	}
+	if o, _ := best(partialLess, nil, partialMore, nil); len(o.Samples) != 5 {
+		t.Error("more samples beats fewer when neither is complete")
+	}
+	if o, err := best(procnet.SamplerOutput{}, bad, partialLess, nil); err != nil || len(o.Samples) != 2 {
+		t.Error("a working read beats a failed one")
+	}
+	if _, err := best(procnet.SamplerOutput{}, bad, procnet.SamplerOutput{}, bad); err == nil {
+		t.Error("both failed: error")
 	}
 }

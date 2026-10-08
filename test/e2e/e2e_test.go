@@ -178,6 +178,7 @@ func TestE2E(t *testing.T) {
 	kubectl(t, "wait", "-n", "pp-locked", "--for=condition=Ready", "--timeout=60s", "pod/vault")
 	kubectl(t, "wait", "-n", "pp-strict", "--for=condition=Ready", "--timeout=60s", "pod/vaultd", "pod/auditor")
 	kubectl(t, "wait", "-n", "pp-udp", "--for=condition=Ready", "--timeout=60s", "pod/udp-echo", "pod/dnsd", "pod/udp-client")
+	kubectl(t, "wait", "-n", "pp-busy", "--for=condition=Ready", "--timeout=60s", "pod/busy")
 	time.Sleep(3 * time.Second) // let the clients' connections establish
 
 	t.Run("guard refuses a non-local context name, even for a reachable local cluster", func(t *testing.T) {
@@ -515,6 +516,33 @@ spec:
 		bad := podpeers(ctx, t, "capture", "-n", "pp-udp", "-l", "app=udp-client", "--duration", "4s", "--interval", "50ms")
 		if bad.code != 1 || !strings.Contains(bad.stderr, "below the 100ms minimum") {
 			t.Errorf("50ms must be refused loudly, got exit %d: %s", bad.code, bad.stderr)
+		}
+	})
+
+	t.Run("a busy pod's samples survive kubelet log rotation", func(t *testing.T) {
+		time.Sleep(10 * time.Second) // let the busy pod open its connections
+		out := filepath.Join(outDir, "e2e-busy.json")
+		r := podpeers(ctx, t, "capture", "-n", "pp-busy", "-l", "app=busy", "--duration", "60s", "--interval", "200ms", "-o", out, "--summary", "none")
+		t.Logf("exit=%d\n%s", r.code, r.stderr)
+		// Prove the log really rotated during this capture, or the test proves nothing.
+		m := regexp.MustCompile(`added (podpeers-[a-z0-9]+)`).FindStringSubmatch(r.stderr)
+		if m == nil {
+			t.Fatal("no debug container name in the output")
+		}
+		uid := strings.TrimSpace(kubectl(t, "get", "pod", "busy", "-n", "pp-busy", "-o", "jsonpath={.metadata.uid}"))
+		node := strings.TrimSpace(kubectl(t, "get", "pod", "busy", "-n", "pp-busy", "-o", "jsonpath={.spec.nodeName}"))
+		files := kubectl(t, "get", "--raw", "/api/v1/nodes/"+node+"/proxy/logs/pods/pp-busy_busy_"+uid+"/"+m[1]+"/")
+		t.Logf("sampler log files on %s: %s", node, regexp.MustCompile(`href="[^"]*"`).FindAllString(files, -1))
+		if !strings.Contains(files, `href="0.log.`) {
+			t.Fatal("the sampler log did not rotate; raise the socket count or duration so this test exercises rotation")
+		}
+		if r.code != 0 {
+			t.Fatalf("capture exit %d", r.code)
+		}
+		p, _ := probeOf(load(t, out), "pp-busy/busy")
+		t.Logf("busy pod probe: %+v", p)
+		if p.Status != graph.ProbeObserved || !p.Complete || p.Samples < 295 || p.Samples > 305 {
+			t.Fatalf("want all ~301 samples, complete, despite rotation; got %+v", p)
 		}
 	})
 

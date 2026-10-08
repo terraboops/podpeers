@@ -94,6 +94,24 @@ outside the selector, only the matched end's view exists, and the `TIME_WAIT`
 memory may be on the other end. If neither end was matched, the connection is
 not seen at all.
 
+## Busy pods and log size
+
+Each sample is written to the debug container's log: about 155 bytes per
+socket per sample (a pod holding 350 sockets writes about 55KB per sample).
+The kubelet rotates container logs at 10Mi by default, so a busy pod's log
+rotates within minutes. At the 1s default, any pod with more than about 225
+sockets passes 10Mi within a 5-minute window. A log read only at the end
+would have lost everything before the rotation; an early version did exactly
+that and failed the pod outright.
+
+podpeers therefore **follows each sampler's log while the capture runs** and
+parses it as it arrives, so rotation loses nothing. The end-to-end suite
+proves it on a pod whose log rotates mid-capture: 301 of 301 samples. If a
+stream breaks, podpeers falls back to reading what is left. Every sample line
+carries its own time anchor, so the surviving samples are still usable. The
+pod is reported as observed but **not complete**, with the reason ("only the
+latest samples survived").
+
 ## Choosing the window and the interval
 
 **The window matters far more than the interval.** A peer contacted once an

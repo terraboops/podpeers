@@ -275,3 +275,28 @@ func TestParseV2Errors(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRotatedLogKeepsLatestSamples(t *testing.T) {
+	// The first part of the log (header, anchor, early samples) was rotated
+	// away: the stream starts mid-table. Self-describing sample lines still
+	// time the rest; the result is marked truncated and not complete.
+	row := "   0: 0A0200C0:2328 076433C6:D431 01 0:0 0:0 0 0 0 1\n"
+	in := "   7: 0A0200C0:2328 076433C6:D432 01 0:0 0:0 0 0 0 9\n" + // tail of a lost sample
+		"@@sample 1000.40 1700000000 1000.00\n" + hdrTCP + "\n" + row +
+		"@@sample 1000.60 1700000000 1000.00\n" + hdrTCP + "\n" + row +
+		"@@end\n"
+	out, err := ParseSamplerOutput(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Truncated || out.Complete || len(out.Samples) != 2 {
+		t.Fatalf("truncated=%v complete=%v samples=%d", out.Truncated, out.Complete, len(out.Samples))
+	}
+	if got := out.Samples[0].Time; !got.Equal(time.Unix(1700000000, 0).UTC().Add(400 * time.Millisecond)) {
+		t.Errorf("time = %v", got)
+	}
+	// Without self-describing markers there is nothing to time samples by.
+	if _, err := ParseSamplerOutput(strings.NewReader("@@sample 1000.40\n")); err == nil {
+		t.Error("a headerless log with bare sample markers must be rejected")
+	}
+}

@@ -218,13 +218,14 @@ func SamplerScript(duration, interval time.Duration) string {
 	// centiseconds and formatted as seconds with shell builtins only.
 	return fmt.Sprintf(`echo '%s'
 read up0 rest < /proc/uptime
-echo "%s$(date +%%s) $up0"
+w0=$(date +%%s)
+echo "%s$w0 $up0"
 t0=${up0%%.*}${up0#*.}
 end=$(( t0 + %d ))
 next=$t0
 while :; do
   read up rest < /proc/uptime
-  echo "%s$up"
+  echo "%s$up $w0 $up0"
   cat /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6 2>/dev/null
   [ "$next" -ge "$end" ] && break
   next=$(( next + %d ))
@@ -254,7 +255,10 @@ func tableProtocol(header string) Protocol {
 type SamplerOutput struct {
 	Samples  []Sample
 	Complete bool // the end marker was seen: the sampler ran its whole window
-	Skipped  int  // malformed rows ignored
+	// Truncated is set when the log's beginning was missing (typically lost
+	// to kubelet log rotation): the samples are the latest ones only.
+	Truncated bool
+	Skipped   int // malformed rows ignored
 }
 
 // ParseSamplerOutput decodes the framed output of SamplerScript. A truncated log
@@ -307,7 +311,20 @@ func ParseSamplerOutput(r io.Reader) (SamplerOutput, error) {
 				cur = &Sample{Time: time.Unix(sec, 0).UTC()}
 				continue
 			}
-			up, err := strconv.ParseFloat(v, 64)
+			f := strings.Fields(v)
+			if len(f) == 3 {
+				// Self-describing sample (anchor repeated on every line): a log
+				// whose beginning was lost to rotation can still be read.
+				w, err1 := strconv.ParseInt(f[1], 10, 64)
+				u, err2 := strconv.ParseFloat(f[2], 64)
+				if err1 == nil && err2 == nil {
+					anchorWall, anchorUp, haveAnchor = w, u, true
+					if version == 0 {
+						version, out.Truncated = 2, true
+					}
+				}
+			}
+			up, err := strconv.ParseFloat(f[0], 64)
 			if err != nil || !haveAnchor {
 				return out, fmt.Errorf("procnet: bad sample marker %q (anchor seen: %v)", line, haveAnchor)
 			}
@@ -347,6 +364,9 @@ func ParseSamplerOutput(r io.Reader) (SamplerOutput, error) {
 	}
 	if version == 0 {
 		return out, fmt.Errorf("procnet: no podpeers header in sampler output")
+	}
+	if out.Truncated {
+		out.Complete = false
 	}
 	// A sample that was cut off mid-table is incomplete; drop it unless the end
 	// marker proved the stream finished.
