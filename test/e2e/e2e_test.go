@@ -28,6 +28,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	netv1 "k8s.io/api/networking/v1"
+
 	"github.com/terraboops/podpeers/internal/graph"
 )
 
@@ -179,6 +181,8 @@ func TestE2E(t *testing.T) {
 	kubectl(t, "wait", "-n", "pp-strict", "--for=condition=Ready", "--timeout=60s", "pod/vaultd", "pod/auditor")
 	kubectl(t, "wait", "-n", "pp-udp", "--for=condition=Ready", "--timeout=60s", "pod/udp-echo", "pod/dnsd", "pod/udp-client")
 	kubectl(t, "wait", "-n", "pp-busy", "--for=condition=Ready", "--timeout=60s", "pod/busy")
+	kubectl(t, "rollout", "status", "-n", "pp-kinds", "statefulset/db", "--timeout=120s")
+	kubectl(t, "rollout", "status", "-n", "pp-kinds", "daemonset/node-agent", "--timeout=120s")
 	time.Sleep(3 * time.Second) // let the clients' connections establish
 
 	t.Run("guard refuses a non-local context name, even for a reachable local cluster", func(t *testing.T) {
@@ -519,6 +523,116 @@ spec:
 		}
 	})
 
+	t.Run("StatefulSet, DaemonSet and CronJob targets are captured, grouped and rendered", func(t *testing.T) {
+		// Trigger a CronJob run and wait for its pod: it holds a connection
+		// to db-0 for 150s, long enough to be captured.
+		kubectl(t, "create", "job", "--from=cronjob/report", "report-e2e", "-n", "pp-kinds")
+		kubectl(t, "wait", "-n", "pp-kinds", "--for=condition=Ready", "pod", "-l", "job-name=report-e2e", "--timeout=90s")
+		time.Sleep(4 * time.Second)
+		out := filepath.Join(outDir, "e2e-kinds.json")
+		r := podpeers(ctx, t, "capture", "-n", "pp-kinds", "-l", "podpeers-e2e=kinds", "--duration", "8s", "--interval", "1s", "-o", out)
+		t.Logf("exit=%d\n%s", r.code, r.stderr)
+		if r.code != 0 {
+			t.Fatalf("capture exit %d", r.code)
+		}
+		res := load(t, out)
+
+		// Every pod of every kind was observed, under its controller's name.
+		byWorkload := map[string][]graph.Pod{}
+		for _, p := range res.Pods {
+			if p.Probe.Status == graph.ProbeObserved {
+				byWorkload[p.Workload] = append(byWorkload[p.Workload], p)
+			}
+		}
+		for wl, n := range map[string]int{"StatefulSet/db": 2, "DaemonSet/node-agent": 2, "CronJob/report": 1} {
+			if len(byWorkload[wl]) != n {
+				t.Errorf("%s: %d observed pods; want %d (workloads seen: %v)", wl, len(byWorkload[wl]), n, keys(byWorkload))
+			}
+		}
+		if a := byWorkload["DaemonSet/node-agent"]; len(a) == 2 && a[0].Node == a[1].Node {
+			t.Errorf("DaemonSet pods should be on different nodes: %s, %s", a[0].Node, a[1].Node)
+		}
+
+		// Known traffic, per kind.
+		for _, a := range byWorkload["DaemonSet/node-agent"] {
+			expectEdges(t, res, a.ID(), "outbound svc/pp-kinds/db-rw tcp/5432 open")
+		}
+		var report graph.Pod
+		if rp := byWorkload["CronJob/report"]; len(rp) == 1 {
+			report = rp[0]
+			// Headless DNS resolves to the pod IP: the peer is the pod itself.
+			expectEdges(t, res, report.ID(), "outbound pp-kinds/db-0 tcp/5432 open")
+		}
+		inbound := map[string]bool{}
+		for _, e := range res.Edges {
+			if strings.HasPrefix(e.Pod, "pp-kinds/db-") && e.Direction == graph.Inbound {
+				inbound[e.Peer.ID()] = true
+			}
+		}
+		for _, p := range append(byWorkload["DaemonSet/node-agent"], report) {
+			if p.Name != "" && !inbound[p.ID()] {
+				t.Errorf("no db pod saw %s connect (db inbound peers: %v)", p.ID(), inbound)
+			}
+		}
+
+		// Rendered in every format.
+		for _, f := range []string{"text", "dot", "html"} {
+			rr := podpeers(ctx, t, "render", "-format", f, "-o", filepath.Join(outDir, "e2e-kinds."+f), out)
+			b, _ := os.ReadFile(filepath.Join(outDir, "e2e-kinds."+f))
+			if rr.code != 0 || !strings.Contains(string(b), "db-0") || !strings.Contains(string(b), "node-agent") || !strings.Contains(string(b), "report-e2e") {
+				t.Errorf("render %s: exit %d, %d bytes", f, rr.code, len(b))
+			}
+		}
+
+		// One policy per workload, selecting by stable labels only.
+		s := podpeers(ctx, t, "suggest", "-format", "json", out)
+		var rep struct {
+			Suggestions []struct {
+				Workload, Refused string
+				Policy            *netv1.NetworkPolicy
+			}
+		}
+		if err := json.Unmarshal([]byte(s.stdout), &rep); err != nil {
+			t.Fatal(err)
+		}
+		volatile := []string{"statefulset.kubernetes.io/pod-name", "apps.kubernetes.io/pod-index", "controller-revision-hash",
+			"pod-template-generation", "job-name", "batch.kubernetes.io/job-name", "controller-uid", "batch.kubernetes.io/controller-uid"}
+		got := map[string]int{}
+		for _, sg := range rep.Suggestions {
+			got[sg.Workload]++
+			if sg.Policy == nil {
+				t.Errorf("%s refused: %s", sg.Workload, sg.Refused)
+				continue
+			}
+			sels := []map[string]string{sg.Policy.Spec.PodSelector.MatchLabels}
+			for _, in := range sg.Policy.Spec.Ingress {
+				for _, f := range in.From {
+					if f.PodSelector != nil {
+						sels = append(sels, f.PodSelector.MatchLabels)
+					}
+				}
+			}
+			for _, sel := range sels {
+				for _, v := range volatile {
+					if _, bad := sel[v]; bad {
+						t.Errorf("%s: selector uses per-pod/per-run label %q: %v", sg.Workload, v, sel)
+					}
+				}
+			}
+		}
+		t.Logf("suggestions per workload: %v", got)
+		for _, wl := range []string{"StatefulSet/db", "DaemonSet/node-agent", "CronJob/report"} {
+			if got[wl] != 1 {
+				t.Errorf("want exactly one suggestion for %s, got %d (all: %v)", wl, got[wl], got)
+			}
+		}
+		y := podpeers(ctx, t, "suggest", "-n", "pp-kinds", "-o", filepath.Join(outDir, "e2e-kinds-policy.yaml"), out)
+		if y.code != 0 {
+			t.Fatal(y.stderr)
+		}
+		kubectl(t, "apply", "--dry-run=server", "-f", filepath.Join(outDir, "e2e-kinds-policy.yaml"))
+	})
+
 	t.Run("a busy pod's samples survive kubelet log rotation", func(t *testing.T) {
 		time.Sleep(10 * time.Second) // let the busy pod open its connections
 		out := filepath.Join(outDir, "e2e-busy.json")
@@ -620,4 +734,13 @@ spec:
 			t.Fatalf("want exit 1 with forbidden, got %d", r.code)
 		}
 	})
+}
+
+func keys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

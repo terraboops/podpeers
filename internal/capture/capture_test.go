@@ -3,12 +3,14 @@ package capture
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -358,5 +360,35 @@ func TestBestPicksTheMoreCompleteLog(t *testing.T) {
 	}
 	if _, err := best(procnet.SamplerOutput{}, bad, procnet.SamplerOutput{}, bad); err == nil {
 		t.Error("both failed: error")
+	}
+}
+
+func TestCronJobPodsAreNamedAfterTheCronJob(t *testing.T) {
+	yes := true
+	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "report-29315467",
+		OwnerReferences: []metav1.OwnerReference{{Kind: "CronJob", Name: "report", Controller: &yes}}}}
+	plain := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "migrate"}}
+	cs := fake.NewSimpleClientset(job, plain)
+	var notes []string
+	cron := cronJobOwners(context.Background(), cs, Options{Logf: func(f string, a ...any) { notes = append(notes, fmt.Sprintf(f, a...)) }})
+	for in, want := range map[string]string{
+		"Job/report-29315467": "CronJob/report", // a CronJob run
+		"Job/migrate":         "Job/migrate",    // a Job nobody owns
+		"Job/vanished":        "Job/vanished",   // a Job that no longer exists
+		"Deployment/web":      "Deployment/web", // untouched
+	} {
+		if got := cron("shop", in); got != want {
+			t.Errorf("%s -> %s; want %s", in, got, want)
+		}
+	}
+	// Forbidden: keep the per-run name and say why, once.
+	denied := fake.NewSimpleClientset()
+	denied.PrependReactor("list", "jobs", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "batch", Resource: "jobs"}, "", errors.New("no"))
+	})
+	notes = nil
+	cron = cronJobOwners(context.Background(), denied, Options{Logf: func(f string, a ...any) { notes = append(notes, fmt.Sprintf(f, a...)) }})
+	if got := cron("shop", "Job/report-1"); got != "Job/report-1" || len(notes) != 1 || !strings.Contains(notes[0], "grouped per run") {
+		t.Errorf("forbidden: got %s, notes %v", got, notes)
 	}
 }

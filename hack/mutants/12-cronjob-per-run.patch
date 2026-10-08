@@ -1,0 +1,20 @@
+# Mutant 12-cronjob-per-run: breaks the protection for "CronJob runs grouped as one workload".
+# Bug introduced: CronJob pods are named after their per-run Job, so every run is a separate workload with its own policy suggestion.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/capture/
+# unit-run: TestCronJobPodsAreNamedAfterTheCronJob
+# unit-expect: Job/report-29315467 -> Job/report-29315467; want CronJob/report
+# e2e-run: TestE2E/StatefulSet
+# e2e-expect: want exactly one suggestion for CronJob/report
+--- a/internal/capture/capture.go
++++ b/internal/capture/capture.go
+@@ -685,6 +685,7 @@
+ 	cache := map[string]map[string]string{} // ns -> job -> cronjob
+ 	return func(ns, workload string) string {
+ 		job, ok := strings.CutPrefix(workload, "Job/")
++		ok = false // CronJob runs keep their per-run Job name
+ 		if !ok {
+ 			return workload
+ 		}

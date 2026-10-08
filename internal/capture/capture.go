@@ -315,6 +315,13 @@ func Run(ctx context.Context, cs kubernetes.Interface, nodes []corev1.Node, opts
 		gp.Probe = t.probe
 		tpods = append(tpods, gp)
 	}
+	cron := cronJobOwners(ctx, cs, opts)
+	for i := range tpods {
+		tpods[i].Workload = cron(tpods[i].Namespace, tpods[i].Workload)
+	}
+	for i := range inv.Pods {
+		inv.Pods[i].Workload = cron(inv.Pods[i].Namespace, inv.Pods[i].Workload)
+	}
 	return graph.Build(
 		graph.Selector{Namespace: opts.listNamespace(), LabelSelector: opts.LabelSelector},
 		graph.Window{Start: start, End: end, Interval: opts.Interval.String()},
@@ -666,4 +673,41 @@ func mergeInventory(start, end graph.Inventory) graph.Inventory {
 		out.Nodes = start.Nodes
 	}
 	return out
+}
+
+// cronJobOwners returns a function that names a CronJob's pods after the
+// CronJob. Each run of a CronJob is a new Job with a new name, so naming its
+// pods "Job/<name>" would split one workload into one per run: separate
+// policy suggestions per run, and diffs that never match across runs. Jobs
+// are listed once per namespace; if that is not permitted, pods keep their
+// Job name and a note says why.
+func cronJobOwners(ctx context.Context, cs kubernetes.Interface, opts Options) func(ns, workload string) string {
+	cache := map[string]map[string]string{} // ns -> job -> cronjob
+	return func(ns, workload string) string {
+		job, ok := strings.CutPrefix(workload, "Job/")
+		if !ok {
+			return workload
+		}
+		owners, seen := cache[ns]
+		if !seen {
+			owners = map[string]string{}
+			cache[ns] = owners
+			jobs, err := cs.BatchV1().Jobs(ns).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				opts.Logf("note: cannot list Jobs in %s (%s); CronJob pods are grouped per run (Job/<name>)", ns, shortErr(err))
+				return workload
+			}
+			for _, j := range jobs.Items {
+				for _, o := range j.OwnerReferences {
+					if o.Controller != nil && *o.Controller && o.Kind == "CronJob" {
+						owners[j.Name] = o.Name
+					}
+				}
+			}
+		}
+		if cj, ok := owners[job]; ok {
+			return "CronJob/" + cj
+		}
+		return workload
+	}
 }

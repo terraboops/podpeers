@@ -295,6 +295,7 @@ Named cases:
 | debug container can't start | fails fast with `ErrImagePull`, exit 3 |
 | namespace you may read but not modify | per-pod `forbidden` naming the missing permission |
 | namespace you may not read | clean failure, exit 1 |
+| StatefulSet, DaemonSet and CronJob targets | each captured under its controller (`StatefulSet/db`, `DaemonSet/node-agent` on both nodes, `CronJob/report` rather than its per-run Job); headless DNS peers resolve to the pod; one policy per workload, no per-pod or per-run labels in any selector; all formats render |
 | namespace enforcing Pod Security `restricted` | enforcement proven on (a plain pod is rejected); podpeers' debug container is admitted and observes the known flow |
 | non-local context name for a reachable cluster | refused, exit 2, nothing modified |
 | suggestions from real traffic | API server accepts every policy (dry run) |
@@ -343,6 +344,9 @@ And the smaller ones:
 - Only the selected pods are sampled.
 - hostNetwork pods are skipped: their sockets are the node's.
 - Peers in namespaces you can't list resolve as plain addresses.
+- CronJob pods are grouped under their CronJob by looking up their Job's owner;
+  without permission to list Jobs they are grouped per run (`Job/<name>`) and
+  the capture says so.
 - Assumes little-endian nodes (amd64/arm64).
 - Enforcement details (kubelet probes, new-pod timing, REJECT vs DROP) vary by
   CNI. Verify on the CNI you run.
