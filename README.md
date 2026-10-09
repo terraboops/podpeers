@@ -355,9 +355,9 @@ Named cases:
 | non-local context name for a reachable cluster | refused, exit 2, nothing modified |
 | local-looking context (`k3d-elsewhere`, and each exact-name tool's context: `colima`, `rancher-desktop`, `orbstack`, `docker-desktop`, `minikube`) answered by another cluster's nodes, as through a tunnel | refused by the node gate, exit 2, nothing modified, foreign node names not echoed |
 | a real TCP tunnel to the test cluster under its own context name | **allowed**: the documented residual, pinned so the README cannot drift from it |
-| suggestions from real traffic | API server accepts every policy (dry run) |
+| suggestions from real traffic | API server accepts every policy (dry run); each rule names its peer, direction and port and the connections observed behind it, DNS is flagged ASSUMED; the gap list states the window, the weekly traffic it likely missed, and the egress each workload would lose |
 | connection older than a policy | INCONCLUSIVE, while new connects are blocked |
-| MCP over stdio | answers from the real capture |
+| MCP over stdio | answers from the real capture; `summary`, `query`, `suggest_policies`, `peers` and `list_pods` return exactly what `render -format text`, `query`, `suggest` and the capture file (which the web UI embeds) say |
 | Helm skill workflow | good policy OK; intruder blocked; break invisible to `helm test` caught by diff; break visible to `helm test` caught and rolled back |
 | connection older than a policy, while new connects fail | BROKEN (`blocked`), not OK: failed reconnects are not the policy being exercised |
 | skill script given a `HELM_KUBEAPISERVER` override, or a policy file with a ConfigMap in it | refused before anything is applied |

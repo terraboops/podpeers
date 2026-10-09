@@ -1,0 +1,21 @@
+# Mutant 33-reasoning-without-evidence: breaks the protection for "each rule shows the observation behind it (brief 11.2)".
+# Bug introduced: rules keep their peer and ports but lose the observed connections that justify them.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/policy/
+# unit-run: TestSuggestShop
+# unit-expect: has no evidence behind it
+# e2e-run: TestE2E/(capture_matches|suggestions)
+# e2e-expect: Pod/web's reasoning lacks
+--- a/internal/policy/policy.go
++++ b/internal/policy/policy.go
+@@ -745,7 +745,7 @@ func reason(rule, dir string, r *ruleAcc) Reason {
+ 	if r.assumed {
+ 		ev = []string{"ASSUMED, not observed: DNS lookups are short UDP exchanges that socket sampling rarely catches, and the observed outbound connections used names"}
+ 	}
+-	return Reason{Rule: rule, Direction: dir, Peer: r.desc, Ports: ports, Evidence: ev, Assumed: r.assumed}
++	return Reason{Rule: rule, Direction: dir, Peer: r.desc, Ports: ports, Evidence: ev[:0], Assumed: r.assumed}
+ }
+ 
+ // policyName derives a DNS-1123 name from a workload "Kind/name". A name

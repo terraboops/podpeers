@@ -454,6 +454,11 @@ func TestE2E(t *testing.T) {
 				Workload, Refused string
 				Gaps              []string
 				Policy            *struct{ Spec map[string]any }
+				Reasons           []struct {
+					Rule, Direction, Peer string
+					Ports, Evidence       []string
+					Assumed               bool
+				}
 			}
 			Gaps []string
 		}
@@ -490,6 +495,23 @@ func TestE2E(t *testing.T) {
 		for _, s := range rep.Suggestions {
 			if s.Workload != "Pod/web" {
 				continue
+			}
+			// The reasoning (brief 11.2): which peer, which direction, which
+			// ports, and the observation behind each rule, from real traffic.
+			var why []string
+			for _, r := range s.Reasons {
+				why = append(why, fmt.Sprintf("%s %s %s %v | %s | assumed=%v", r.Rule, r.Direction, r.Peer, r.Ports, strings.Join(r.Evidence, " / "), r.Assumed))
+			}
+			w := strings.Join(why, "\n")
+			t.Logf("Pod/web WHY:\n%s", w)
+			for _, want := range []*regexp.Regexp{
+				regexp.MustCompile(`ingress\[\d\] ingress pods app=gateway\S* in namespace pp-edge \(pp-edge/Pod/gateway\) \[tcp/8080\] \| web <- pp-edge/gateway tcp/8080: \d+ connection\(s\), seen in \d+ sample\(s\)[^|]*\| assumed=false`),
+				regexp.MustCompile(`egress\[\d\] egress pods behind service pp-app/api \(app=api\) \[tcp/9000\] \| web -> svc/pp-app/api tcp/9000: \d+ connection\(s\)[^|]*\| assumed=false`),
+				regexp.MustCompile(`egress\[\d\] egress cluster DNS[^|]*\| ASSUMED, not observed[^|]*\| assumed=true`),
+			} {
+				if !want.MatchString(w) {
+					t.Errorf("Pod/web's reasoning lacks %s", want)
+				}
 			}
 			g := strings.Join(s.Gaps, "\n")
 			t.Logf("Pod/web NOT COVERED:\n%s", g)
@@ -545,6 +567,115 @@ func TestE2E(t *testing.T) {
 			t.Errorf("suggest_policies response: %.400s", lines[2])
 		}
 		t.Logf("MCP peers response: %.300s...", lines[1])
+	})
+
+	t.Run("MCP serves the same data as the query interface, the visualization and suggest", func(t *testing.T) {
+		// Brief section 12: the same data as the visualization and the query
+		// interface, exposed over MCP. Each MCP answer must equal the CLI's
+		// answer for the same real capture, not merely mention a few names.
+		capture := filepath.Join(outDir, "e2e-capture.json")
+		q := `{ pods { id probe { status } edges { direction port protocol open peer { id kind } } } edges(direction: "outbound") { pod { id } port } }`
+		qj, _ := json.Marshal(q)
+		calls := []string{
+			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}`,
+			`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"summary","arguments":{}}}`,
+			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query","arguments":{"query":` + string(qj) + `}}}`,
+			`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"suggest_policies","arguments":{"namespace":"pp-app"}}}`,
+			`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"peers","arguments":{"pod":"pp-app/web","direction":"inbound"}}}`,
+			`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_pods","arguments":{"namespace":"pp-app"}}}`,
+		}
+		cmd := exec.Command(binary, "mcp", capture)
+		cmd.Stdin = strings.NewReader(strings.Join(calls, "\n") + "\n")
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := map[float64]string{}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			var resp struct {
+				ID     float64
+				Result struct {
+					Content []struct{ Text string }
+					IsError bool
+				}
+			}
+			if err := json.Unmarshal([]byte(line), &resp); err != nil {
+				t.Fatalf("%v: %.200s", err, line)
+			}
+			if resp.Result.IsError || (resp.ID > 1 && len(resp.Result.Content) == 0) {
+				t.Fatalf("MCP call %v failed: %.300s", resp.ID, line)
+			}
+			if len(resp.Result.Content) > 0 {
+				text[resp.ID] = resp.Result.Content[0].Text
+			}
+		}
+		// summary == the text visualization
+		if want := podpeers(ctx, t, "render", "-format", "text", capture).stdout; text[2] != want {
+			t.Errorf("MCP summary differs from `podpeers render -format text`:\n--- mcp\n%.600s\n--- cli\n%.600s", text[2], want)
+		}
+		// query == the GraphQL query interface
+		var cli struct{ Data any }
+		if err := json.Unmarshal([]byte(podpeers(ctx, t, "query", capture, q).stdout), &cli); err != nil {
+			t.Fatal(err)
+		}
+		var mcpData any
+		if err := json.Unmarshal([]byte(text[3]), &mcpData); err != nil {
+			t.Fatal(err)
+		}
+		a, _ := json.Marshal(mcpData)
+		b, _ := json.Marshal(cli.Data)
+		if string(a) != string(b) || len(a) < 100 {
+			t.Errorf("MCP query differs from `podpeers query`:\n--- mcp\n%.400s\n--- cli\n%.400s", a, b)
+		}
+		// suggest_policies == suggest
+		if want := podpeers(ctx, t, "suggest", "-n", "pp-app", capture).stdout; text[4] != want {
+			t.Errorf("MCP suggest_policies differs from `podpeers suggest -n pp-app`")
+		}
+		// peers and list_pods == the capture itself, which the web UI embeds
+		res := load(t, capture)
+		// web has edges both ways (inbound from gateway, outbound to api), so
+		// a peers tool that ignored the direction would show here.
+		var inbound []graph.Edge
+		outbound := 0
+		for _, e := range res.Edges {
+			if e.Pod == "pp-app/web" && e.Direction == graph.Inbound {
+				inbound = append(inbound, e)
+			}
+			if e.Pod == "pp-app/web" && e.Direction == graph.Outbound {
+				outbound++
+			}
+		}
+		if outbound == 0 {
+			t.Fatal("precondition: pp-app/web should have outbound edges too")
+		}
+		var gotEdges []graph.Edge
+		json.Unmarshal([]byte(text[5]), &gotEdges)
+		ae, _ := json.Marshal(gotEdges)
+		be, _ := json.Marshal(inbound)
+		if string(ae) != string(be) || len(inbound) == 0 {
+			t.Errorf("MCP peers(pp-app/web, inbound) differs from the capture's edges:\n--- mcp\n%s\n--- capture\n%s", ae, be)
+		}
+		var gotPods, wantPods []graph.Pod
+		json.Unmarshal([]byte(text[6]), &gotPods)
+		for _, p := range res.Pods {
+			if p.Namespace == "pp-app" {
+				wantPods = append(wantPods, p)
+			}
+		}
+		ap, _ := json.Marshal(gotPods)
+		bp, _ := json.Marshal(wantPods)
+		if string(ap) != string(bp) {
+			t.Errorf("MCP list_pods(pp-app) differs from the capture's pods")
+		}
+		html := podpeers(ctx, t, "render", "-format", "html", capture).stdout
+		for _, p := range wantPods {
+			if !strings.Contains(html, `"name":"`+p.Name+`"`) {
+				t.Errorf("the web UI page lacks pod %s", p.ID())
+			}
+		}
+		t.Logf("MCP == CLI for summary (%d bytes), query (%d bytes), suggest (%d bytes), peers (%d edges), list_pods (%d pods)",
+			len(text[2]), len(a), len(text[4]), len(inbound), len(wantPods))
 	})
 
 	t.Run("connections older than a policy are reported as inconclusive, not OK", func(t *testing.T) {

@@ -1,0 +1,21 @@
+# Mutant 32-mcp-diverges: breaks the protection for "MCP serves the same data as the query interface and the visualization (brief 12)".
+# Bug introduced: the MCP peers tool ignores its direction filter, so it answers something the capture and the CLI do not.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/mcp/
+# unit-run: TestPeersMatchTheCapture
+# unit-expect: differs from the capture
+# e2e-run: TestE2E/(capture_matches|MCP_serves)
+# e2e-expect: MCP peers\(pp-app/web, inbound\) differs
+--- a/internal/mcp/mcp.go
++++ b/internal/mcp/mcp.go
+@@ -242,7 +242,7 @@ func (s *Server) call(name string, args map[string]any) (string, any, error) {
+ 		}
+ 		edges := []graph.Edge{}
+ 		for _, e := range r.Edges {
+-			if e.Pod == id && (sarg("direction") == "" || string(e.Direction) == sarg("direction")) {
++			if e.Pod == id {
+ 				edges = append(edges, e)
+ 			}
+ 		}

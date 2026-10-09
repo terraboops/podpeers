@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/terraboops/podpeers/internal/graph"
 )
 
 const fixture = "../testdata/capture.json"
@@ -180,5 +182,33 @@ func TestDiffAndReload(t *testing.T) {
 	rs = session(t, &Server{CapturePath: filepath.Join(dir, "missing.json")}, call(3, "summary", map[string]any{}))
 	if _, isErr := text(t, rs[0]); !isErr {
 		t.Error("missing capture should be a tool error")
+	}
+}
+
+// MCP serves the same data as the capture: peers for a pod and direction is
+// exactly the capture's edges for them, no more and no fewer.
+func TestPeersMatchTheCapture(t *testing.T) {
+	r, err := graph.LoadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"inbound", "outbound"} {
+		var want []graph.Edge
+		for _, e := range r.Edges {
+			if e.Pod == "shop/api" && string(e.Direction) == dir {
+				want = append(want, e)
+			}
+		}
+		rs := session(t, &Server{CapturePath: fixture}, call(1, "peers", map[string]any{"pod": "shop/api", "direction": dir}))
+		got, isErr := text(t, rs[0])
+		var edges []graph.Edge
+		if isErr || json.Unmarshal([]byte(got), &edges) != nil {
+			t.Fatalf("peers %s: %s", dir, got)
+		}
+		a, _ := json.Marshal(edges)
+		b, _ := json.Marshal(want)
+		if string(a) != string(b) || len(want) == 0 {
+			t.Errorf("peers(shop/api, %s) differs from the capture's %s edges:\n%s\n%s", dir, dir, a, b)
+		}
 	}
 }

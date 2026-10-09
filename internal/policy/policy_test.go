@@ -125,6 +125,12 @@ func TestSuggestShop(t *testing.T) {
 	if dns.To[0].PodSelector.MatchLabels["k8s-app"] != "kube-dns" || len(dns.Ports) != 2 {
 		t.Errorf("dns egress = %+v", dns)
 	}
+	// Every rule shows the observation (or assumption) behind it.
+	for _, r := range web.Reasons {
+		if len(r.Evidence) == 0 {
+			t.Fatalf("rule %s (%s) has no evidence behind it", r.Rule, r.Peer)
+		}
+	}
 	if r := web.Reasons[2]; !r.Assumed || r.Rule != "egress[1]" || !strings.Contains(r.Evidence[0], "ASSUMED") {
 		t.Errorf("dns reason = %+v", r)
 	}
