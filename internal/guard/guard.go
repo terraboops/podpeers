@@ -111,9 +111,15 @@ func Check(t Target, allowContext string) Decision {
 }
 
 // exactNameNodes are the node identities each exact-name local tool gives
-// its single cluster. These come from the tools' defaults and were not run
-// here (starting them rewrites the default kubeconfig); a wrong one only
-// refuses a genuine local cluster, which --allow-context then opts into.
+// its single cluster. Only colima's was observed (colima 0.10.3, started with
+// its own HOME, COLIMA_HOME, LIMA_HOME and KUBECONFIG so the default
+// kubeconfig was never touched: its node reports k3s://colima and podpeers
+// allows it). The others are asserted from each tool's documented default;
+// those tools were not installed, and installing them switches the default
+// kubeconfig's context. An entry is a name: under that context the gate
+// accepts exactly a node reporting that ID. Wrong in one direction, it
+// refuses a genuine local cluster (--allow-context opts in); it can never
+// accept any other ID.
 // A local name with no entry here (minikube) matches no node at all; neither
 // do kubeadm-mode Docker Desktop's nodes, which carry no kind provider ID.
 var exactNameNodes = map[string]string{

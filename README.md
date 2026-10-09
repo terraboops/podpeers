@@ -165,10 +165,24 @@ gates before any pod is touched:
    `k3s://colima`, `rancher-desktop` to `k3s://lima-rancher-desktop`,
    `orbstack` to `k3s://orbstack`, `docker-desktop` to its kind nodes
    (`desktop-control-plane`, …). podpeers knows no k3s or kind identity for
-   minikube, so nothing passes as minikube. These identities are the tools' defaults; they
-   were not run here (starting them rewrites the default kubeconfig), and a
-   wrong one only refuses a genuine local cluster, which `--allow-context`
-   then opts into.
+   minikube, so nothing passes as minikube.
+
+   How sure those identities are, entry by entry:
+
+   | context | node identity accepted | evidence |
+   |---|---|---|
+   | `k3d-NAME` | `k3s://k3d-NAME-server-N`, `-agent-N` | observed: the e2e cluster, every run |
+   | `kind-NAME` | `kind://<runtime>/NAME/NAME-control-plane`, `-worker…` | observed once on a throwaway kind cluster (kind 0.31) |
+   | `colima` | `k3s://colima` | observed once (colima 0.10.3, run with its own HOME and KUBECONFIG; `check-context` allowed it) |
+   | `rancher-desktop`, `orbstack`, `docker-desktop` | as above | **asserted** from each tool's documented default, not observed: not installed here, and installing them switches the default kubeconfig's context |
+   | `minikube` | none | refuses every node |
+
+   If an asserted entry is wrong, assume this: the gate accepts, under that
+   context name, exactly a node reporting that ID and nothing else. If the
+   tool really reports something else, a genuine local cluster is refused
+   (`--allow-context` opts in). It never widens what is accepted. The only
+   thing an entry can let through is a cluster reporting that exact ID,
+   which is the same-identity residual below.
 
    What still gets through, plainly: a remote cluster whose nodes carry
    *exactly* the identity of your local one: a remote k3d or kind cluster with
