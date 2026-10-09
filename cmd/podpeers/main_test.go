@@ -147,11 +147,23 @@ func TestNodeGuardCatchesTunnelToCloudCluster(t *testing.T) {
 }
 
 func TestLocalClusterAllowed(t *testing.T) {
-	srv, _ := apiServer(t, "k3s://n1")
+	srv, _ := apiServer(t, "k3s://k3d-dev-server-0")
 	kc := kubeconfig(t, "k3d-dev", srv.URL)
 	code, out, stderr := runCLI("check-context", "--kubeconfig", kc)
 	if code != exitOK || strings.TrimSpace(out) != "allowed" {
 		t.Fatalf("exit %d out %q stderr %s", code, out, stderr)
+	}
+}
+
+func TestNodeGuardCatchesTunnelToAnotherK3sCluster(t *testing.T) {
+	// Every k3s cluster writes k3s://, remote and production ones included.
+	// A k3d-dev context answered by nodes that are not k3d-dev's is a tunnel
+	// or a reused port, and is refused without naming the foreign nodes.
+	srv, _ := apiServer(t, "k3s://edge-node-7")
+	kc := kubeconfig(t, "k3d-dev", srv.URL)
+	code, _, stderr := runCLI("check-context", "--kubeconfig", kc)
+	if code != exitRefused || !strings.Contains(stderr, "nodes of a different cluster") || strings.Contains(stderr, "edge-node-7") {
+		t.Fatalf("exit %d stderr %s", code, stderr)
 	}
 }
 

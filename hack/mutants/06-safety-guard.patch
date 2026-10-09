@@ -9,15 +9,15 @@
 # e2e-run: TestE2E/guard_refuses
 # e2e-expect: want refusal exit 2
 diff --git a/internal/guard/guard.go b/internal/guard/guard.go
-index 40a22a7..7360586 100644
+index 1bd639b..8cf7fd5 100644
 --- a/internal/guard/guard.go
 +++ b/internal/guard/guard.go
-@@ -94,7 +94,7 @@ func Check(t Target, allowContext string) Decision {
+@@ -96,7 +96,7 @@ func Check(t Target, allowContext string) Decision {
  		return Decision{Reason: fmt.Sprintf(
  			"context %q has a loopback API server but sends requests through proxy-url %q, which can lead to any cluster; refusing. Re-run with --allow-context=%s only if you mean to modify that cluster",
  			t.Context, t.Proxy, t.Context)}
 -	case name && loop:
 +	case name || loop:
- 		return Decision{Allowed: true, Reason: fmt.Sprintf(
+ 		return Decision{Allowed: true, Context: t.Context, Reason: fmt.Sprintf(
  			"context %q is a local cluster (local tool name, loopback API server)", t.Context)}
  	case !name:

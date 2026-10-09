@@ -58,6 +58,8 @@ func TestCheckNodes(t *testing.T) {
 	local := Check(Target{"k3d-dev", "https://127.0.0.1:6550", ""}, "")
 	optIn := Check(Target{"prod-eu", "https://cluster.example.invalid", ""}, "prod-eu")
 	refused := Check(Target{"prod-eu", "https://cluster.example.invalid", ""}, "")
+	localKind := Check(Target{"kind-dev", "https://127.0.0.1:6443", ""}, "")
+	localColima := Check(Target{"colima", "https://127.0.0.1:6443", ""}, "")
 
 	cases := []struct {
 		name    string
@@ -68,8 +70,17 @@ func TestCheckNodes(t *testing.T) {
 		reason  string
 	}{
 		{"k3s nodes", local, []string{"k3s://k3d-dev-server-0"}, nil, true, "kind/k3d nodes"},
-		{"kind nodes", local, []string{"kind://docker/dev/dev-control-plane", "kind://docker/dev/dev-worker"}, nil, true, "kind/k3d"},
-		{"tunnel to cloud", local, []string{"k3s://a", "aws:///zone-a/i-0000000000"}, nil, false, "aws://..."},
+		{"k3d server and agents", local, []string{"k3s://k3d-dev-server-0", "k3s://k3d-dev-agent-0", "k3s://k3d-dev-agent-1"}, nil, true, "kind/k3d nodes"},
+		{"kind nodes", localKind, []string{"kind://docker/dev/dev-control-plane", "kind://docker/dev/dev-worker", "kind://podman/dev/dev-worker2"}, nil, true, "kind/k3d"},
+		// A local scheme is not enough: every k3s cluster writes k3s://.
+		{"tunnel to another k3d cluster", local, []string{"k3s://k3d-other-server-0"}, nil, false, "nodes of a different cluster"},
+		{"tunnel to a remote k3s", local, []string{"k3s://edge-node-1"}, nil, false, "nodes of a different cluster"},
+		{"one foreign node among own", local, []string{"k3s://k3d-dev-server-0", "k3s://k3d-dev-agent-0", "k3s://k3d-devx-agent-1"}, nil, false, "different cluster"},
+		{"prefix of the name is not the name", local, []string{"k3s://k3d-dev-extra-server-0"}, nil, false, "different cluster"},
+		{"kind node of another kind cluster", localKind, []string{"kind://docker/prod/prod-control-plane"}, nil, false, "different cluster"},
+		{"k3s node behind a kind context", localKind, []string{"k3s://dev-control-plane"}, nil, false, "different cluster"},
+		{"colima names no cluster in its IDs", localColima, []string{"k3s://colima"}, nil, true, "kind/k3d"},
+		{"tunnel to cloud", local, []string{"k3s://k3d-dev-server-0", "aws:///zone-a/i-0000000000"}, nil, false, "aws://..."},
 		{"empty provider id", local, []string{""}, nil, false, "(empty)"},
 		{"no nodes", local, nil, nil, false, "no nodes"},
 		{"list forbidden", local, nil, errors.New("forbidden"), false, "cannot list nodes"},

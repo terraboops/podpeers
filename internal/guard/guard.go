@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -29,6 +30,7 @@ type Decision struct {
 	Allowed bool
 	OptIn   bool   // allowed only because of an explicit --allow-context
 	Reason  string // human-readable explanation, always set
+	Context string // the context judged, for the node gate to hold it to
 }
 
 // localContextPrefixes are the context names that local-cluster tools write.
@@ -95,7 +97,7 @@ func Check(t Target, allowContext string) Decision {
 			"context %q has a loopback API server but sends requests through proxy-url %q, which can lead to any cluster; refusing. Re-run with --allow-context=%s only if you mean to modify that cluster",
 			t.Context, t.Proxy, t.Context)}
 	case name && loop:
-		return Decision{Allowed: true, Reason: fmt.Sprintf(
+		return Decision{Allowed: true, Context: t.Context, Reason: fmt.Sprintf(
 			"context %q is a local cluster (local tool name, loopback API server)", t.Context)}
 	case !name:
 		return Decision{Reason: fmt.Sprintf(
@@ -108,6 +110,20 @@ func Check(t Target, allowContext string) Decision {
 	}
 }
 
+// ownNodes matches the provider IDs of the nodes of the cluster a k3d or kind
+// context names, or is nil for other local names (minikube, colima, ...)
+// whose tools do not put the cluster's name in the provider ID.
+func ownNodes(context string) *regexp.Regexp {
+	switch {
+	case strings.HasPrefix(context, "k3d-"):
+		return regexp.MustCompile(`^k3s://k3d-` + regexp.QuoteMeta(strings.TrimPrefix(context, "k3d-")) + `-(server|agent)-[0-9]+$`)
+	case strings.HasPrefix(context, "kind-"):
+		n := regexp.QuoteMeta(strings.TrimPrefix(context, "kind-"))
+		return regexp.MustCompile(`^kind://[a-z]+/` + n + `/` + n + `-(control-plane|worker)[0-9]*$`)
+	}
+	return nil
+}
+
 // localProviderPrefixes are node spec.providerID schemes written by local
 // cluster distributions (kind and k3s/k3d).
 var localProviderPrefixes = []string{"kind://", "k3s://"}
@@ -116,7 +132,11 @@ var localProviderPrefixes = []string{"kind://", "k3s://"}
 // modified. A loopback API address can still be a tunnel to a remote cluster,
 // so when the pre-flight decision was not an explicit opt-in, every node must
 // carry a local provider ID. Cloud nodes (aws://, gce://, azure://, ...) and
-// nodes with no provider ID at all fail this check.
+// nodes with no provider ID at all fail this check. A local provider scheme is
+// not enough on its own: every k3s cluster, remote and production ones
+// included, writes k3s://. So the nodes must also belong to the cluster the
+// context names: a k3d-NAME context only to k3s://k3d-NAME-(server|agent)-N
+// nodes, a kind-NAME context only to kind://<runtime>/NAME/NAME-... nodes.
 func CheckNodes(pre Decision, providerIDs []string, listErr error) Decision {
 	if !pre.Allowed || pre.OptIn {
 		return pre
@@ -143,6 +163,12 @@ func CheckNodes(pre Decision, providerIDs []string, listErr error) Decision {
 			}
 			return Decision{Reason: fmt.Sprintf(
 				"a node has provider ID %s, which is not a local kind/k3d node; refusing. Use --allow-context if you mean to modify this cluster", schemeOnly(shown))}
+		}
+		if re := ownNodes(pre.Context); re != nil && !re.MatchString(id) {
+			// The node names are not echoed: through a tunnel they could be
+			// another cluster's.
+			return Decision{Reason: fmt.Sprintf(
+				"context %q names a local cluster, but the API server answering it reports nodes of a different cluster (a tunnel or a reused port?); refusing. Use --allow-context if you mean to modify this cluster", pre.Context)}
 		}
 	}
 	return Decision{Allowed: true, Reason: pre.Reason + "; all nodes are kind/k3d nodes"}

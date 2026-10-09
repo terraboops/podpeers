@@ -153,8 +153,20 @@ gates before any pod is touched:
    context name must be one a local tool writes (`kind-*`, `k3d-*`,
    `minikube`, `docker-desktop`, …) **and** the API server must be on
    loopback, reached directly rather than through a `proxy-url`.
-2. **After connecting, read-only.** Every node must be a kind/k3s node. This
-   catches a `localhost` port-forward or tunnel to a cloud cluster.
+2. **After connecting, read-only.** Every node must be a node of the cluster
+   the context names: a `k3d-NAME` context only `k3d-NAME-server-N` /
+   `k3d-NAME-agent-N` nodes, a `kind-NAME` context only `NAME-control-plane` /
+   `NAME-worker` nodes. This catches a `localhost` port-forward or tunnel to a
+   cloud cluster, and to another k3s or kind cluster: every k3s cluster,
+   remote and production ones included, reports `k3s://` nodes, so the scheme
+   alone proves nothing.
+
+   What still gets through, plainly: a tunnel to a remote cluster that is
+   itself a k3d or kind cluster *with the same name* as your local one, and,
+   for the exact-name tools (`minikube`, `docker-desktop`, `rancher-desktop`,
+   `orbstack`, `colima`), a tunnel to any k3s or kind cluster, because those
+   tools do not put a cluster name in the node IDs. Both need you to tunnel a
+   foreign cluster onto a loopback port under a local tool's context name.
 
 The only way past is `--allow-context=<that exact context name>`. A
 mismatched name is a refusal, not a fallback. Captures also *require* a label
@@ -303,6 +315,7 @@ Named cases:
 | UDP and DNS policies, **applied** and enforced | a client sends datagrams to a DNS-protocol UDP server (`dnsd`, an unconnected socket that never names its clients) in another namespace; each probe is a query that is answered only if it got through. With no policy all 7 exchanges succeed (control). With podpeers' policies: the client's datagrams reach the server by address and by name, cluster DNS answers over udp/53 and tcp/53; a stranger's datagrams to the server, a query to another DNS server on udp/53, and the DNS pod's metrics port are blocked. With only the DNS rule removed, lookups time out (5s, no answer), the server is unreachable by name and still reachable by address. |
 | namespace enforcing Pod Security `restricted` | enforcement proven on (a plain pod is rejected); podpeers' debug container is admitted and observes the known flow |
 | non-local context name for a reachable cluster | refused, exit 2, nothing modified |
+| local-looking context (`k3d-elsewhere`) answered by another cluster's nodes, as through a tunnel | refused by the node gate, exit 2, nothing modified, foreign node names not echoed |
 | suggestions from real traffic | API server accepts every policy (dry run) |
 | connection older than a policy | INCONCLUSIVE, while new connects are blocked |
 | MCP over stdio | answers from the real capture |

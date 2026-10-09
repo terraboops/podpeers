@@ -1,0 +1,21 @@
+# Mutant 29-node-gate-any-k3s: breaks the protection for "the node gate holds a k3d/kind context to its own cluster's nodes".
+# Bug introduced: any k3s:// or kind:// node passes, so a local-named context tunnelled to another k3s cluster (remote and production ones included) is allowed.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/guard/ ./cmd/podpeers/
+# unit-run: TestCheckNodes|TestNodeGuardCatchesTunnelToAnotherK3sCluster
+# unit-expect: want allowed=false|exit 0
+# e2e-run: TestE2E/guard_refuses_a_local-looking
+# e2e-expect: want refusal exit 2 by the node gate
+--- a/internal/guard/guard.go
++++ b/internal/guard/guard.go
+@@ -164,7 +164,7 @@ func CheckNodes(pre Decision, providerIDs []string, listErr error) Decision {
+ 			return Decision{Reason: fmt.Sprintf(
+ 				"a node has provider ID %s, which is not a local kind/k3d node; refusing. Use --allow-context if you mean to modify this cluster", schemeOnly(shown))}
+ 		}
+-		if re := ownNodes(pre.Context); re != nil && !re.MatchString(id) {
++		if re := ownNodes(pre.Context); false && re != nil && !re.MatchString(id) {
+ 			// The node names are not echoed: through a tunnel they could be
+ 			// another cluster's.
+ 			return Decision{Reason: fmt.Sprintf(

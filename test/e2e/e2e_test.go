@@ -185,6 +185,37 @@ func TestE2E(t *testing.T) {
 	kubectl(t, "rollout", "status", "-n", "pp-kinds", "daemonset/node-agent", "--timeout=120s")
 	time.Sleep(3 * time.Second) // let the clients' connections establish
 
+	t.Run("guard refuses a local-looking context answered by another cluster's nodes", func(t *testing.T) {
+		// What a tunnel to some other k3s cluster looks like from here: a k3d
+		// context name and a loopback server pass the pre-flight, but the API
+		// server answering is not the cluster the context names. Every k3s
+		// cluster writes k3s:// provider IDs, so the scheme alone would pass;
+		// the nodes must belong to k3d cluster "elsewhere", and they do not.
+		cfg, err := clientcmd.LoadFromFile(kubeconfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Contexts["k3d-elsewhere"] = cfg.Contexts[kubeCtx]
+		delete(cfg.Contexts, kubeCtx)
+		cfg.CurrentContext = "k3d-elsewhere"
+		renamed := filepath.Join(t.TempDir(), "kubeconfig")
+		if err := clientcmd.WriteToFile(*cfg, renamed); err != nil {
+			t.Fatal(err)
+		}
+		r := podpeers(ctx, t, "capture", "--kubeconfig", renamed, "-A", "-l", "podpeers-e2e=target", "--duration", "5s", "--interval", "1s", "-o", filepath.Join(t.TempDir(), "x.json"))
+		t.Logf("exit=%d stderr:\n%s", r.code, r.stderr)
+		if r.code != 2 || !strings.Contains(r.stderr, "nodes of a different cluster") || strings.Contains(r.stderr, "k3s://") {
+			t.Fatalf("want refusal exit 2 by the node gate, without naming the nodes, got %d", r.code)
+		}
+		if got := ephemeral(t, "pp-app", "api"); len(got) != 0 {
+			t.Fatalf("refused run modified a pod: %v", got)
+		}
+		// Control: the real name, same file otherwise, is allowed.
+		if r := podpeers(ctx, t, "check-context", "--kubeconfig", kubeconfig); r.code != 0 {
+			t.Fatalf("control: the cluster's own context should be allowed, got %d: %s", r.code, r.stderr)
+		}
+	})
+
 	t.Run("guard refuses a non-local context name, even for a reachable local cluster", func(t *testing.T) {
 		// Same cluster, same credentials, but a context name that does not say
 		// "local": refused by default, and no pod is modified.
@@ -752,8 +783,10 @@ spec:
 		limited := clientcmdapi.NewConfig()
 		limited.Clusters["e2e"] = cfg.Clusters[cluster]
 		limited.AuthInfos["limited"] = &clientcmdapi.AuthInfo{Token: token}
-		limited.Contexts[kubeCtx+"-limited"] = &clientcmdapi.Context{Cluster: "e2e", AuthInfo: "limited"}
-		limited.CurrentContext = kubeCtx + "-limited"
+		// Its own file, so it keeps the cluster's context name: the node gate
+		// holds a k3d-NAME context to cluster NAME's nodes.
+		limited.Contexts[kubeCtx] = &clientcmdapi.Context{Cluster: "e2e", AuthInfo: "limited"}
+		limited.CurrentContext = kubeCtx
 		lk := filepath.Join(t.TempDir(), "kubeconfig")
 		if err := clientcmd.WriteToFile(*limited, lk); err != nil {
 			t.Fatal(err)
