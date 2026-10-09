@@ -60,6 +60,9 @@ func TestCheckNodes(t *testing.T) {
 	refused := Check(Target{"prod-eu", "https://cluster.example.invalid", ""}, "")
 	localKind := Check(Target{"kind-dev", "https://127.0.0.1:6443", ""}, "")
 	localColima := Check(Target{"colima", "https://127.0.0.1:6443", ""}, "")
+	localRancher := Check(Target{"rancher-desktop", "https://127.0.0.1:6443", ""}, "")
+	localDD := Check(Target{"docker-desktop", "https://127.0.0.1:6443", ""}, "")
+	localMinikube := Check(Target{"minikube", "https://127.0.0.1:8443", ""}, "")
 
 	cases := []struct {
 		name    string
@@ -79,7 +82,15 @@ func TestCheckNodes(t *testing.T) {
 		{"prefix of the name is not the name", local, []string{"k3s://k3d-dev-extra-server-0"}, nil, false, "different cluster"},
 		{"kind node of another kind cluster", localKind, []string{"kind://docker/prod/prod-control-plane"}, nil, false, "different cluster"},
 		{"k3s node behind a kind context", localKind, []string{"k3s://dev-control-plane"}, nil, false, "different cluster"},
-		{"colima names no cluster in its IDs", localColima, []string{"k3s://colima"}, nil, true, "kind/k3d"},
+		{"colima's own node", localColima, []string{"k3s://colima"}, nil, true, "kind/k3d"},
+		// Exact-name tools are held to their own node identity too.
+		{"tunnel to a k3s cluster under colima", localColima, []string{"k3s://k3d-dev-server-0"}, nil, false, "different cluster"},
+		{"remote k3s named like colima's VM", localColima, []string{"k3s://colima-2"}, nil, false, "different cluster"},
+		{"rancher desktop's own node", localRancher, []string{"k3s://lima-rancher-desktop"}, nil, true, "kind/k3d"},
+		{"tunnel under rancher-desktop", localRancher, []string{"k3s://edge-node-1"}, nil, false, "different cluster"},
+		{"docker desktop's kind nodes", localDD, []string{"kind://docker/desktop/desktop-control-plane", "kind://docker/desktop/desktop-worker"}, nil, true, "kind/k3d"},
+		{"another kind cluster under docker-desktop", localDD, []string{"kind://docker/kind/kind-control-plane"}, nil, false, "different cluster"},
+		{"any k3s under minikube", localMinikube, []string{"k3s://minikube"}, nil, false, "different cluster"},
 		{"tunnel to cloud", local, []string{"k3s://k3d-dev-server-0", "aws:///zone-a/i-0000000000"}, nil, false, "aws://..."},
 		{"empty provider id", local, []string{""}, nil, false, "(empty)"},
 		{"no nodes", local, nil, nil, false, "no nodes"},

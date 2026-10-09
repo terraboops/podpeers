@@ -10,12 +10,12 @@
 # e2e-expect: want refusal exit 2 by the node gate
 --- a/internal/guard/guard.go
 +++ b/internal/guard/guard.go
-@@ -164,7 +164,7 @@ func CheckNodes(pre Decision, providerIDs []string, listErr error) Decision {
+@@ -181,7 +181,7 @@ func CheckNodes(pre Decision, providerIDs []string, listErr error) Decision {
  			return Decision{Reason: fmt.Sprintf(
  				"a node has provider ID %s, which is not a local kind/k3d node; refusing. Use --allow-context if you mean to modify this cluster", schemeOnly(shown))}
  		}
--		if re := ownNodes(pre.Context); re != nil && !re.MatchString(id) {
-+		if re := ownNodes(pre.Context); false && re != nil && !re.MatchString(id) {
+-		if !ownNodes(pre.Context).MatchString(id) {
++		if false && !ownNodes(pre.Context).MatchString(id) {
  			// The node names are not echoed: through a tunnel they could be
  			// another cluster's.
  			return Decision{Reason: fmt.Sprintf(

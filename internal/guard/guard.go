@@ -110,9 +110,23 @@ func Check(t Target, allowContext string) Decision {
 	}
 }
 
-// ownNodes matches the provider IDs of the nodes of the cluster a k3d or kind
-// context names, or is nil for other local names (minikube, colima, ...)
-// whose tools do not put the cluster's name in the provider ID.
+// exactNameNodes are the node identities each exact-name local tool gives
+// its single cluster. These come from the tools' defaults and were not run
+// here (starting them rewrites the default kubeconfig); a wrong one only
+// refuses a genuine local cluster, which --allow-context then opts into.
+// A local name with no entry here (minikube) matches no node at all; neither
+// do kubeadm-mode Docker Desktop's nodes, which carry no kind provider ID.
+var exactNameNodes = map[string]string{
+	"colima":          `^k3s://colima$`,
+	"rancher-desktop": `^k3s://lima-rancher-desktop$`,
+	"orbstack":        `^k3s://orbstack$`,
+	"docker-desktop":  `^kind://[a-z]+/desktop/desktop-(control-plane|worker)[0-9]*$`,
+}
+
+// ownNodes matches the provider IDs of the nodes of the cluster a local
+// context names. Every local name gets a pattern: a name with no known node
+// identity matches no node at all, so no foreign k3s or kind cluster can ride
+// a local tool's name through a loopback tunnel.
 func ownNodes(context string) *regexp.Regexp {
 	switch {
 	case strings.HasPrefix(context, "k3d-"):
@@ -121,7 +135,10 @@ func ownNodes(context string) *regexp.Regexp {
 		n := regexp.QuoteMeta(strings.TrimPrefix(context, "kind-"))
 		return regexp.MustCompile(`^kind://[a-z]+/` + n + `/` + n + `-(control-plane|worker)[0-9]*$`)
 	}
-	return nil
+	if p, ok := exactNameNodes[context]; ok {
+		return regexp.MustCompile(p)
+	}
+	return regexp.MustCompile(`^\b$`) // matches no provider ID
 }
 
 // localProviderPrefixes are node spec.providerID schemes written by local
@@ -164,7 +181,7 @@ func CheckNodes(pre Decision, providerIDs []string, listErr error) Decision {
 			return Decision{Reason: fmt.Sprintf(
 				"a node has provider ID %s, which is not a local kind/k3d node; refusing. Use --allow-context if you mean to modify this cluster", schemeOnly(shown))}
 		}
-		if re := ownNodes(pre.Context); re != nil && !re.MatchString(id) {
+		if !ownNodes(pre.Context).MatchString(id) {
 			// The node names are not echoed: through a tunnel they could be
 			// another cluster's.
 			return Decision{Reason: fmt.Sprintf(

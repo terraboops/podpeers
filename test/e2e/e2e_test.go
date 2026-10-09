@@ -210,6 +210,21 @@ func TestE2E(t *testing.T) {
 		if got := ephemeral(t, "pp-app", "api"); len(got) != 0 {
 			t.Fatalf("refused run modified a pod: %v", got)
 		}
+		// The same for every exact-name local tool: a foreign k3s cluster behind
+		// a loopback port does not become colima's (or anyone's) by its name.
+		for _, name := range []string{"colima", "rancher-desktop", "orbstack", "docker-desktop", "minikube"} {
+			cfg.Contexts[name] = cfg.Contexts["k3d-elsewhere"]
+			cfg.CurrentContext = name
+			as := filepath.Join(t.TempDir(), name+".kubeconfig")
+			if err := clientcmd.WriteToFile(*cfg, as); err != nil {
+				t.Fatal(err)
+			}
+			r := podpeers(ctx, t, "check-context", "--kubeconfig", as)
+			t.Logf("as %s: exit=%d %s", name, r.code, strings.TrimSpace(r.stderr))
+			if r.code != 2 || !strings.Contains(r.stderr, "nodes of a different cluster") {
+				t.Errorf("this cluster under the context name %q: want refusal exit 2 by the node gate, got %d", name, r.code)
+			}
+		}
 		// Control: the real name, same file otherwise, is allowed.
 		if r := podpeers(ctx, t, "check-context", "--kubeconfig", kubeconfig); r.code != 0 {
 			t.Fatalf("control: the cluster's own context should be allowed, got %d: %s", r.code, r.stderr)
@@ -232,8 +247,10 @@ func TestE2E(t *testing.T) {
 		}
 		r := podpeers(ctx, t, "capture", "--kubeconfig", renamed, "-A", "-l", "podpeers-e2e=target", "--duration", "5s", "--interval", "1s", "-o", filepath.Join(t.TempDir(), "x.json"))
 		t.Logf("exit=%d stderr:\n%s", r.code, r.stderr)
-		if r.code != 2 || !strings.Contains(r.stderr, "REFUSED") {
-			t.Fatalf("want refusal exit 2, got %d", r.code)
+		// Refused by the pre-flight, from the kubeconfig alone, before any
+		// request: the node gate refusing it too would hide a broken pre-flight.
+		if r.code != 2 || !strings.Contains(r.stderr, "is not a recognised local cluster") {
+			t.Fatalf("want the pre-flight refusal (exit 2, before any API request), got %d", r.code)
 		}
 		if got := ephemeral(t, "pp-app", "api"); len(got) != 0 {
 			t.Fatalf("refused run modified a pod: %v", got)
