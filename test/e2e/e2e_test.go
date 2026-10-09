@@ -16,6 +16,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,6 +186,55 @@ func TestE2E(t *testing.T) {
 	kubectl(t, "rollout", "status", "-n", "pp-kinds", "statefulset/db", "--timeout=120s")
 	kubectl(t, "rollout", "status", "-n", "pp-kinds", "daemonset/node-agent", "--timeout=120s")
 	time.Sleep(3 * time.Second) // let the clients' connections establish
+
+	t.Run("a tunnel to a cluster with the context's own identity passes: the documented residual", func(t *testing.T) {
+		// The README says what still gets through the node gate: a remote
+		// cluster whose nodes carry exactly the identity the context names.
+		// Through the Kubernetes API a loopback tunnel to such a cluster looks
+		// the same as the cluster itself. This pins that statement: a real TCP
+		// tunnel, a second loopback port forwarded to this cluster's API server,
+		// under the cluster's own context name, is allowed. If podpeers ever
+		// learns to tell a tunnel apart, this fails and the README must change.
+		cfg, err := clientcmd.LoadFromFile(kubeconfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl := cfg.Clusters[cfg.Contexts[kubeCtx].Cluster]
+		target := strings.TrimPrefix(strings.TrimPrefix(cl.Server, "https://"), "http://")
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		go func() {
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					return
+				}
+				go func() {
+					defer c.Close()
+					u, err := net.Dial("tcp", target)
+					if err != nil {
+						return
+					}
+					defer u.Close()
+					go io.Copy(u, c)
+					io.Copy(c, u)
+				}()
+			}
+		}()
+		cl.Server = "https://" + l.Addr().String()
+		tunnelled := filepath.Join(t.TempDir(), "kubeconfig")
+		if err := clientcmd.WriteToFile(*cfg, tunnelled); err != nil {
+			t.Fatal(err)
+		}
+		r := podpeers(ctx, t, "check-context", "--kubeconfig", tunnelled)
+		t.Logf("through a tunnel on %s: exit=%d %s %s", l.Addr(), r.code, strings.TrimSpace(r.stdout), strings.TrimSpace(r.stderr))
+		if r.code != 0 || strings.TrimSpace(r.stdout) != "allowed" {
+			t.Fatalf("the documented residual changed: a same-identity tunnel was not allowed (exit %d); update the README", r.code)
+		}
+	})
 
 	t.Run("guard refuses a local-looking context answered by another cluster's nodes", func(t *testing.T) {
 		// What a tunnel to some other k3s cluster looks like from here: a k3d

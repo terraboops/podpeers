@@ -184,15 +184,27 @@ gates before any pod is touched:
    thing an entry can let through is a cluster reporting that exact ID,
    which is the same-identity residual below.
 
-   What still gets through, plainly: a remote cluster whose nodes carry
-   *exactly* the identity of your local one: a remote k3d or kind cluster with
-   the same name (kind's default `kind` is the likely one), or a remote colima
-   or Rancher Desktop VM with its default node name, tunnelled onto a loopback
-   port under the matching context. Node IDs are names, so two clusters with
-   the same names look the same through the API. Telling them apart would
-   need proof that the API server runs on this machine (for example matching
-   a node's boot ID against the local container runtime), and podpeers
-   deliberately talks to nothing but the Kubernetes API.
+   **What still gets through, plainly:** a remote cluster whose nodes carry
+   *exactly* the identity your context names, reached through a loopback
+   port: a remote k3d or kind cluster with the same name (kind's default
+   `kind`, context `kind-kind`, is the likely one), or a remote colima or
+   Rancher Desktop VM with its default node name. Assume podpeers treats such
+   a cluster as local and will modify its pods. The e2e suite pins this: a
+   real TCP tunnel to the test cluster under its own context name is allowed,
+   next to the test where a tunnel to a different identity is refused.
+
+   Why it cannot be closed from here: everything the Kubernetes API offers
+   that could tell two clusters apart is either a name (node names and
+   provider IDs, derived from the cluster name), or comes with the very
+   kubeconfig entry that points at the remote cluster (its CA and
+   credentials), or cannot be compared with anything on this machine (a
+   node's boot or machine ID lives inside the container VM on macOS, which
+   podpeers cannot see). Proving that the API server runs on this machine
+   would need the container runtime or the VM, and podpeers deliberately
+   talks to nothing but the Kubernetes API. So: never give a tunnel to a
+   remote cluster a local tool's context name, and if you must, use a name
+   podpeers does not trust (it will then refuse unless you pass
+   `--allow-context`).
 
 The only way past is `--allow-context=<that exact context name>`. A
 mismatched name is a refusal, not a fallback. Captures also *require* a label
@@ -342,6 +354,7 @@ Named cases:
 | namespace enforcing Pod Security `restricted` | enforcement proven on (a plain pod is rejected); podpeers' debug container is admitted and observes the known flow |
 | non-local context name for a reachable cluster | refused, exit 2, nothing modified |
 | local-looking context (`k3d-elsewhere`, and each exact-name tool's context: `colima`, `rancher-desktop`, `orbstack`, `docker-desktop`, `minikube`) answered by another cluster's nodes, as through a tunnel | refused by the node gate, exit 2, nothing modified, foreign node names not echoed |
+| a real TCP tunnel to the test cluster under its own context name | **allowed**: the documented residual, pinned so the README cannot drift from it |
 | suggestions from real traffic | API server accepts every policy (dry run) |
 | connection older than a policy | INCONCLUSIVE, while new connects are blocked |
 | MCP over stdio | answers from the real capture |
