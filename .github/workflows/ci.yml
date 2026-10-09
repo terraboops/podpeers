@@ -58,7 +58,7 @@ jobs:
     # cluster script writes to .e2e/, and refuses any other context.
     runs-on: ubuntu-latest
     needs: unit
-    timeout-minutes: 45
+    timeout-minutes: 90 # the suite plus every mutant against the real cluster; ~50 min with 31 mutants
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
