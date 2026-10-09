@@ -469,9 +469,11 @@ func walkIPAMTo(t *testing.T, node string, target netip.Addr) {
 	inUse := func() map[netip.Addr]bool {
 		u := map[netip.Addr]bool{}
 		out := kubectl(t, "get", "pods", "-A", "--field-selector", "spec.nodeName="+node, "-o",
-			`jsonpath={range .items[*]}{.status.phase} {.spec.hostNetwork} {.status.podIP}{"\n"}{end}`)
+			`jsonpath={range .items[*]}{.status.phase}|{.spec.hostNetwork}|{.status.podIP}{"\n"}{end}`)
 		for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
-			f := strings.Fields(l)
+			// hostNetwork is empty, not "false", for ordinary pods: split on
+			// a separator, not on whitespace.
+			f := strings.Split(l, "|")
 			if len(f) == 3 && (f[0] == "Running" || f[0] == "Pending") && f[1] != "true" {
 				if a, err := netip.ParseAddr(f[2]); err == nil {
 					u[a] = true
@@ -529,7 +531,7 @@ spec:
 		return best
 	}
 	cursor := placeholders(1, 0)[0]
-	for round := 1; round <= 12; round++ {
+	for round := 1; round <= 30; round++ {
 		u := inUse()
 		gap := 0
 		for a := next(cursor); a != target; a = next(a) {
@@ -541,9 +543,16 @@ spec:
 			t.Logf("walked node %s's IPAM round to %s in %d round(s) of placeholder pods", node, target, round)
 			return
 		}
+		// Near the target go one pod at a time, so a miscounted address can
+		// overshoot by one at most, not by a whole batch.
 		n := gap
-		if n > 60 {
+		switch {
+		case n > 60:
 			n = 60
+		case n > 5:
+			n -= 5
+		default:
+			n = 1
 		}
 		cursor = furthest(cursor, placeholders(n, round))
 	}
