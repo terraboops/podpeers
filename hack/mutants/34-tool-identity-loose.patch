@@ -1,0 +1,21 @@
+# Mutant 34-tool-identity-loose: breaks the protection for "each exact-name tool accepts exactly its own node identity".
+# Bug introduced: rancher-desktop's entry accepts any k3s node, so another k3s cluster (orbstack's, colima's, a remote one) passes under that name.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/guard/
+# unit-run: TestCheckNodes
+# unit-expect: want allowed=false
+# e2e-run: TestForgedToolIdentities
+# e2e-expect: under "rancher-desktop": want refusal by the node gate
+--- a/internal/guard/guard.go
++++ b/internal/guard/guard.go
+@@ -124,7 +124,7 @@ func Check(t Target, allowContext string) Decision {
+ // do kubeadm-mode Docker Desktop's nodes, which carry no kind provider ID.
+ var exactNameNodes = map[string]string{
+ 	"colima":          `^k3s://colima$`,
+-	"rancher-desktop": `^k3s://lima-rancher-desktop$`,
++	"rancher-desktop": `^k3s://`,
+ 	"orbstack":        `^k3s://orbstack$`,
+ 	"docker-desktop":  `^kind://[a-z]+/desktop/desktop-(control-plane|worker)[0-9]*$`,
+ }

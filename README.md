@@ -174,7 +174,7 @@ gates before any pod is touched:
    | `k3d-NAME` | `k3s://k3d-NAME-server-N`, `-agent-N` | observed: the e2e cluster, every run |
    | `kind-NAME` | `kind://<runtime>/NAME/NAME-control-plane`, `-worker…` | observed once on a throwaway kind cluster (kind 0.31) |
    | `colima` | `k3s://colima` | observed once (colima 0.10.3, run with its own HOME and KUBECONFIG; `check-context` allowed it) |
-   | `rancher-desktop`, `orbstack`, `docker-desktop` | as above | **asserted** from each tool's documented default, not observed: not installed here, and installing them switches the default kubeconfig's context |
+   | `rancher-desktop`, `orbstack`, `docker-desktop` | as above | **asserted** that the tools report these, from each tool's documented default: not installed here, and installing them switches the default kubeconfig's context. What the gate does with each string *is* observed: the e2e suite forges each identity on a throwaway k3s node and requires it to be allowed under its own tool's name and refused under every other local name |
    | `minikube` | none | refuses every node |
 
    If an asserted entry is wrong, assume this: the gate accepts, under that
@@ -355,6 +355,7 @@ Named cases:
 | non-local context name for a reachable cluster | refused, exit 2, nothing modified |
 | local-looking context (`k3d-elsewhere`, and each exact-name tool's context: `colima`, `rancher-desktop`, `orbstack`, `docker-desktop`, `minikube`) answered by another cluster's nodes, as through a tunnel | refused by the node gate, exit 2, nothing modified, foreign node names not echoed |
 | a real TCP tunnel to the test cluster under its own context name | **allowed**: the documented residual, pinned so the README cannot drift from it |
+| each exact-name tool's node identity (`k3s://lima-rancher-desktop`, `k3s://orbstack`, `kind://docker/desktop/desktop-control-plane`, `k3s://colima`) forged on a throwaway k3s node | allowed only under that tool's context name; refused by the node gate under every other local name |
 | suggestions from real traffic | API server accepts every policy (dry run); each rule names its peer, direction and port and the connections observed behind it, DNS is flagged ASSUMED; the gap list states the window, the weekly traffic it likely missed, and the egress each workload would lose |
 | connection older than a policy | INCONCLUSIVE, while new connects are blocked |
 | MCP over stdio | answers from the real capture; `summary`, `query`, `suggest_policies`, `peers` and `list_pods` return exactly what `render -format text`, `query`, `suggest` and the capture file (which the web UI embeds) say |
