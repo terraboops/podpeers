@@ -369,6 +369,7 @@ Named cases:
 | a finished pod still reporting an address the node's IPAM gave to a running pod | the running pod owns it: edges and rules name it, not the finished pod's namespace |
 | flows whose observers were not captured the second time | INCONCLUSIVE (exit 5), not OK |
 | `serve` on a real capture | its own origin answered; a rebound Host (421) and a foreign Origin (403) refused; a 20-deep cyclic GraphQL query cut off in under a second |
+| `serve` as a pod under a 256 MiB cgroup memory limit, sent the same cyclic query | refused with one error in under a second; the container never restarts, its memory peak stays under the cap (about 152 MiB); with the bound removed (mutant), the container is OOM-killed |
 | a local context whose loopback API server is reached through a `proxy-url` | refused, exit 2, nothing modified |
 
 CI runs both suites on every push. The e2e suite runs on a k3d cluster on the
@@ -398,9 +399,6 @@ Silence is not a pass, so these are written down:
 - **DNS rebinding through a real browser.** The server side is proven against
   the real binary (foreign Host and Origin refused); whether a given browser
   would deliver a rebound request is the browser's behaviour, not podpeers'.
-- **The GraphQL bound, broken.** The e2e test proves the bound holds through
-  the real binary; the mutant that removes it is unit-only, because unbounded
-  the real query would run the test machine's memory into gigabytes.
 - **Graphviz versions other than the ones tried.** CI parses hostile DOT
   output with Ubuntu's Graphviz (2.43); 9.0 was also tried. Both read even the
   older `%q` quoting safely, so the escaping is defence in depth; other

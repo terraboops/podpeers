@@ -1,0 +1,21 @@
+# Mutant 35-graphql-partial-answer: breaks the protection for "a refused query answers one error and no data".
+# Bug introduced: a query cut off by the budget answers its partial, zeroed data as if it had succeeded.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/gql/
+# unit-run: TestCyclicQueryIsBounded
+# unit-expect: should answer one error and no data
+# e2e-run: TestAuditFixes/serve_under
+# e2e-expect: should be refused by the bound under the cap
+--- a/internal/gql/gql.go
++++ b/internal/gql/gql.go
+@@ -380,7 +380,7 @@ func Do(s graphql.Schema, query string, vars map[string]any) *graphql.Result {
+ 	left.Store(MaxFields)
+ 	ctx := context.WithValue(context.Background(), budgetKey{}, left)
+ 	r := graphql.Do(graphql.Params{Schema: s, RequestString: query, VariableValues: vars, Context: ctx})
+-	if left.Load() < 0 {
++	if false && left.Load() < 0 {
+ 		return &graphql.Result{Errors: []gqlerrors.FormattedError{gqlerrors.NewFormattedError(fmt.Sprintf(
+ 			"query too large: it resolves more than %d fields; select fewer fields, nest less, or filter", MaxFields))}}
+ 	}

@@ -326,6 +326,110 @@ spec:
 		}
 	})
 
+	t.Run("serve under a hard memory cap refuses a cyclic query and survives", func(t *testing.T) {
+		// The real server, built for the node, runs as a pod with a 256 MiB
+		// memory limit (a cgroup the kernel enforces). Unbounded, the 20-deep
+		// cyclic query below needs gigabytes and the container is OOM-killed;
+		// bounded, it is refused and the container lives, its memory peak
+		// under the cap.
+		node := "k3d-" + strings.TrimPrefix(kubeCtx, "k3d-") + "-server-0"
+		arch, err := exec.Command("docker", "exec", node, "uname", "-m").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		goarch := map[string]string{"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64"}[strings.TrimSpace(string(arch))]
+		bin := filepath.Join(t.TempDir(), "podpeers")
+		build := exec.Command("go", "build", "-o", bin, "../../cmd/podpeers")
+		build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+goarch)
+		if out, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("building for %s: %v\n%s", goarch, err, out)
+		}
+		for _, cp := range [][]string{{"exec", node, "mkdir", "-p", "/opt/podpeers-e2e"}, {"cp", bin, node + ":/opt/podpeers-e2e/podpeers"},
+			{"cp", capture, node + ":/opt/podpeers-e2e/capture.json"}} {
+			if out, err := exec.Command("docker", cp...).CombinedOutput(); err != nil {
+				t.Fatalf("docker %v: %v\n%s", cp, err, out)
+			}
+		}
+		pod := filepath.Join(t.TempDir(), "gql.yaml")
+		os.WriteFile(pod, []byte(`apiVersion: v1
+kind: Pod
+metadata: {name: gqlcap, namespace: pp-xa, labels: {app: gqlcap}}
+spec:
+  nodeName: `+node+`
+  terminationGracePeriodSeconds: 1
+  restartPolicy: Always
+  containers:
+  - name: serve
+    image: busybox:1.36
+    imagePullPolicy: IfNotPresent
+    command: ["/opt/pp/podpeers", "serve", "-addr", "0.0.0.0:8080", "/opt/pp/capture.json"]
+    resources:
+      requests: {memory: 256Mi}
+      limits: {memory: 256Mi}
+    volumeMounts: [{name: pp, mountPath: /opt/pp, readOnly: true}]
+  volumes: [{name: pp, hostPath: {path: /opt/podpeers-e2e, type: Directory}}]
+`), 0o644)
+		kubectl(t, "apply", "-f", pod)
+		defer exec.Command("kubectl", "--kubeconfig", kubeconfig, "--context", kubeCtx, "delete", "-f", pod, "--wait=false").Run()
+		kubectl(t, "wait", "-n", "pp-xa", "--for=condition=Ready", "--timeout=60s", "pod/gqlcap")
+		max := strings.TrimSpace(kubectl(t, "exec", "-n", "pp-xa", "gqlcap", "--", "cat", "/sys/fs/cgroup/memory.max"))
+		if max != "268435456" {
+			t.Fatalf("precondition: the container's cgroup memory.max is %q, want 268435456 (256 MiB)", max)
+		}
+
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := strings.Split(l.Addr().String(), ":")[1]
+		l.Close()
+		pf := exec.Command("kubectl", "--kubeconfig", kubeconfig, "--context", kubeCtx, "port-forward", "-n", "pp-xa", "pod/gqlcap", port+":8080")
+		if err := pf.Start(); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { pf.Process.Kill(); pf.Wait() }()
+		addr := "127.0.0.1:" + port
+		get := func(query string) (int, string, error) {
+			resp, err := (&http.Client{Timeout: 60 * time.Second}).Get("http://" + addr + "/graphql?query=" + url.QueryEscape(query))
+			if err != nil {
+				return 0, "", err
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			return resp.StatusCode, string(b), nil
+		}
+		for i := 0; i < 50; i++ {
+			if c, _, err := get("{ window { interval } }"); err == nil && c == 200 {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		q := "id"
+		for i := 0; i < 20; i++ {
+			q = "id edges { pod { " + q + " } }"
+		}
+		start := time.Now()
+		c, body, err := get("{ pods { " + q + " } }")
+		took := time.Since(start).Round(time.Millisecond)
+		state := strings.TrimSpace(kubectl(t, "get", "pod", "-n", "pp-xa", "gqlcap", "-o",
+			"jsonpath={.status.containerStatuses[0].restartCount} {.status.containerStatuses[0].lastState.terminated.reason}"))
+		t.Logf("20-deep cyclic query under a 256 MiB cap: status %d, %d bytes, %s, err=%v; container restarts/last reason: %q", c, len(body), took, err, state)
+		if err != nil || !strings.Contains(body, "query too large") {
+			t.Fatalf("the cyclic query should be refused by the bound under the cap (container restarts/last reason: %q)", state)
+		}
+		if state != "0" {
+			t.Fatalf("the server died under the cap (restarts/last reason: %q)", state)
+		}
+		if c, body, _ := get("{ pods { id } }"); c != 200 || !strings.Contains(body, "pp-xa/gw") {
+			t.Fatalf("the server should still answer after refusing: %d %.200s", c, body)
+		}
+		// memory.peak needs a 5.19+ kernel; where it exists, log how close it came.
+		if peak, err := exec.Command("kubectl", "--kubeconfig", kubeconfig, "--context", kubeCtx, "exec", "-n", "pp-xa", "gqlcap", "--",
+			"cat", "/sys/fs/cgroup/memory.peak").Output(); err == nil {
+			t.Logf("cgroup memory.peak %s bytes of memory.max %s", strings.TrimSpace(string(peak)), max)
+		}
+	})
+
 	t.Run("a loopback API server behind a proxy-url is refused before anything is touched", func(t *testing.T) {
 		cfg, err := clientcmd.LoadFromFile(kubeconfig)
 		if err != nil {

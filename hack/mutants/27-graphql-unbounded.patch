@@ -3,22 +3,22 @@
 # hack/mutants.sh applies this in a scratch worktree and requires the tests
 # below to FAIL, with output matching the expect pattern (so they fail for the
 # right reason, not just any reason).
-# Unit-only: unbounded, the real-cluster query would run the serve process
-# into gigabytes on the test machine; the e2e test proves the bound holds
-# through the real binary, the unit test that removing it is caught.
+# On the real cluster the server runs under a 256 MiB cgroup memory limit, so
+# unbounded the query gets it OOM-killed there instead of eating the test
+# machine's memory.
 # unit-pkg: ./internal/gql/
 # unit-run: TestCyclicQueryIsBounded
-# unit-expect: a query this nested should be refused
-# e2e-run: -
-# e2e-expect: -
+# unit-expect: should answer one error and no data|a query this nested should be refused
+# e2e-run: TestAuditFixes/serve_under
+# e2e-expect: should be refused by the bound under the cap
 --- a/internal/gql/gql.go
 +++ b/internal/gql/gql.go
-@@ -338,7 +338,7 @@ type budgetKey struct{}
- 
- func budgeted(next graphql.FieldResolveFn) graphql.FieldResolveFn {
+@@ -344,7 +344,7 @@ type budgetKey struct{}
+ // 74 MB response at 430 MiB on a real capture.
+ func budgeted(next graphql.FieldResolveFn, zero any) graphql.FieldResolveFn {
  	return func(p graphql.ResolveParams) (any, error) {
 -		if left, ok := p.Context.Value(budgetKey{}).(*atomic.Int64); ok && left.Add(-1) < 0 {
 +		if left, ok := p.Context.Value(budgetKey{}).(*atomic.Int64); ok && false && left.Add(-1) < 0 {
- 			return nil, fmt.Errorf("query too large: it resolves more than %d fields; select fewer fields, nest less, or filter", MaxFields)
+ 			return zero, nil
  		}
  		return next(p)

@@ -164,6 +164,11 @@ func TestCyclicQueryIsBounded(t *testing.T) {
 	}
 	start := time.Now()
 	r := Do(s, `{ pods { `+q+` } }`, nil)
+	// One error and no data: an error per remaining field would itself grow
+	// with the query (measured on a real capture: a 74 MB response).
+	if len(r.Errors) != 1 || r.Data != nil {
+		t.Fatalf("a refused query should answer one error and no data, got %d errors", len(r.Errors))
+	}
 	if !r.HasErrors() || !strings.Contains(r.Errors[0].Message, "query too large") {
 		t.Fatalf("a query this nested should be refused, got %d errors", len(r.Errors))
 	}

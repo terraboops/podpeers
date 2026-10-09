@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/graphql-go/graphql"
+	"github.com/graphql-go/graphql/gqlerrors"
 
 	"github.com/terraboops/podpeers/internal/graph"
 )
@@ -314,7 +315,7 @@ func NewSchema(r graph.Result) (graphql.Schema, error) {
 	}
 	// The schema is cyclic (pod -> edges -> pod -> ...), so a short query can
 	// ask for work exponential in its nesting. Every field resolution draws on
-	// a per-query budget; once it is spent, fields fail instead of expanding.
+	// a per-query budget; once it is spent, fields stop expanding.
 	for name, t := range s.TypeMap() {
 		o, ok := t.(*graphql.Object)
 		if !ok || strings.HasPrefix(name, "__") {
@@ -322,7 +323,7 @@ func NewSchema(r graph.Result) (graphql.Schema, error) {
 		}
 		for _, f := range o.Fields() {
 			if f.Resolve != nil {
-				f.Resolve = budgeted(f.Resolve)
+				f.Resolve = budgeted(f.Resolve, zeroOf(f.Type))
 			}
 		}
 	}
@@ -336,13 +337,41 @@ var MaxFields int64 = 250000
 
 type budgetKey struct{}
 
-func budgeted(next graphql.FieldResolveFn) graphql.FieldResolveFn {
+// budgeted makes a resolver draw on the query's budget. Once it is spent the
+// field resolves to a cheap zero of its own type, so nothing expands further.
+// Do then discards the data and answers one error: returning an error (with
+// its full path) per refused field is what made a refusal itself huge, a
+// 74 MB response at 430 MiB on a real capture.
+func budgeted(next graphql.FieldResolveFn, zero any) graphql.FieldResolveFn {
 	return func(p graphql.ResolveParams) (any, error) {
 		if left, ok := p.Context.Value(budgetKey{}).(*atomic.Int64); ok && left.Add(-1) < 0 {
-			return nil, fmt.Errorf("query too large: it resolves more than %d fields; select fewer fields, nest less, or filter", MaxFields)
+			return zero, nil
 		}
 		return next(p)
 	}
+}
+
+// zeroOf is the cheapest value a field of type t can resolve to without
+// expanding: an empty list, a zero scalar, or null for an object.
+func zeroOf(t graphql.Output) any {
+	if nn, ok := t.(*graphql.NonNull); ok {
+		t = nn.OfType
+	}
+	switch tt := t.(type) {
+	case *graphql.List:
+		return []any{}
+	case *graphql.Scalar:
+		switch tt.Name() {
+		case "Int":
+			return 0
+		case "Float":
+			return 0.0
+		case "Boolean":
+			return false
+		}
+		return ""
+	}
+	return nil
 }
 
 // Do runs one query and returns the standard GraphQL response.
@@ -350,5 +379,10 @@ func Do(s graphql.Schema, query string, vars map[string]any) *graphql.Result {
 	left := new(atomic.Int64)
 	left.Store(MaxFields)
 	ctx := context.WithValue(context.Background(), budgetKey{}, left)
-	return graphql.Do(graphql.Params{Schema: s, RequestString: query, VariableValues: vars, Context: ctx})
+	r := graphql.Do(graphql.Params{Schema: s, RequestString: query, VariableValues: vars, Context: ctx})
+	if left.Load() < 0 {
+		return &graphql.Result{Errors: []gqlerrors.FormattedError{gqlerrors.NewFormattedError(fmt.Sprintf(
+			"query too large: it resolves more than %d fields; select fewer fields, nest less, or filter", MaxFields))}}
+	}
+	return r
 }
