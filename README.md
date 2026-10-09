@@ -332,7 +332,8 @@ policy.
 ```bash
 make test   # unit tests, race detector
 make e2e    # spins up a throwaway two-node k3d cluster and runs the real-cluster suite (needs helm, k3d, kwokctl)
-make ui     # drives the web UI in headless Chrome: groups, both views, the GraphQL console
+make ui     # drives the web UI in headless Chrome: groups, both views, the GraphQL console,
+            # and a hostile page's DNS rebinding and cross-site POST against the server
 ```
 
 The end-to-end suite runs the real binary against **real pods with known
@@ -372,6 +373,7 @@ Named cases:
 | a finished pod still reporting an address the node's IPAM gave to a running pod | the running pod owns it: edges and rules name it, not the finished pod's namespace |
 | flows whose observers were not captured the second time | INCONCLUSIVE (exit 5), not OK |
 | `serve` on a real capture | its own origin answered; a rebound Host (421) and a foreign Origin (403) refused; a 20-deep cyclic GraphQL query cut off in under a second |
+| a hostile page in a real browser (`make ui`, headless Chrome): DNS rebinding (the attacker's name resolved to 127.0.0.1) and a cross-site POST | Chrome 155 as shipped blocks both itself (Local Network Access). With those checks off, standing in for a browser without them, both reach podpeers: rebinding gets 421, the POST 403, and the page reads no capture data; the server's own page still reads it. With the guard removed, the rebinding page reads the capture |
 | `serve` as a pod under a 256 MiB cgroup memory limit, sent the same cyclic query | refused with one error in under a second; the container never restarts, its memory peak stays under the cap (about 152 MiB); with the bound removed (mutant), the container is OOM-killed |
 | a local context whose loopback API server is reached through a `proxy-url` | refused, exit 2, nothing modified |
 
@@ -399,9 +401,6 @@ outside the selector is touched.
 
 Silence is not a pass, so these are written down:
 
-- **DNS rebinding through a real browser.** The server side is proven against
-  the real binary (foreign Host and Origin refused); whether a given browser
-  would deliver a rebound request is the browser's behaviour, not podpeers'.
 - **Graphviz versions other than the ones tried.** CI parses hostile DOT
   output with Ubuntu's Graphviz (2.43); 9.0 was also tried. Both read even the
   older `%q` quoting safely, so the escaping is defence in depth; other

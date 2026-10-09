@@ -4,6 +4,8 @@
 # be shown in the right group, both views must work, the page must raise no
 # errors, and the GraphQL console must answer exactly what `podpeers query`
 # answers. Unit tests cannot see any of this: the layout runs in the browser.
+# Then a hostile page in the same browser tries DNS rebinding and a
+# cross-site POST against the server (hack/ui/rebind.mjs).
 #
 #   hack/check-ui.sh                  check
 #   RENDER_OUT=dir hack/check-ui.sh   also keep screenshots to look at
@@ -31,3 +33,6 @@ cp hack/ui/check.mjs "$work/"
 shots=""
 if [ -n "${RENDER_OUT:-}" ]; then mkdir -p "$RENDER_OUT"; shots="$(cd "$RENDER_OUT" && pwd)"; fi
 (cd "$work" && node check.mjs "http://127.0.0.1:$PORT/" "$QUERY" "$want" $shots)
+# A hostile page in a real browser: DNS rebinding and a cross-site POST.
+cp hack/ui/rebind.mjs "$work/"
+(cd "$work" && node rebind.mjs "$PORT")
