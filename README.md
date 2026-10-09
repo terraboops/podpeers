@@ -348,6 +348,7 @@ Named cases:
 | Helm skill workflow | good policy OK; intruder blocked; break invisible to `helm test` caught by diff; break visible to `helm test` caught and rolled back |
 | connection older than a policy, while new connects fail | BROKEN (`blocked`), not OK: failed reconnects are not the policy being exercised |
 | skill script given a `HELM_KUBEAPISERVER` override, or a policy file with a ConfigMap in it | refused before anything is applied |
+| `verify` where one replica's debug container really cannot start (its image exists on the other node only) while its sibling is observed | the traffic diff alone says OK; the skill says INCONCLUSIVE (exit 7), because that replica was never checked under the policy |
 | pod whose controller ownerReference carries ESC, BEL and a `---` document | the API server accepts it (k3s 1.31); `suggest` keeps it inside comments, escaped; `kubectl apply` of the output creates NetworkPolicies only |
 | a Deployment and a bare Pod with the same name | two policies with two names, both present after `kubectl apply` |
 | a client in one namespace calling a same-labelled Service in another | no rule for the namespace the Service does not select (control: the right namespace gets it) |
@@ -380,12 +381,6 @@ outside the selector is touched.
 
 Silence is not a pass, so these are written down:
 
-- **The skill script's downgrade of a partial capture to INCONCLUSIVE.** It
-  needs exactly one replica's debug container to fail during `verify` while its
-  siblings are observed. The script offers no way to cause that, and a wrapper
-  that fakes it would test the wrapper. The diff it relies on is proven on the
-  cluster (flows nobody re-observed are INCONCLUSIVE); the script branch is
-  read, not run.
 - **DNS rebinding through a real browser.** The server side is proven against
   the real binary (foreign Host and Origin refused); whether a given browser
   would deliver a rebound request is the browser's behaviour, not podpeers'.

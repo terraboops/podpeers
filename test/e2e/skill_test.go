@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	netv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/yaml"
@@ -320,6 +321,80 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		}
 		if got := kubectl(t, "get", "configmap", "-n", helmNS, "-o", "name"); strings.Contains(got, "e2e-smuggled") || strings.Contains(string(out), "dry run") {
 			t.Fatalf("something was applied despite the refusal: %s", got)
+		}
+	})
+
+	t.Run("verify says INCONCLUSIVE when a pod was not observed under the policy, even with a clean diff", func(t *testing.T) {
+		// Two web replicas, one per node (required anti-affinity, and no surge so
+		// restarts keep it), and api on the server node. The
+		// debug image exists only on the server node (tagged in its
+		// containerd), so in the after-capture the agent's web replica
+		// genuinely fails to start its debug container (ErrImagePull) while
+		// its sibling is observed. Every flow is still seen, so the diff is
+		// clean; only the partial capture says this replica was never checked.
+		kubectl(t, "delete", "networkpolicy", "--all", "-n", helmNS)
+		kubectl(t, "patch", "deployment", "shop-api", "-n", helmNS, "--type=merge", "-p",
+			`{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/hostname":"k3d-podpeers-e2e-server-0"}}}}}`)
+		kubectl(t, "patch", "deployment", "shop-web", "-n", helmNS, "--type=merge", "-p",
+			`{"spec":{"replicas":2,"strategy":{"rollingUpdate":{"maxSurge":0,"maxUnavailable":1}},"template":{"spec":{"affinity":{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"topologyKey":"kubernetes.io/hostname","labelSelector":{"matchLabels":{"app.kubernetes.io/component":"web"}}}]}}}}}}`)
+		kubectl(t, "rollout", "status", "-n", helmNS, "deployment/shop-api", "--timeout=120s")
+		kubectl(t, "rollout", "status", "-n", helmNS, "deployment/shop-web", "--timeout=120s")
+		// Old replicas linger while terminating; count only the live ones.
+		var nodes []string
+		for i := 0; i < 30; i++ {
+			nodes = nil
+			for _, l := range strings.Split(strings.TrimSpace(kubectl(t, "get", "pods", "-n", helmNS, "-l", "app.kubernetes.io/component=web", "-o",
+				`jsonpath={range .items[*]}{.status.phase} {.spec.nodeName} {.metadata.deletionTimestamp}{"\n"}{end}`)), "\n") {
+				if f := strings.Fields(l); len(f) == 2 && f[0] == "Running" {
+					nodes = append(nodes, f[1])
+				}
+			}
+			if len(nodes) == 2 && nodes[0] != nodes[1] {
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+		if len(nodes) != 2 || nodes[0] == nodes[1] {
+			t.Fatalf("precondition: want one web replica per node, got %v", nodes)
+		}
+		if out, err := exec.Command("docker", "exec", "k3d-podpeers-e2e-server-0", "ctr", "-n", "k8s.io", "images", "tag", "--force",
+			"docker.io/library/busybox:1.36", "docker.io/podpeers-e2e/debug:server-only").CombinedOutput(); err != nil {
+			t.Fatalf("tagging the server-only debug image: %v\n%s", err, out)
+		}
+		work := filepath.Join(outDir, "skill-partial")
+		os.RemoveAll(work)
+		os.MkdirAll(work, 0o755)
+		if r := skill(t, "baseline", "--release", "shop", "--duration", "30s", "--out", work); r.code != 0 {
+			t.Fatalf("baseline exit %d\n%s", r.code, r.stdout)
+		}
+		r := skill(t, "verify", "--release", "shop", "--no-apply", "--baseline", filepath.Join(work, "baseline.json"),
+			"--duration", "30s", "--image", "podpeers-e2e/debug:server-only")
+		t.Logf("exit=%d\n%s", r.code, r.stdout)
+		after := load(t, filepath.Join(work, "after.json"))
+		failed, observed := 0, 0
+		for _, p := range after.Pods {
+			if !strings.Contains(p.Workload, "shop-web") {
+				continue
+			}
+			switch p.Probe.Status {
+			case "failed":
+				failed++
+				if !strings.Contains(p.Probe.Reason, "ImagePull") && !strings.Contains(p.Probe.Reason, "ErrImage") {
+					t.Errorf("web replica failed for an unexpected reason: %s", p.Probe.Reason)
+				}
+			case "observed":
+				observed++
+			}
+		}
+		if failed != 1 || observed != 1 {
+			t.Fatalf("precondition: want one web replica failed and one observed after, got failed=%d observed=%d", failed, observed)
+		}
+		diff, _ := os.ReadFile(filepath.Join(work, "diff.txt"))
+		if !strings.Contains(string(diff), "VERDICT: OK") {
+			t.Fatalf("precondition: the diff should be clean, so only the partial capture can say INCONCLUSIVE:\n%s", diff)
+		}
+		if r.code != 7 || !strings.Contains(r.stdout, "verdict: INCONCLUSIVE: helm test passed, but some pods could not be observed under the policy") {
+			t.Fatalf("a replica never observed under the policy: want INCONCLUSIVE (exit 7), got %d", r.code)
 		}
 	})
 }

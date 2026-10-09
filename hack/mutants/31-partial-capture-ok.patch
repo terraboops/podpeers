@@ -1,0 +1,23 @@
+# Mutant 31-partial-capture-ok: breaks the protection for "verify is INCONCLUSIVE when a pod was not observed under the policy".
+# Bug introduced: a partial after-capture with a clean diff verifies OK, though one replica was never checked under the policy.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# Real-cluster only: the branch is in the skill script, and the failure it
+# reacts to is a debug container that really cannot start on one node.
+# unit-pkg: -
+# unit-run: -
+# unit-expect: -
+# e2e-run: TestSkillHelmWorkflow/verify_says
+# e2e-expect: want INCONCLUSIVE \(exit 7\)
+--- a/skills/podpeers-netpol/scripts/netpol-check.sh
++++ b/skills/podpeers-netpol/scripts/netpol-check.sh
+@@ -206,7 +206,7 @@ case "$CMD" in
+       VERDICT="BROKEN: helm test passed, but traffic the app relied on is now blocked or missing" CODE=4
+     elif [ "$DIFF_CODE" = 5 ]; then
+       VERDICT="INCONCLUSIVE: helm test passed, but some flows were never exercised under the policy (only seen on connections opened before it, or their pods were not observed)" CODE=7
+-    elif [ "$CAPTURE_CODE" = 3 ]; then
++    elif false && [ "$CAPTURE_CODE" = 3 ]; then
+       VERDICT="INCONCLUSIVE: helm test passed, but some pods could not be observed under the policy (see $OUT/after.json.log)" CODE=7
+     fi
+     {

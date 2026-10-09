@@ -23,7 +23,7 @@ set -euo pipefail
 PODPEERS="${PODPEERS:-podpeers}"
 RELEASE="" NS="" CONTEXT="" KCFG="${KUBECONFIG:-}" SELECTOR="" ALLOW=""
 DURATION="40s" INTERVAL="1s" OUT="./podpeers-netpol" POLICY="" BASELINE=""
-SETTLE=8 WARMUP=8 ROLLBACK_ON_FAIL=0 RESTART=1 APPLY=1 OUT_SET=0
+SETTLE=8 WARMUP=8 ROLLBACK_ON_FAIL=0 RESTART=1 APPLY=1 OUT_SET=0 IMAGE=""
 
 die() { echo "netpol-check: $*" >&2; exit 1; }
 say() { echo "netpol-check: $*" >&2; }
@@ -43,6 +43,8 @@ Options:
   --selector SEL          pods to observe (default: app.kubernetes.io/instance=<release>)
   --duration D            capture window (default 40s; use much longer for real workloads)
   --interval I            sample interval (default 1s)
+  --image IMAGE           debug container image for the captures (default: podpeers' busybox;
+                          use a mirrored copy on clusters that cannot pull from Docker Hub)
   --out DIR               where captures, policy and verdict go (default ./podpeers-netpol;
                           for verify, the --baseline file's directory)
   --settle SECONDS        wait after applying a policy before verifying (default 8)
@@ -67,6 +69,7 @@ while [ $# -gt 0 ]; do
     --selector|-l) SELECTOR="$2"; shift 2 ;;
     --duration) DURATION="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
+    --image) IMAGE="$2"; shift 2 ;;
     --out) OUT="$2"; OUT_SET=1; shift 2 ;;
     --policy) POLICY="$2"; shift 2 ;;
     --baseline) BASELINE="$2"; shift 2 ;;
@@ -117,7 +120,7 @@ done
 # runs inside the window. Sets TEST_OK=1/0 and CAPTURE_CODE.
 capture_with_test() {
   local out="$1" log="$2" pid
-  "$PODPEERS" capture "${P[@]}" -n "$NS" -l "$SELECTOR" \
+  "$PODPEERS" capture "${P[@]}" -n "$NS" -l "$SELECTOR" ${IMAGE:+--image "$IMAGE"} \
     --duration "$DURATION" --interval "$INTERVAL" -o "$out" --summary none 2>"$out.log" &
   pid=$!
   sleep "$WARMUP"   # let the samplers start, so the test's connections are seen

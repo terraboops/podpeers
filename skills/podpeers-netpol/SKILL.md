@@ -183,6 +183,11 @@ the restart, a policy that will break the app on its next restart can verify
 "OK". This was observed for real while building this skill. Use `--no-restart`
 only if restarting is unacceptable; expect INCONCLUSIVE.
 
+If the cluster cannot pull podpeers' debug image (busybox) from Docker Hub,
+pass `--image` with a mirrored copy to both `baseline` and `verify`. A pod
+whose debug container cannot start is not observed, and a verify in which
+any pod went unobserved is INCONCLUSIVE, never OK.
+
 | exit | verdict | what it means |
 |------|---------|---------------|
 | 0 | OK | helm test passed **and** no flow was blocked or lost |
