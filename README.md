@@ -370,7 +370,7 @@ Named cases:
 | pod whose controller ownerReference carries ESC, BEL and a `---` document | the API server accepts it (k3s 1.31); `suggest` keeps it inside comments, escaped; `kubectl apply` of the output creates NetworkPolicies only |
 | a Deployment and a bare Pod with the same name | two policies with two names, both present after `kubectl apply` |
 | a client in one namespace calling a same-labelled Service in another | no rule for the namespace the Service does not select (control: the right namespace gets it) |
-| a finished pod still reporting an address the node's IPAM gave to a running pod | the running pod owns it: edges and rules name it, not the finished pod's namespace |
+| a finished pod still reporting an address that the node's own IPAM, walked round its range by placeholder pods (nothing touches IPAM state), hands to a new running pod | the running pod owns it: edges and rules name it, not the finished pod's namespace |
 | flows whose observers were not captured the second time | INCONCLUSIVE (exit 5), not OK |
 | `serve` on a real capture | its own origin answered; a rebound Host (421) and a foreign Origin (403) refused; a 20-deep cyclic GraphQL query cut off in under a second |
 | a hostile page in a real browser (`make ui`, headless Chrome): DNS rebinding (the attacker's name resolved to 127.0.0.1) and a cross-site POST | Chrome 155 as shipped blocks both itself (Local Network Access); the older Chrome that CI's puppeteer downloads does not, delivers both, and podpeers refuses them. With those checks off, standing in for a browser without them, both reach podpeers: rebinding gets 421, the POST 403, and the page reads no capture data; the server's own page still reads it. With the guard removed, the rebinding page reads the capture |
@@ -405,17 +405,21 @@ outside the selector is touched.
 
 Silence is not a pass, so these are written down:
 
+- **That Rancher Desktop, OrbStack and Docker Desktop report the node IDs the
+  node gate expects of them.** Those tools are not installed here, and
+  installing them rewrites the default kubeconfig and Docker context, which on
+  the machine this was built on point at production; that takes the
+  operator's say-so. What the gate does with each string is observed (forged
+  on a real k3s node), and a wrong entry can only refuse a genuine local
+  cluster. See the evidence table under Safety.
+- **That a remote cluster carrying your local cluster's exact identity is
+  refused.** It is not, and cannot be from the Kubernetes API alone (see
+  Safety); the suite pins it both ways, with a real tunnel and with a second
+  (KWOK) cluster, so this stays written down rather than hidden.
 - **Graphviz versions other than the ones tried.** CI parses hostile DOT
   output with Ubuntu's Graphviz (2.43); 9.0 was also tried. Both read even the
   older `%q` quoting safely, so the escaping is defence in depth; other
   versions were not tested.
-- **Address reuse on a busy node.** The e2e test fast-forwards the k3d node's
-  host-local IPAM to the finished pod's address rather than churning ~250 pods;
-  the reuse itself, and the finished pod still claiming the address, are real.
-  A simulated cluster (KWOK) cannot stand in here: its pods take addresses from
-  KWOK's own pool, with no CNI or kubelet behind them, and podpeers can only
-  observe a pod by running a debug container in it, which a KWOK pod never
-  runs.
 - **Whether a model heeds** the MCP server's note that cluster strings are
   data. That is model behaviour; the note's presence is tested.
 

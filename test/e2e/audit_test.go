@@ -68,19 +68,14 @@ spec:
 	kubectl(t, "wait", "-n", "pp-xb", "--for=condition=Ready", "--timeout=60s", "pod/client")
 	kubectl(t, "wait", "-n", "pp-xz", "--for=jsonpath={.status.phase}=Succeeded", "--timeout=60s", "pod/stale")
 
-	// Address reuse, for real: the stale pod has finished and still reports
-	// its IP. Point the node's host-local IPAM just below that address, and
-	// the next pod scheduled there is given it. This only fast-forwards the
-	// allocator a busy node would wrap around on its own.
-	if !strings.HasPrefix(kubeCtx, "k3d-") {
-		t.Fatalf("address reuse needs the k3d node's IPAM state; context %q is not k3d", kubeCtx)
-	}
+	// Address reuse, for real and unaided: the stale pod has finished and
+	// still reports its IP. The node's host-local IPAM hands out the next free
+	// address after its cursor and wraps at the end of the node's range, so
+	// placeholder pods walk the cursor round until the finished pod's address
+	// is next; then the reuser is created and the allocator gives it that
+	// address. Nothing touches IPAM state.
 	staleIP := netip.MustParseAddr(strings.TrimSpace(kubectl(t, "get", "pod", "-n", "pp-xz", "stale", "-o", "jsonpath={.status.podIP}")))
-	node := strings.TrimPrefix(kubeCtx, "k3d-") + "-agent-0"
-	if out, err := exec.Command("docker", "exec", "k3d-"+node, "sh", "-c",
-		"printf %s "+staleIP.Prev().String()+" > /var/lib/cni/networks/cbr0/last_reserved_ip.0").CombinedOutput(); err != nil {
-		t.Fatalf("setting the node's IPAM cursor: %v\n%s", err, out)
-	}
+	walkIPAMTo(t, "k3d-podpeers-e2e-agent-0", staleIP)
 	kubectl(t, "apply", "-f", reuser)
 	kubectl(t, "wait", "-n", "pp-xa", "--for=condition=Ready", "--timeout=60s", "pod/reuser")
 	reuserIP := strings.TrimSpace(kubectl(t, "get", "pod", "-n", "pp-xa", "reuser", "-o", "jsonpath={.status.podIP}"))
@@ -451,4 +446,106 @@ spec:
 			t.Fatalf("pp-xa/web gained %d debug container(s) despite the refusal", after-before)
 		}
 	})
+}
+
+// walkIPAMTo leaves node's host-local IPAM cursor just before target, using
+// only pods: placeholders take the free addresses between the cursor and the
+// target (at most 60 at a time, the node's pod limit permitting), and are
+// deleted again so the walk can go on round the range.
+func walkIPAMTo(t *testing.T, node string, target netip.Addr) {
+	t.Helper()
+	cidr := netip.MustParsePrefix(strings.TrimSpace(kubectl(t, "get", "node", node, "-o", "jsonpath={.spec.podCIDR}")))
+	first := cidr.Addr().Next().Next() // .1 is the bridge
+	last := first
+	for a := first; cidr.Contains(a.Next()); a = a.Next() {
+		last = a // the broadcast address is never handed out
+	}
+	next := func(a netip.Addr) netip.Addr {
+		if a == last {
+			return first
+		}
+		return a.Next()
+	}
+	inUse := func() map[netip.Addr]bool {
+		u := map[netip.Addr]bool{}
+		out := kubectl(t, "get", "pods", "-A", "--field-selector", "spec.nodeName="+node, "-o",
+			`jsonpath={range .items[*]}{.status.phase} {.spec.hostNetwork} {.status.podIP}{"\n"}{end}`)
+		for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+			f := strings.Fields(l)
+			if len(f) == 3 && (f[0] == "Running" || f[0] == "Pending") && f[1] != "true" {
+				if a, err := netip.ParseAddr(f[2]); err == nil {
+					u[a] = true
+				}
+			}
+		}
+		return u
+	}
+	placeholders := func(n, round int) []netip.Addr {
+		var docs []string
+		for i := 0; i < n; i++ {
+			docs = append(docs, fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata: {name: churn-%d-%d, namespace: pp-xz, labels: {app: churn}}
+spec:
+  nodeName: %s
+  terminationGracePeriodSeconds: 0
+  containers: [{name: main, image: busybox:1.36, imagePullPolicy: IfNotPresent, command: ["sleep", "3600"]}]`, round, i, node))
+		}
+		f := filepath.Join(t.TempDir(), "churn.yaml")
+		os.WriteFile(f, []byte(strings.Join(docs, "\n---\n")), 0o644)
+		kubectl(t, "apply", "-f", f)
+		var ips []netip.Addr
+		for i := 0; i < 120; i++ {
+			ips = nil
+			for _, w := range strings.Fields(kubectl(t, "get", "pods", "-n", "pp-xz", "-l", "app=churn", "-o", "jsonpath={.items[*].status.podIP}")) {
+				if a, err := netip.ParseAddr(w); err == nil {
+					ips = append(ips, a)
+				}
+			}
+			if len(ips) == n {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		kubectl(t, "delete", "pods", "-n", "pp-xz", "-l", "app=churn", "--wait=true", "--timeout=120s")
+		if len(ips) != n {
+			t.Fatalf("only %d of %d placeholder pods got an address", len(ips), n)
+		}
+		return ips
+	}
+	// furthest returns the address handed out last: the one furthest round
+	// the range from the cursor.
+	furthest := func(from netip.Addr, ips []netip.Addr) netip.Addr {
+		best, bestD := from, -1
+		for _, a := range ips {
+			d := 0
+			for b := next(from); b != a; b = next(b) {
+				d++
+			}
+			if d > bestD {
+				best, bestD = a, d
+			}
+		}
+		return best
+	}
+	cursor := placeholders(1, 0)[0]
+	for round := 1; round <= 12; round++ {
+		u := inUse()
+		gap := 0
+		for a := next(cursor); a != target; a = next(a) {
+			if !u[a] {
+				gap++
+			}
+		}
+		if gap == 0 {
+			t.Logf("walked node %s's IPAM round to %s in %d round(s) of placeholder pods", node, target, round)
+			return
+		}
+		n := gap
+		if n > 60 {
+			n = 60
+		}
+		cursor = furthest(cursor, placeholders(n, round))
+	}
+	t.Fatalf("could not walk node %s's IPAM round to %s", node, target)
 }
