@@ -102,3 +102,84 @@ func kubectlWith(t *testing.T, cfg *clientcmdapi.Config, ctx string, args ...str
 	os.Remove(p)
 	return string(out)
 }
+
+// TestTwinClusterCarryingLocalIdentity pins the node gate's same-identity
+// residual with a genuinely different cluster, not a tunnel back to the same
+// one: a KWOK cluster (its own etcd and API server, its own CA) given one fake
+// node named exactly like the e2e cluster's server, under the e2e cluster's
+// context name, is allowed. Node IDs are names, and this is what that means.
+// The README says so; if podpeers ever tells such a twin apart, this fails
+// and the README must change with it.
+func TestTwinClusterCarryingLocalIdentity(t *testing.T) {
+	if _, err := exec.LookPath("kwokctl"); err != nil {
+		t.Fatal("kwokctl is required to stand up the twin cluster (go install sigs.k8s.io/kwok/cmd/kwokctl)")
+	}
+	const name = "pp-twin"
+	// kwokctl writes its kubeconfig (and switches its current context) in
+	// ~/.kube/config unless told otherwise: always give it this file.
+	kc := filepath.Join(t.TempDir(), "twin.kubeconfig")
+	kwokctl := func(args ...string) ([]byte, error) {
+		c := exec.Command("kwokctl", append(args, "--name", name, "--kubeconfig", kc)...)
+		c.Env = append(os.Environ(), "KUBECONFIG="+kc)
+		return c.CombinedOutput()
+	}
+	// And prove it: the default kubeconfig is byte-for-byte untouched.
+	home, _ := os.UserHomeDir()
+	defaultKC := filepath.Join(home, ".kube", "config")
+	before, _ := os.ReadFile(defaultKC)
+	defer func() {
+		if after, _ := os.ReadFile(defaultKC); string(after) != string(before) {
+			t.Errorf("kwokctl changed %s", defaultKC)
+		}
+	}()
+	kwokctl("delete", "cluster")
+	defer kwokctl("delete", "cluster")
+	if out, err := kwokctl("create", "cluster", "--runtime", "docker", "--wait", "2m"); err != nil {
+		t.Fatalf("creating the KWOK twin: %v\n%s", err, out)
+	}
+	twin, err := clientcmd.LoadFromFile(kc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ours, err := clientcmd.LoadFromFile(kubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := strings.TrimPrefix(kubeCtx, "k3d-") + "-server-0"
+	node = "k3d-" + node
+	if string(twin.Clusters["kwok-"+name].CertificateAuthorityData) == string(ours.Clusters[ours.Contexts[kubeCtx].Cluster].CertificateAuthorityData) {
+		t.Fatal("precondition: the twin should be a different cluster, with its own CA")
+	}
+	nodeYAML := filepath.Join(t.TempDir(), "node.yaml")
+	os.WriteFile(nodeYAML, []byte(`apiVersion: v1
+kind: Node
+metadata:
+  name: `+node+`
+  annotations: {kwok.x-k8s.io/node: fake}
+spec:
+  providerID: k3s://`+node+`
+`), 0o644)
+	if out, err := exec.Command("kubectl", "--kubeconfig", kc, "--context", "kwok-"+name, "apply", "-f", nodeYAML).CombinedOutput(); err != nil {
+		t.Fatalf("creating the twin's node: %v\n%s", err, out)
+	}
+	twin.Contexts[kubeCtx] = twin.Contexts["kwok-"+name]
+	twin.CurrentContext = kubeCtx
+	as := filepath.Join(t.TempDir(), "as-local.kubeconfig")
+	if err := clientcmd.WriteToFile(*twin, as); err != nil {
+		t.Fatal(err)
+	}
+	r := podpeers(context.Background(), t, "check-context", "--kubeconfig", as)
+	t.Logf("a KWOK twin (own API server and CA) whose node is named %s, as context %q: exit=%d %s", node, kubeCtx, r.code, strings.TrimSpace(r.stderr))
+	if r.code != 0 || strings.TrimSpace(r.stdout) != "allowed" {
+		t.Fatalf("the documented residual changed: a different cluster carrying the local identity was not allowed (exit %d); update the README", r.code)
+	}
+	// Control: the same twin under a name its node does not carry is refused.
+	twin.Contexts["k3d-elsewhere"] = twin.Contexts[kubeCtx]
+	twin.CurrentContext = "k3d-elsewhere"
+	if err := clientcmd.WriteToFile(*twin, as); err != nil {
+		t.Fatal(err)
+	}
+	if r := podpeers(context.Background(), t, "check-context", "--kubeconfig", as); r.code != 2 || !strings.Contains(r.stderr, "nodes of a different cluster") {
+		t.Fatalf("control: the twin as k3d-elsewhere should be refused by the node gate, got %d", r.code)
+	}
+}

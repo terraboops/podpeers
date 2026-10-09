@@ -67,6 +67,8 @@ jobs:
       - uses: azure/setup-helm@v4
       - name: install k3d
         run: curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=v5.8.3 bash
+      - name: install kwokctl (a second, simulated cluster for the node gate's same-identity test)
+        run: go install sigs.k8s.io/kwok/cmd/kwokctl@v0.7.0 && echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: end-to-end against a real local cluster
         run: make e2e
       - name: mutants against the real cluster (the e2e tests must fail when each protection is broken)

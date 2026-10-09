@@ -33,6 +33,7 @@ ui:
 # into your default kubeconfig.
 e2e: e2e-cluster
 	@command -v helm >/dev/null || (echo "e2e needs helm"; exit 1)
+	@command -v kwokctl >/dev/null || (echo "e2e needs kwokctl (go install sigs.k8s.io/kwok/cmd/kwokctl@v0.7.0)"; exit 1)
 	PODPEERS_E2E_KUBECONFIG=$(CURDIR)/.e2e/kubeconfig PODPEERS_E2E_OUT=$(CURDIR)/.e2e/out \
 		go test -tags e2e -count=1 -v -timeout 25m ./test/e2e/
 

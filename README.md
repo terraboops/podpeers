@@ -189,9 +189,11 @@ gates before any pod is touched:
    port: a remote k3d or kind cluster with the same name (kind's default
    `kind`, context `kind-kind`, is the likely one), or a remote colima or
    Rancher Desktop VM with its default node name. Assume podpeers treats such
-   a cluster as local and will modify its pods. The e2e suite pins this: a
-   real TCP tunnel to the test cluster under its own context name is allowed,
-   next to the test where a tunnel to a different identity is refused.
+   a cluster as local and will modify its pods. The e2e suite pins this from
+   two sides: a real TCP tunnel to the test cluster under its own context name
+   is allowed, and so is a genuinely different cluster (a KWOK cluster with its
+   own API server and CA) whose one node is named like the test cluster's,
+   while the same clusters under any other identity are refused.
 
    Why it cannot be closed from here: everything the Kubernetes API offers
    that could tell two clusters apart is either a name (node names and
@@ -329,7 +331,7 @@ policy.
 
 ```bash
 make test   # unit tests, race detector
-make e2e    # spins up a throwaway two-node k3d cluster and runs the real-cluster suite
+make e2e    # spins up a throwaway two-node k3d cluster and runs the real-cluster suite (needs helm, k3d, kwokctl)
 make ui     # drives the web UI in headless Chrome: groups, both views, the GraphQL console
 ```
 
@@ -355,6 +357,7 @@ Named cases:
 | non-local context name for a reachable cluster | refused, exit 2, nothing modified |
 | local-looking context (`k3d-elsewhere`, and each exact-name tool's context: `colima`, `rancher-desktop`, `orbstack`, `docker-desktop`, `minikube`) answered by another cluster's nodes, as through a tunnel | refused by the node gate, exit 2, nothing modified, foreign node names not echoed |
 | a real TCP tunnel to the test cluster under its own context name | **allowed**: the documented residual, pinned so the README cannot drift from it |
+| a genuinely different cluster (KWOK: its own etcd, API server and CA) given one fake node named like the test cluster's server, under the test cluster's context name | **allowed**: the same residual, shown with a second cluster rather than a tunnel; under any other name it is refused. The test also checks that `kwokctl` left `~/.kube/config` untouched |
 | each exact-name tool's node identity (`k3s://lima-rancher-desktop`, `k3s://orbstack`, `kind://docker/desktop/desktop-control-plane`, `k3s://colima`) forged on a throwaway k3s node | allowed only under that tool's context name; refused by the node gate under every other local name |
 | suggestions from real traffic | API server accepts every policy (dry run); each rule names its peer, direction and port and the connections observed behind it, DNS is flagged ASSUMED; the gap list states the window, the weekly traffic it likely missed, and the egress each workload would lose |
 | connection older than a policy | INCONCLUSIVE, while new connects are blocked |
@@ -406,6 +409,10 @@ Silence is not a pass, so these are written down:
 - **Address reuse on a busy node.** The e2e test fast-forwards the k3d node's
   host-local IPAM to the finished pod's address rather than churning ~250 pods;
   the reuse itself, and the finished pod still claiming the address, are real.
+  A simulated cluster (KWOK) cannot stand in here: its pods take addresses from
+  KWOK's own pool, with no CNI or kubelet behind them, and podpeers can only
+  observe a pod by running a debug container in it, which a KWOK pod never
+  runs.
 - **Whether a model heeds** the MCP server's note that cluster strings are
   data. That is model behaviour; the note's presence is tested.
 
