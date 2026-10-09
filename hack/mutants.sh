@@ -9,6 +9,9 @@
 #
 #   hack/mutants.sh            unit tests only (fast; runs in CI)
 #   hack/mutants.sh --e2e      also the real-cluster e2e tests (needs make e2e-cluster)
+#   hack/mutants.sh --ui       also the browser checks (hack/check-ui.sh: the web UI,
+#                              and a hostile page's DNS rebinding and cross-site POST)
+#                              for mutants that declare `ui-expect` (needs node and Chrome)
 #   hack/mutants.sh --e2e 03   only mutants whose name contains "03"
 #
 # A mutant only a real cluster can catch (e.g. kubelet log rotation) sets
@@ -18,8 +21,14 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
-E2E=0
-if [ "${1:-}" = "--e2e" ]; then E2E=1; shift; fi
+E2E=0 UI=0
+while true; do
+  case "${1:-}" in
+    --e2e) E2E=1; shift ;;
+    --ui) UI=1; shift ;;
+    *) break ;;
+  esac
+done
 FILTER="${1:-}"
 LOGS="$ROOT/.e2e/mutants"
 mkdir -p "$LOGS"
@@ -85,6 +94,10 @@ if ! (cd "$base" && go test -count=1 ./internal/... ./cmd/... ./test/skillscript
   echo "baseline unit tests FAIL; a mutant failing them would prove nothing (see $LOGS/baseline-unit.log)" >&2
   git worktree remove --force "$base"; exit 1
 fi
+if [ "$UI" = 1 ] && ! (cd "$base" && ./hack/check-ui.sh) >"$LOGS/baseline-ui.log" 2>&1; then
+  echo "baseline browser checks FAIL; see $LOGS/baseline-ui.log" >&2
+  git worktree remove --force "$base"; exit 1
+fi
 if [ "$E2E" = 1 ]; then
   # The top-level e2e tests the selected mutants rely on must pass unmutated.
   tops="$(e2e_tops | sort -u | paste -sd'|' -)"
@@ -123,13 +136,21 @@ for p in hack/mutants/*.patch; do
     e="$(check "$name" e2e "$wt" "$(field e2e-expect "$p")" env PODPEERS_E2E_KUBECONFIG="$ROOT/.e2e/kubeconfig" \
           PODPEERS_E2E_OUT="$wt/.e2e-out" go test -tags e2e -count=1 -v -timeout 15m -run "$(field e2e-run "$p")" ./test/e2e/)"
   fi
+  # A protection only a browser can show declares `ui-expect`.
+  b="n/a"
+  if [ -n "$(field ui-expect "$p")" ] && [ "$(field ui-expect "$p")" != "-" ]; then
+    b="skipped"
+    if [ "$UI" = 1 ]; then
+      b="$(check "$name" ui "$wt" "$(field ui-expect "$p")" ./hack/check-ui.sh)"
+    fi
+  fi
   git worktree remove --force "$wt"
-  for r in "$u" "$e"; do
+  for r in "$u" "$e" "$b"; do
     case "$r" in SURVIVED|UNEXPECTED) fail=1 ;; esac
   done
-  rows="$rows$(printf '%-24s unit: %-10s e2e: %-10s %s' "$name" "$u" "$e" "$(sed -n 's/^# Mutant [^:]*: breaks the protection for "\(.*\)"\./\1/p' "$p")")
+  rows="$rows$(printf '%-24s unit: %-10s e2e: %-10s ui: %-10s %s' "$name" "$u" "$e" "$b" "$(sed -n 's/^# Mutant [^:]*: breaks the protection for "\(.*\)"\./\1/p' "$p")")
 "
-  printf '%-24s unit: %-10s e2e: %s\n' "$name" "$u" "$e"
+  printf '%-24s unit: %-10s e2e: %-10s ui: %s\n' "$name" "$u" "$e" "$b"
 done
 
 echo

@@ -392,7 +392,11 @@ each one in a scratch worktree and requires the unit **and** real-cluster tests
 to fail **for the expected reason** (log rotation exists only on a real
 cluster, so that one is real-cluster only; the rarely-sampled rule is triggered
 on a cluster only by sampling luck, so that one is unit-only); it also checks that they pass
-unmutated. CI runs it on every push. Writing the mutants found one test that caught a bug
+unmutated. A protection only a browser can show runs a third suite: `make
+mutants-ui` runs the browser checks (`make ui`, including the hostile page's DNS
+rebinding) against each mutant that declares one, so removing `serve`'s
+origin guard fails in a real browser too, with no hand run. CI runs all three
+on every push. Writing the mutants found one test that caught a bug
 only by accident (ignoring the label selector injected into `kube-system`
 pods). That test now checks the cluster-wide invariant directly: no pod
 outside the selector is touched.

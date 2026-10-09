@@ -8,6 +8,7 @@
 # unit-expect: 200, want (421|403)
 # e2e-run: TestAuditFixes/serve_on
 # e2e-expect: a rebound name got 200
+# ui-expect: Chrome with its network-access checks off: DNS rebinding: podpeers answered 200
 --- a/cmd/podpeers/main.go
 +++ b/cmd/podpeers/main.go
 @@ -431,7 +431,7 @@ func Handler(res graph.Result) (http.Handler, error) {

@@ -1,4 +1,4 @@
-.PHONY: build test vet docs ui mutants mutants-e2e e2e e2e-cluster e2e-down clean
+.PHONY: build test vet docs ui mutants mutants-e2e mutants-ui e2e e2e-cluster e2e-down clean
 
 build:
 	go build -o bin/podpeers ./cmd/podpeers
@@ -18,6 +18,10 @@ mutants:
 
 mutants-e2e: e2e-cluster
 	./hack/mutants.sh --e2e
+
+# Also the browser checks, for mutants only a browser can catch (needs node).
+mutants-ui:
+	./hack/mutants.sh --ui
 
 # Renders every Mermaid diagram in the Markdown (needs node; set
 # PUPPETEER_EXECUTABLE_PATH to a local Chrome to skip the browser download).

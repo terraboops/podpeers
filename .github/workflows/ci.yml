@@ -28,8 +28,11 @@ jobs:
         run: make vet
       - name: unit tests
         run: PODPEERS_REQUIRE_DOT=1 go test -race -count=1 ./...
-      - name: mutants (each negative case's protection, broken, must fail the unit tests)
-        run: ./hack/mutants.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: mutants (each negative case's protection, broken, must fail the unit tests, and the browser checks where only a browser can tell)
+        run: ./hack/mutants.sh --ui
       - name: shell syntax
         run: bash -n hack/e2e-cluster.sh skills/podpeers-netpol/scripts/netpol-check.sh
       - name: build
