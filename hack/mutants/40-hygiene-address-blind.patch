@@ -1,0 +1,21 @@
+# Mutant 40-hygiene-address-blind: breaks the protection for "the hygiene gate fails on an address outside the documentation ranges".
+# Bug introduced: the tree check's address grep matches nothing, so a real address in a tracked file passes CI.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./test/hygiene/
+# unit-run: TestTreeLeaksFail
+# unit-expect: let a leaked address through
+# e2e-run: -
+# e2e-expect: -
+--- a/hack/hygiene.sh
++++ b/hack/hygiene.sh
+@@ -45,7 +45,7 @@ if [ "${1:-}" = --history ]; then
+ fi
+ files=$(git ls-files | grep -vE '^(go\.sum|LICENSE)$')
+ 
+-ips=$(echo "$files" | xargs grep -nHoE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' 2>/dev/null \
++ips=$(echo "$files" | xargs grep -nHoE 'NEVER-MATCHES' 2>/dev/null \
+   | grep -vE ':(192\.0\.2\.[0-9]+|198\.51\.100\.[0-9]+|203\.0\.113\.[0-9]+|127\.[0-9.]+|0\.0\.0\.0)$' || true)
+ if [ -n "$ips" ]; then echo "non-documentation IPv4 addresses:"; echo "$ips"; fail=1; fi
+ 

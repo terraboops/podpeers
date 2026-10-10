@@ -467,7 +467,10 @@ cluster, keep the guard's default at refusal, keep MCP read-only, and keep
 real environments out of this public repo (`hack/hygiene.sh` checks the
 tree, and with `--history` every version ever committed; one early demo frame
 that showed a throwaway local cluster's pod address is still in history and is
-listed in `hack/hygiene-history-known.txt`).
+listed in `hack/hygiene-history-known.txt`). The gate is tested too
+(`test/hygiene`): planted leaks in a throwaway repository, an address, a
+credential, a leak deleted from the tree but kept in history, and that demo
+frame itself, must each make it fail, and mutants that blind it must be caught.
 
 Re-record the demo with `docs/demo/make-demo.sh` (vhs for the terminal,
 Firefox via Selenium for the web UI) against `make e2e-cluster`. Diagrams are

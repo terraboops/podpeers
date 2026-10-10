@@ -1,0 +1,21 @@
+# Mutant 36-yaml-header-raw: breaks the protection for "a targeted workload's own name stays inside its YAML comment".
+# Bug introduced: the header line prints the workload name raw, so a hostile controller name of a targeted pod adds documents to what kubectl applies.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/policy/
+# unit-run: TestYAMLHostileNamesStayInComments
+# unit-expect: want a header and 3 NetworkPolicy documents|reached the YAML
+# e2e-run: TestAuditFixes/suggest_keeps
+# e2e-expect: unprintable U\+001B in policy.yaml
+--- a/internal/policy/policy.go
++++ b/internal/policy/policy.go
+@@ -818,7 +818,7 @@ func (rep Report) YAML() (string, error) {
+ 	}
+ 	for _, s := range rep.Suggestions {
+ 		b.WriteString("---\n")
+-		fmt.Fprintf(&b, "# %s in namespace %s (pods: %s)\n", graph.Printable(s.Workload), graph.Printable(s.Namespace), graph.Printable(strings.Join(s.Pods, ", ")))
++		fmt.Fprintf(&b, "# %s in namespace %s (pods: %s)\n", s.Workload, s.Namespace, graph.Printable(strings.Join(s.Pods, ", ")))
+ 		if s.Refused != "" {
+ 			writeComment(&b, "NO POLICY SUGGESTED: ", s.Refused)
+ 			for _, g := range s.Gaps {

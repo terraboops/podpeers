@@ -19,7 +19,8 @@ if [ "${1:-}" = --history ]; then
   trap 'rm -rf "$work"' EXIT
   git rev-list --all --objects | while read -r sha path; do
     [ -n "$path" ] && [ "$(git cat-file -t "$sha")" = blob ] || continue
-    case "$path" in go.sum|LICENSE|hack/hygiene.sh) continue ;; esac
+    # The gate's own source, and the mutants that break it, quote its patterns.
+    case "$path" in go.sum|LICENSE|hack/hygiene.sh|hack/mutants/*hygiene*.patch) continue ;; esac
     echo "$known" | grep -qx "$sha" && continue
     git cat-file -p "$sha" >"$work/blob"
     case "$path" in
@@ -50,7 +51,7 @@ ips=$(echo "$files" | xargs grep -nHoE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' 2>/dev/
 if [ -n "$ips" ]; then echo "non-documentation IPv4 addresses:"; echo "$ips"; fail=1; fi
 
 secrets=$(echo "$files" | xargs grep -nHE '(client-key-data|client-certificate-data|certificate-authority-data|BEGIN [A-Z ]*PRIVATE KEY|token: [A-Za-z0-9_.-]{20,})' 2>/dev/null \
-  | grep -v '^hack/hygiene.sh:' || true)
+  | grep -vE '^hack/(hygiene\.sh|mutants/[^:/]*hygiene[^:/]*\.patch):' || true)
 if [ -n "$secrets" ]; then echo "credential-looking content:"; echo "$secrets"; fail=1; fi
 
 # Images: text inside a GIF or PNG is invisible to grep, so OCR every frame

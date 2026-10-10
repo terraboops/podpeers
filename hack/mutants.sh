@@ -90,7 +90,7 @@ rows=""
 
 echo "baseline: the selected tests must pass on the unmutated tree"
 base="$(newtree)"
-if ! (cd "$base" && go test -count=1 ./internal/... ./cmd/... ./test/skillscript/) >"$LOGS/baseline-unit.log" 2>&1; then
+if ! (cd "$base" && go test -count=1 ./internal/... ./cmd/... ./test/skillscript/ ./test/hygiene/) >"$LOGS/baseline-unit.log" 2>&1; then
   echo "baseline unit tests FAIL; a mutant failing them would prove nothing (see $LOGS/baseline-unit.log)" >&2
   git worktree remove --force "$base"; exit 1
 fi

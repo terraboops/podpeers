@@ -229,3 +229,14 @@ func TestHostileDOTParsesInGraphviz(t *testing.T) {
 		t.Fatalf("the hostile peer should be one node named by its text; nodes: %+v", g.Objects)
 	}
 }
+
+// A capture file's limits are its author's text too.
+func TestHostileLimitsAreEscaped(t *testing.T) {
+	r := fixture(t)
+	r.Limits = []string{"fine\x1b]0;title\x07\nforged line"}
+	var text bytes.Buffer
+	Text(&text, r)
+	if strings.ContainsRune(text.String(), 0x1b) || strings.Contains(text.String(), "\nforged line") {
+		t.Fatalf("raw limits text in the report: %q", text.String())
+	}
+}

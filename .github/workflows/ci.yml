@@ -27,7 +27,7 @@ jobs:
       - name: vet and gofmt
         run: make vet
       - name: unit tests
-        run: PODPEERS_REQUIRE_DOT=1 go test -race -count=1 ./...
+        run: PODPEERS_REQUIRE_DOT=1 PODPEERS_REQUIRE_OCR=1 go test -race -count=1 ./...
       - uses: actions/setup-node@v4
         with:
           node-version: 22

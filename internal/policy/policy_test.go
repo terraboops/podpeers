@@ -409,6 +409,11 @@ func TestPolicyName(t *testing.T) {
 	if n := policyName("Gateway/gw\x1b]0;x\a\n---\nkind: ConfigMap"); !regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`).MatchString(n) || len(n) > 63 {
 		t.Errorf("not a valid object name: %q", n)
 	}
+	// Names that differ only past the cut stay apart on their own, even across
+	// separate suggest runs (where no collision check sees both).
+	if a, b := policyName("StatefulSet/"+strings.Repeat("a", 70)+"-x"), policyName("StatefulSet/"+strings.Repeat("a", 70)+"-y"); a == b {
+		t.Errorf("two long names were cut to the same policy name %q", a)
+	}
 	long := policyName("StatefulSet/" + strings.Repeat("a", 80))
 	if len(long) > 63 || !strings.HasPrefix(long, "podpeers-aaa") {
 		t.Error(long)
@@ -623,6 +628,9 @@ func TestYAMLHostileNamesStayInComments(t *testing.T) {
 			r.Pods[i].Workload = "Gateway\x1b]0;title\x07/" + inject
 		}
 	}
+	// A targeted workload with a hostile controller name: its own header line.
+	r.Pods = append(r.Pods, obs("shop", "gw-0", "Gateway/"+inject, map[string]string{"app": "gw"}))
+	r.Edges = append(r.Edges, edge("shop/gw-0", graph.Outbound, graph.Peer{Kind: graph.PeerExternal, IP: "203.0.113.9"}, 443))
 	stray := obs("shop", "api-2", "Deployment/api", map[string]string{"app": "api", "tier": "back"})
 	stray.Probe = graph.Probe{Status: graph.ProbeFailed, Reason: "exit (\x1b[8mhidden\u009b2K\u2028)"}
 	r.Pods = append(r.Pods, stray)
@@ -636,8 +644,8 @@ func TestYAMLHostileNamesStayInComments(t *testing.T) {
 		}
 	}
 	docs := strings.Split(y, "\n---\n")
-	if len(docs) != 3 {
-		t.Fatalf("want a header and 2 NetworkPolicy documents, got %d:\n%s", len(docs), y)
+	if len(docs) != 4 {
+		t.Fatalf("want a header and 3 NetworkPolicy documents, got %d:\n%s", len(docs), y)
 	}
 	for _, d := range docs[1:] {
 		var np netv1.NetworkPolicy

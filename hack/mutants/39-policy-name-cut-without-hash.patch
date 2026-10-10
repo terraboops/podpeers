@@ -1,0 +1,21 @@
+# Mutant 39-policy-name-cut-without-hash: breaks the protection for "names that differ only past the 63-character cut stay apart".
+# Bug introduced: a long policy name is cut without a hash, so two workloads in separate suggest runs get the same NetworkPolicy.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/policy/
+# unit-run: TestPolicyName
+# unit-expect: were cut to the same policy name
+# e2e-run: -
+# e2e-expect: -
+--- a/internal/policy/policy.go
++++ b/internal/policy/policy.go
+@@ -767,7 +767,7 @@ func policyName(workload string) string {
+ 		return '-'
+ 	}, n)
+ 	if clean != n || len(n) > 63 {
+-		n = withHash(clean, workload)
++		n = clean[:min(len(clean), 63)]
+ 	}
+ 	return n
+ }

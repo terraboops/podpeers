@@ -1,0 +1,21 @@
+# Mutant 37-diff-unverifiable-raw: breaks the protection for "unverifiable lines in the diff report are escaped".
+# Bug introduced: the unverifiable lines print capture names raw, so a hostile name forges report lines there.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/diff/
+# unit-run: TestHostileNamesInUnverifiableLinesAreEscaped
+# unit-expect: reached the unverifiable line raw
+# e2e-run: -
+# e2e-expect: -
+--- a/internal/diff/diff.go
++++ b/internal/diff/diff.go
+@@ -240,7 +240,7 @@ func CompareWith(before, after graph.Result, o Options) Result {
+ 			}
+ 		}
+ 		if !verifiable {
+-			res.Unverifiable = append(res.Unverifiable, fmt.Sprintf("%s -> %s %s/%d", graph.Printable(k.from), graph.Printable(k.to), k.proto, k.port))
++			res.Unverifiable = append(res.Unverifiable, fmt.Sprintf("%s -> %s %s/%d", k.from, k.to, k.proto, k.port))
+ 			continue
+ 		}
+ 		chance, seen, of, afterN := missChance(b, bTotal, aTotal, aObserved)

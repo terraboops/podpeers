@@ -1,0 +1,21 @@
+# Mutant 38-render-limits-raw: breaks the protection for "a capture file's limits text is escaped in the text view".
+# Bug introduced: the text view prints a capture's limits raw, so a crafted capture file controls the terminal there.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./internal/render/
+# unit-run: TestHostileLimitsAreEscaped
+# unit-expect: raw limits text in the report
+# e2e-run: -
+# e2e-expect: -
+--- a/internal/render/render.go
++++ b/internal/render/render.go
+@@ -97,7 +97,7 @@ func Text(w io.Writer, r graph.Result) error {
+ 		counts[graph.ProbeObserved], counts[graph.ProbeFailed], counts[graph.ProbeSkipped], counts[graph.ProbeNotTargeted], len(r.Edges))
+ 	fmt.Fprintln(w, "\nWHAT THIS CAPTURE COULD NOT SEE:")
+ 	for _, l := range limitsOf(r) {
+-		fmt.Fprintf(w, "  - %s\n", graph.Printable(l))
++		fmt.Fprintf(w, "  - %s\n", l)
+ 	}
+ 	return nil
+ }

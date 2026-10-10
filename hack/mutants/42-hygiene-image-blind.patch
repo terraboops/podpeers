@@ -1,0 +1,23 @@
+# Mutant 42-hygiene-image-blind: breaks the protection for "the hygiene gate reads text rendered in images".
+# Bug introduced: the OCR result is ignored, so an address in a GIF or PNG passes.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# Needs tesseract and ffmpeg (CI's unit job has them); without them the test
+# skips, the mutant survives, and the harness says so.
+# unit-pkg: ./test/hygiene/
+# unit-run: TestAddressRenderedInAnImageIsFound
+# unit-expect: missed an address rendered in an image
+# e2e-run: -
+# e2e-expect: -
+--- a/hack/hygiene.sh
++++ b/hack/hygiene.sh
+@@ -70,7 +70,7 @@ if [ -n "$images" ]; then
+       hits=$(for f in "$ocr"/*.png; do tesseract "$f" - 2>/dev/null; done \
+         | grep -oE '\b[0-9]{1,3}[.,][0-9]{1,3}[.,][0-9]{1,3}[.,][0-9]{1,3}\b' \
+         | grep -vE '^(192[.,]0[.,]2[.,]|198[.,]51[.,]100[.,]|203[.,]0[.,]113[.,]|127[.,]|0[.,]0[.,]0[.,]0)' | sort -u || true)
+-      if [ -n "$hits" ]; then echo "non-documentation IPv4 rendered in $img:"; echo "$hits"; fail=1; fi
++      if false; then echo "non-documentation IPv4 rendered in $img:"; echo "$hits"; fail=1; fi
+     done
+     rm -rf "$ocr"
+     echo "hygiene: OCR-checked $(echo "$images" | wc -w | tr -d ' ') image(s)"

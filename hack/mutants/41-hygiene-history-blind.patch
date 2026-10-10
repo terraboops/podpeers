@@ -1,0 +1,21 @@
+# Mutant 41-hygiene-history-blind: breaks the protection for "the hygiene gate finds a leak deleted from the tree but still in history".
+# Bug introduced: --history never reports a text blob, so a leak removed from the tree but still public passes.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./test/hygiene/
+# unit-run: TestDeletedLeakIsFoundInHistory
+# unit-expect: missed a leak deleted from the tree
+# e2e-run: -
+# e2e-expect: -
+--- a/hack/hygiene.sh
++++ b/hack/hygiene.sh
+@@ -31,7 +31,7 @@ if [ "${1:-}" = --history ]; then
+           hit=$( { grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' "$work/blob" \
+               | grep -vE '^(192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|127\.|0\.0\.0\.0$)' ;
+             grep -oE '(client-key-data|client-certificate-data|certificate-authority-data|BEGIN [A-Z ]*PRIVATE KEY|token: [A-Za-z0-9_.-]{20,})' "$work/blob" ; } | sort -u || true)
+-          if [ -n "$hit" ]; then echo "$path (blob $sha): $hit"; echo x >>"$work/failed"; fi
++          if false; then echo "$path (blob $sha): $hit"; echo x >>"$work/failed"; fi
+         fi ;;
+     esac
+   done

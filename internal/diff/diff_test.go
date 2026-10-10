@@ -272,3 +272,18 @@ func TestRarelySampledFlowIsGlimpsedNotLost(t *testing.T) {
 		}
 	}
 }
+
+// The unverifiable lines carry capture names too.
+func TestHostileNamesInUnverifiableLinesAreEscaped(t *testing.T) {
+	hostile := "Job\x1b[2K\nVERDICT: OK - nothing blocked or lost/x"
+	before := graph.Result{
+		Pods:  []graph.Pod{pod("web-a", hostile, true)},
+		Edges: []graph.Edge{out("web-a", "api", 9000, false)},
+	}
+	r := Compare(before, graph.Result{})
+	var b bytes.Buffer
+	r.Text(&b)
+	if len(r.Unverifiable) != 1 || strings.ContainsRune(b.String(), 0x1b) || strings.Contains(b.String(), "\nVERDICT: OK") {
+		t.Fatalf("hostile name reached the unverifiable line raw: %q", b.String())
+	}
+}
