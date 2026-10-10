@@ -32,7 +32,7 @@ jobs:
         with:
           node-version: 22
       - name: mutants (each negative case's protection, broken, must fail the unit tests, and the browser checks where only a browser can tell)
-        run: ./hack/mutants.sh --ui
+        run: PODPEERS_REQUIRE_OCR=1 ./hack/mutants.sh --ui
       - name: shell syntax
         run: bash -n hack/e2e-cluster.sh skills/podpeers-netpol/scripts/netpol-check.sh
       - name: build
@@ -64,6 +64,8 @@ jobs:
     timeout-minutes: 90 # the suite plus every mutant against the real cluster; ~50 min with 31 mutants
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # mutant 42's test reads a blob from history
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -74,8 +76,10 @@ jobs:
         run: go install sigs.k8s.io/kwok/cmd/kwokctl@v0.7.0 && echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: end-to-end against a real local cluster
         run: make e2e
+      - name: install OCR (the unit side of the hygiene mutants reads text in images)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr ffmpeg >/dev/null
       - name: mutants against the real cluster (the e2e tests must fail when each protection is broken)
-        run: ./hack/mutants.sh --e2e
+        run: PODPEERS_REQUIRE_OCR=1 ./hack/mutants.sh --e2e
       - name: keep the observed output
         if: always()
         uses: actions/upload-artifact@v4

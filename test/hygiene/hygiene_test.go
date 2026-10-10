@@ -118,6 +118,9 @@ func TestAddressRenderedInAnImageIsFound(t *testing.T) {
 	const blob = "d3f69c36b21fdf97feacffa546efe3a5dcb3189b"
 	gif, err := exec.Command("git", "cat-file", "-p", blob).Output()
 	if err != nil {
+		if os.Getenv("PODPEERS_REQUIRE_OCR") != "" {
+			t.Fatalf("the demo blob is required here but not in this clone's history (shallow clone?): %v", err)
+		}
 		t.Skipf("the demo blob is not in this clone's history (shallow clone?): %v", err)
 	}
 	// Only the few seconds that show the address, so the test stays quick.
