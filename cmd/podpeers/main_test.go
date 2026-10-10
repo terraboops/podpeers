@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -167,6 +168,67 @@ func TestNodeGuardCatchesTunnelToAnotherK3sCluster(t *testing.T) {
 	}
 }
 
+// Without -n or -A, capture targets the context's namespace, never every
+// namespace (an empty namespace in client-go lists cluster-wide).
+func TestCaptureTargetsTheContextNamespace(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/nodes" {
+			fmt.Fprint(w, `{"kind":"NodeList","apiVersion":"v1","items":[{"metadata":{"name":"n1"},"spec":{"providerID":"k3s://k3d-dev-server-0"}}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"kind":"PodList","apiVersion":"v1","items":[]}`)
+	}))
+	defer srv.Close()
+	kc := kubeconfig(t, "k3d-dev", srv.URL)
+	runCLI("capture", "--kubeconfig", kc, "-l", "app", "--duration", "1s", "--interval", "1s", "-o", filepath.Join(t.TempDir(), "x.json"))
+	mu.Lock()
+	defer mu.Unlock()
+	listed := ""
+	for _, p := range paths {
+		if strings.HasSuffix(p, "/pods") {
+			listed = p
+			break
+		}
+	}
+	if listed != "/api/v1/namespaces/shop/pods" {
+		t.Fatalf("capture without -n listed its targets at %q, want the context namespace shop (requests: %v)", listed, paths)
+	}
+}
+
+// A capture file that cannot be read is an error in every command. Treated as
+// an empty capture, a diff against it would say "VERDICT: OK".
+func TestUnreadableCaptureIsAnErrorEverywhere(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	for _, args := range [][]string{
+		{"render", missing}, {"query", missing, "{ window { interval } }"}, {"suggest", missing},
+		{"serve", "-addr", "127.0.0.1:0", missing}, {"diff", missing, fixture}, {"diff", fixture, missing},
+	} {
+		code, out, _ := runCLI(args...)
+		if code != exitError || strings.Contains(out, "VERDICT") {
+			t.Errorf("%v: exit %d, want %d and no verdict (stdout %.100q)", args, code, exitError, out)
+		}
+	}
+}
+
+func TestRenderFailsWhenItCannotWrite(t *testing.T) {
+	if code, _, stderr := runCLI("render", "-format", "text", "-o", filepath.Join(t.TempDir(), "no-such-dir", "r.txt"), fixture); code != exitError {
+		t.Fatalf("render to an unwritable path: exit %d, want %d (%s)", code, exitError, stderr)
+	}
+}
+
+// A file that cannot be written is a failure, not success with no output.
+func TestSuggestFailsWhenItCannotWrite(t *testing.T) {
+	if code, _, stderr := runCLI("suggest", "-o", filepath.Join(t.TempDir(), "no-such-dir", "p.yaml"), fixture); code != exitError {
+		t.Fatalf("suggest to an unwritable path: exit %d, want %d (%s)", code, exitError, stderr)
+	}
+}
+
 func TestCaptureFlagValidationHappensFirst(t *testing.T) {
 	cases := [][]string{
 		{"capture"}, // no selector
@@ -224,8 +286,13 @@ func TestQuery(t *testing.T) {
 		t.Fatalf("exit %d out %s", code, out)
 	}
 	code, out, _ = runCLI("query", "-vars", `{"s":"skipped"}`, fixture, `query($s: String) { pods(status: $s) { id } }`)
-	if code != exitOK || !strings.Contains(out, "shop/queued") {
+	// The variable must filter: ignored, the query would list every pod,
+	// queued included.
+	if code != exitOK || !strings.Contains(out, "shop/queued") || strings.Contains(out, "shop/api") {
 		t.Fatalf("vars: exit %d out %s", code, out)
+	}
+	if code, _, _ := runCLI("query", "-vars", `{not json`, fixture, `{ window { interval } }`); code != exitError {
+		t.Fatalf("bad -vars JSON: exit %d, want %d", code, exitError)
 	}
 	if code, out, _ := runCLI("query", fixture, `{ nope }`); code != exitError || !strings.Contains(out, "errors") {
 		t.Fatalf("bad query: exit %d out %s", code, out)

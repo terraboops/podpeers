@@ -972,6 +972,107 @@ spec:
 		}
 	})
 
+	t.Run("a target pod deleted outright mid-window is reported and not crashed on", func(t *testing.T) {
+		// Force-deleted, the pod is gone between two polls: no terminating
+		// state to see, just absence.
+		ns := filepath.Join(t.TempDir(), "doomed.yaml")
+		os.WriteFile(ns, []byte(`apiVersion: v1
+kind: Namespace
+metadata: {name: pp-doomed}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: doomed, namespace: pp-doomed, labels: {podpeers-e2e: doomed}}
+spec:
+  terminationGracePeriodSeconds: 0
+  containers: [{name: main, image: busybox:1.36, imagePullPolicy: IfNotPresent, command: ["sleep", "3600"]}]
+`), 0o644)
+		kubectl(t, "apply", "-f", ns)
+		defer exec.Command("kubectl", "--kubeconfig", kubeconfig, "--context", kubeCtx, "delete", "namespace", "pp-doomed", "--wait=false").Run()
+		kubectl(t, "wait", "-n", "pp-doomed", "--for=condition=Ready", "--timeout=60s", "pod/doomed")
+		out := filepath.Join(t.TempDir(), "doomed.json")
+		done := make(chan result, 1)
+		go func() {
+			done <- podpeers(ctx, t, "capture", "-n", "pp-doomed", "-l", "podpeers-e2e=doomed", "--duration", "20s", "--interval", "1s", "-o", out, "--summary", "none")
+		}()
+		for i := 0; i < 60 && len(ephemeral(t, "pp-doomed", "doomed")) == 0; i++ {
+			time.Sleep(500 * time.Millisecond)
+		}
+		time.Sleep(3 * time.Second)
+		kubectl(t, "delete", "pod", "-n", "pp-doomed", "doomed", "--grace-period=0", "--force")
+		r := <-done
+		t.Logf("exit=%d\n%s", r.code, r.stderr)
+		p, _ := probeOf(load(t, out), "pp-doomed/doomed")
+		if r.code != 3 || p.Status != graph.ProbeFailed || p.Reason != "pod disappeared during the window" {
+			t.Fatalf("want exit 3 and the probe failed as disappeared, got exit %d, probe %+v", r.code, p)
+		}
+	})
+
+	t.Run("an identity confined to one namespace still names that namespace's pods and Services", func(t *testing.T) {
+		// It may observe pods in pp-app and read its Services, but list
+		// nothing cluster-wide: capture falls back to the namespace for both,
+		// so web's flow to api is still named as the api Service.
+		rbac := filepath.Join(t.TempDir(), "observer.yaml")
+		os.WriteFile(rbac, []byte(`apiVersion: v1
+kind: ServiceAccount
+metadata: {name: pp-observer, namespace: pp-app}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: pp-observer, namespace: pp-app}
+rules:
+- {apiGroups: [""], resources: [pods, services], verbs: [get, list, watch]}
+- {apiGroups: [""], resources: [pods/ephemeralcontainers], verbs: [get, patch, update]}
+- {apiGroups: [""], resources: [pods/log], verbs: [get]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: pp-observer, namespace: pp-app}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: pp-observer}
+subjects: [{kind: ServiceAccount, name: pp-observer, namespace: pp-app}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: pp-observer-nodes}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: pp-limited-nodes}
+subjects: [{kind: ServiceAccount, name: pp-observer, namespace: pp-app}]
+`), 0o644)
+		kubectl(t, "apply", "-f", rbac)
+		defer exec.Command("kubectl", "--kubeconfig", kubeconfig, "--context", kubeCtx, "delete", "-f", rbac, "--ignore-not-found").Run()
+		token := strings.TrimSpace(kubectl(t, "create", "token", "pp-observer", "-n", "pp-app", "--duration", "10m"))
+		cfg, err := clientcmd.LoadFromFile(kubeconfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		confined := clientcmdapi.NewConfig()
+		confined.Clusters["e2e"] = cfg.Clusters[cfg.Contexts[kubeCtx].Cluster]
+		confined.AuthInfos["observer"] = &clientcmdapi.AuthInfo{Token: token}
+		confined.Contexts[kubeCtx] = &clientcmdapi.Context{Cluster: "e2e", AuthInfo: "observer"}
+		confined.CurrentContext = kubeCtx
+		ck := filepath.Join(t.TempDir(), "kubeconfig")
+		if err := clientcmd.WriteToFile(*confined, ck); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(t.TempDir(), "confined.json")
+		r := podpeers(ctx, t, "capture", "--kubeconfig", ck, "-n", "pp-app", "-l", "app=web", "--duration", "6s", "--interval", "1s", "-o", out)
+		t.Logf("exit=%d\n%s", r.code, r.stderr)
+		if r.code != 0 {
+			t.Fatalf("capture as the confined identity: exit %d", r.code)
+		}
+		if !strings.Contains(r.stderr, "cannot list pods cluster-wide (forbidden)") {
+			t.Errorf("the namespace fallback should say so")
+		}
+		named := false
+		for _, e := range load(t, out).Edges {
+			if e.Pod == "pp-app/web" && e.Direction == graph.Outbound && e.Peer.ID() == "svc/pp-app/api" {
+				named = true
+			}
+		}
+		if !named {
+			t.Fatalf("web's flow to api should still be named svc/pp-app/api; edges: %v", edgeSet(load(t, out), "pp-app/web"))
+		}
+	})
+
 	t.Run("namespace where the credentials may not do this", func(t *testing.T) {
 		token := strings.TrimSpace(kubectl(t, "create", "token", "pp-limited", "-n", "pp-app", "--duration", "10m"))
 		cfg, err := clientcmd.LoadFromFile(kubeconfig)
@@ -997,6 +1098,11 @@ spec:
 		t.Logf("pp-locked: exit=%d\n%s", r.code, r.stderr)
 		if r.code != 3 {
 			t.Fatalf("want exit 3, got %d", r.code)
+		}
+		// This identity may not list pods cluster-wide: capture falls back to
+		// the namespace, and says what that costs.
+		if !strings.Contains(r.stderr, "cannot list pods cluster-wide (forbidden); peers outside pp-locked will show as addresses") {
+			t.Errorf("the cluster-wide listing fallback should say so")
 		}
 		p, _ := probeOf(load(t, out), "pp-locked/vault")
 		if p.Status != graph.ProbeFailed || !strings.Contains(p.Reason, "forbidden") || !strings.Contains(p.Reason, "pods/ephemeralcontainers") {

@@ -1,0 +1,107 @@
+# Guards whose removal no unit test notices, each accounted for.
+# hack/guard-sweep.py --check fails on a survivor missing here and on an entry that
+# no longer survives. Format: file | guard | category | reason.
+# Categories: cluster: caught on the real cluster (measured: removing it fails the e2e suite); equivalent: removing it changes nothing observable; order: a sort tie-break: removing it only reorders entries whose earlier keys are equal; default: a library default the CLI always sets explicitly; error: an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way; usage: an argument-count check; removing it turns a usage message into an index panic; cosmetic: wording or formatting only; no decision depends on it; fallback: a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
+
+cmd/podpeers/main.go | if version != "dev" { | cosmetic | the version string
+cmd/podpeers/main.go | if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" { | cosmetic | the version string
+cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err := fs.Parse(args); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err := fs.Parse(args); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if opts.Interval < time.Second { | cluster | the sub-second cost warning; TestE2E sub-second interval
+cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err := writeJSON(out, stdout, res); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if format == "text" { | cosmetic | the summary format
+cmd/podpeers/main.go | if out != "-" { | cosmetic | the 'wrote' message
+cmd/podpeers/main.go | if p.Probe.Status == graph.ProbeFailed { | cluster | exit 3 for a partial capture; TestE2E debug container that cannot start
+cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if fs.NArg() < 1 { | usage | an argument-count check; removing it turns a usage message into an index panic
+cmd/podpeers/main.go | if err := fs.Parse(args); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err := fs.Parse(args); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if fs.NArg() < 2 { | usage | an argument-count check; removing it turns a usage message into an index panic
+cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err := fs.Parse(args); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err := fs.Parse(args); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if err := fs.Parse(args); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if fs.NArg() != 2 { | usage | an argument-count check; removing it turns a usage message into an index panic
+cmd/podpeers/main.go | if err := fs.Parse(args); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+cmd/podpeers/main.go | if fs.NArg() != 1 { | usage | an argument-count check; removing it turns a usage message into an index panic
+cmd/podpeers/main.go | if err := srv.Serve(stdin, stdout); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/capture/capture.go | if o.Interval <= 0 { | default | a library default the CLI always sets explicitly
+internal/capture/capture.go | if o.StartTimeout <= 0 { | default | a library default the CLI always sets explicitly
+internal/capture/capture.go | if o.Image == "" { | default | a library default the CLI always sets explicitly
+internal/capture/capture.go | if o.RunID == "" { | default | a library default the CLI always sets explicitly
+internal/capture/capture.go | if o.PollInterval <= 0 { | default | a library default the CLI always sets explicitly
+internal/capture/capture.go | if o.Logf == nil { | default | a library default the CLI always sets explicitly
+internal/capture/capture.go | if o.AllNamespaces { | equivalent | with -A the namespace is empty, which already means all namespaces
+internal/capture/capture.go | if o.Duration <= 0 { | default | a library default the CLI always sets explicitly
+internal/capture/capture.go | if !t.done { | cluster | TestE2E log rotation
+internal/capture/capture.go | if err := wait(ctx, cs, targets, name, opts, hardDeadline); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/capture/capture.go | if o.AllNamespaces { | cosmetic | the namespace label in messages
+internal/capture/capture.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/capture/capture.go | if time.Since(lastLog) > 10*time.Second { | cosmetic | progress-log throttling
+internal/capture/capture.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/capture/capture.go | if !ok { | cluster | TestE2E pod deleted outright mid-window
+internal/capture/capture.go | if err == nil { | cluster | TestE2E log rotation
+internal/capture/capture.go | if a.Complete { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
+internal/capture/capture.go | if t.streamDone != nil { | cluster | TestE2E log rotation
+internal/capture/capture.go | if err != nil || !out.Complete { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
+internal/capture/capture.go | if rerr == nil { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
+internal/capture/capture.go | if err == nil && len(out.Samples) == 0 { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
+internal/capture/capture.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/capture/capture.go | if t.note != "" { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
+internal/capture/capture.go | if out.Truncated { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
+internal/capture/capture.go | if err != nil && !opts.AllNamespaces { | cluster | TestE2E an identity confined to one namespace (pods), and the namespace where the credentials may not do this
+internal/capture/capture.go | if err == nil { | cluster | TestE2E capture matches the workloads
+internal/capture/capture.go | if err != nil && !opts.AllNamespaces { | cluster | TestE2E an identity confined to one namespace (Services)
+internal/capture/capture.go | if len(ips) == 0 && s.Spec.ClusterIP != "" { | equivalent | a fallback for clusters older than spec.clusterIPs; current API servers always fill it
+internal/capture/capture.go | if ip != corev1.ClusterIPNone { | cluster | TestE2E capture matches the workloads (headless Services)
+internal/capture/capture.go | if sp.TargetPort.IntValue() == 0 && sp.TargetPort.StrVal == "" { | equivalent | the API server always defaults targetPort to port, so it is never empty
+internal/capture/capture.go | if len(gn.PodCIDRs) == 0 && n.Spec.PodCIDR != "" { | equivalent | a fallback for the deprecated single podCIDR; k3s and kind always fill podCIDRs
+internal/capture/capture.go | if a.Type == corev1.NodeInternalIP || a.Type == corev1.NodeExternalIP { | cluster | TestPolicyEnforcement (node addresses)
+internal/capture/capture.go | if apierrors.IsForbidden(err) { | cosmetic | a short 'forbidden' instead of the API's full message, which says forbidden too
+internal/capture/capture.go | if !ok { | equivalent | a non-Job workload name falls through the Job lookup to the same answer, at the cost of one cached list
+internal/diff/diff.go | if a.From != b.From { | order | a sort tie-break: removing it only reorders entries whose earlier keys are equal
+internal/diff/diff.go | if len(r.Changes) == 0 && len(r.Unverifiable) == 0 { | cosmetic | the 'no changes' line; the verdict line still says OK
+internal/gql/gql.go | if len(r.Limits) > 0 { | equivalent | a capture's stored limits are ComputeLimits of the same capture
+internal/gql/gql.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/gql/gql.go | if nn, ok := t.(*graphql.NonNull); ok { | equivalent | a refused query's data is discarded, whatever the zero values are
+internal/graph/graph.go | if outL[i].Protocol != outL[j].Protocol { | order | a sort tie-break: removing it only reorders entries whose earlier keys are equal
+internal/graph/graph.go | if outL[i].Port != outL[j].Port { | order | a sort tie-break: removing it only reorders entries whose earlier keys are equal
+internal/graph/graph.go | if a.Pod != b.Pod { | order | a sort tie-break: removing it only reorders entries whose earlier keys are equal
+internal/graph/graph.go | if a.Peer.ID() != b.Peer.ID() { | order | a sort tie-break: removing it only reorders entries whose earlier keys are equal
+internal/graph/graph.go | if a.Port != b.Port { | order | a sort tie-break: removing it only reorders entries whose earlier keys are equal
+internal/graph/graph.go | if a.Protocol != b.Protocol { | order | a sort tie-break: removing it only reorders entries whose earlier keys are equal
+internal/graph/graph.go | if strings.IndexFunc(s, notPrintable) < 0 { | equivalent | a fast path; the loop below gives the same answer
+internal/graph/graph.go | if err := json.NewDecoder(r).Decode(&res); err != nil { | equivalent | a decode error leaves the schema field empty, and the schema check refuses it
+internal/graph/graph.go | if err != nil { | equivalent | an unopened file fails to decode, and the schema check refuses it
+internal/graph/graph.go | if interval == "" { | cosmetic | the limits wording for captures without an interval
+internal/mcp/mcp.go | if len(line) == 0 { | cosmetic | blank lines between requests get a parse-error reply instead of none
+internal/mcp/mcp.go | if err := json.Unmarshal(req.Params, &p); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/mcp/mcp.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/mcp/mcp.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/policy/policy.go | if !ok { | equivalent | every edge's pod is in the capture's inventory; with or without the check no rule is written for one that is not
+internal/policy/policy.go | if seen[client.ID()+" "+e.Protocol+"/"+target] { | cosmetic | a duplicate client-side evidence line
+internal/policy/policy.go | if !e.Open { | cosmetic | the open/closed wording of an evidence line
+internal/policy/policy.go | if !ok { | equivalent | a peer missing from the inventory has no labels either way, and gets a gap and no rule
+internal/policy/policy.go | if reason == "" { | cosmetic | the wording of an unobserved pod's gap
+internal/policy/policy.go | if x == g { | cosmetic | a duplicate gap line
+internal/policy/policy.go | if !e.Open { | cosmetic | the open/closed wording of an evidence line
+internal/policy/policy.go | if keys[i].proto != keys[j].proto { | order | a sort tie-break: removing it only reorders entries whose earlier keys are equal
+internal/policy/policy.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/procnet/procnet.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/procnet/procnet.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/procnet/procnet.go | if ivCS < 1 { | equivalent | Validate refuses intervals under 100ms, so the clamp to 10ms never applies
+internal/procnet/procnet.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/procnet/procnet.go | if err := sc.Err(); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
+internal/render/render.go | if p.Probe.Status != graph.ProbeObserved { | cosmetic | the layout for pods that were not observed
+internal/render/render.go | if len(r.Limits) > 0 { | equivalent | a capture's stored limits are ComputeLimits of the same capture
+internal/render/render.go | if seen[k] { | equivalent | Flows already yields each flow once
+internal/render/render.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way

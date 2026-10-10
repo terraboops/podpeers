@@ -303,3 +303,12 @@ func TestParseRotatedLogKeepsLatestSamples(t *testing.T) {
 		t.Error("a headerless log with bare sample markers must be rejected")
 	}
 }
+
+// An anchor whose fields are not numbers is an error, not a zero timestamp.
+func TestNonNumericAnchorIsAnError(t *testing.T) {
+	for _, in := range []string{"@@podpeers v2\n@@anchor x 1.00\n", "@@podpeers v2\n@@anchor 1 y\n"} {
+		if _, err := ParseSamplerOutput(strings.NewReader(in)); err == nil || !strings.Contains(err.Error(), "bad anchor") {
+			t.Errorf("%q: want a bad anchor error, got %v", in, err)
+		}
+	}
+}

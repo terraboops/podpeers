@@ -52,6 +52,7 @@ make ui                 # after touching the web UI (internal/render/page.html, 
 make e2e                # for anything touching capture, policy, diff, the skill or its script
 make mutants-e2e        # after changing a protection or its test: each mutant must still be killed
 make mutants-ui         # after changing serve or the browser checks: the same, in a real browser
+make guards             # after adding an if-guard: some test must notice its removal (slow)
 ```
 
 Trunk-based: commit to `main`; branch only to carry a pull request. A change

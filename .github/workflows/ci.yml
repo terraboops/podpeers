@@ -38,6 +38,20 @@ jobs:
       - name: build
         run: make build
 
+  guards:
+    # Every if-guard in the Go code, removed one at a time: some unit test must
+    # notice, or the guard is accounted for, with a reason, in
+    # hack/guard-sweep-accepted.txt. A new untested guard fails here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: guard sweep
+        run: python3 hack/guard-sweep.py --check
+
   docs:
     # Render every Mermaid diagram in the Markdown with the same library
     # GitHub uses; a diagram that does not parse fails the build.

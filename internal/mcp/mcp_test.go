@@ -212,3 +212,67 @@ func TestPeersMatchTheCapture(t *testing.T) {
 		}
 	}
 }
+
+// diff_captures honours existing_pods: a pod not on the list connected under
+// the change, so its old-looking connection proves the flow; without the
+// list the same flow is only preexisting, and the verdict INCONCLUSIVE.
+func TestDiffCapturesHonoursExistingPods(t *testing.T) {
+	pod := graph.Pod{Namespace: "shop", Name: "web-b", Workload: "Deployment/web", Probe: graph.Probe{Status: graph.ProbeObserved}}
+	e := graph.Edge{Pod: "shop/web-b", Direction: graph.Outbound, Protocol: "tcp", Port: 9000, Open: true, Connections: 1, Samples: 5,
+		Peer: graph.Peer{Kind: graph.PeerService, Namespace: "shop", Name: "api"}}
+	before := graph.Result{Schema: graph.Schema, Pods: []graph.Pod{pod}, Edges: []graph.Edge{e}}
+	e.NewConnections = 0 // only a connection older than the after window
+	after := graph.Result{Schema: graph.Schema, Pods: []graph.Pod{pod}, Edges: []graph.Edge{e}}
+	dir := t.TempDir()
+	write := func(name string, r graph.Result) string {
+		b, _ := json.Marshal(r)
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, b, 0o644)
+		return p
+	}
+	bp, ap := write("before.json", before), write("after.json", after)
+	s := &Server{CapturePath: ap}
+	without, _ := text(t, session(t, s, call(1, "diff_captures", map[string]any{"before": bp}))[0])
+	with, _ := text(t, session(t, s, call(2, "diff_captures", map[string]any{"before": bp, "existing_pods": []string{"shop/none"}}))[0])
+	if !strings.Contains(without, "VERDICT: INCONCLUSIVE") || !strings.Contains(with, "VERDICT: OK") {
+		t.Fatalf("existing_pods should turn the preexisting flow into a verified one:\n--- without\n%s\n--- with\n%s", without, with)
+	}
+}
+
+// diff_captures on a file it cannot read is an error, not a comparison with
+// an empty capture (which would come out "VERDICT: OK").
+func TestDiffCapturesFailsOnAnUnreadableFile(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	s := &Server{CapturePath: fixture}
+	for i, args := range []map[string]any{{"before": missing}, {"before": fixture, "after": missing}} {
+		txt, isErr := text(t, session(t, s, call(i+1, "diff_captures", args))[0])
+		if !isErr || strings.Contains(txt, "VERDICT") {
+			t.Errorf("%v: want an error, got %q", args, txt)
+		}
+	}
+}
+
+// suggest_policies honours min_samples: the fixture's pods have fewer than a
+// million samples, so every workload is refused.
+func TestSuggestPoliciesHonoursMinSamples(t *testing.T) {
+	txt, _ := text(t, session(t, &Server{CapturePath: fixture}, call(1, "suggest_policies", map[string]any{"min_samples": 1000000}))[0])
+	if strings.Contains(txt, "kind: NetworkPolicy") || !strings.Contains(txt, "NO POLICY SUGGESTED") {
+		t.Fatalf("min_samples was ignored:\n%.500s", txt)
+	}
+}
+
+// Tool schemas name their required arguments, so a client knows them.
+func TestToolSchemasNameRequiredArguments(t *testing.T) {
+	rs := session(t, &Server{CapturePath: fixture}, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	for _, tl := range rs[0]["result"].(map[string]any)["tools"].([]any) {
+		m := tl.(map[string]any)
+		if m["name"] == "peers" {
+			req, _ := m["inputSchema"].(map[string]any)["required"].([]any)
+			if len(req) != 1 || req[0] != "pod" {
+				t.Fatalf("peers schema should require pod: %v", m["inputSchema"])
+			}
+			return
+		}
+	}
+	t.Fatal("no peers tool")
+}

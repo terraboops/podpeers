@@ -287,3 +287,16 @@ func TestHostileNamesInUnverifiableLinesAreEscaped(t *testing.T) {
 		t.Fatalf("hostile name reached the unverifiable line raw: %q", b.String())
 	}
 }
+
+// Older captures carry no per-pod sample totals, so the odds cannot be
+// computed; a flow that was one connection in one sample is still noise.
+func TestOneShortConnectionInAnOldCaptureIsGlimpsed(t *testing.T) {
+	e := out("web-a", "api", 9000, false)
+	e.Samples, e.Connections = 1, 1
+	before := graph.Result{Pods: []graph.Pod{pod("web-a", "Deployment/web", true)}, Edges: []graph.Edge{e}}
+	after := graph.Result{Pods: []graph.Pod{pod("web-a", "Deployment/web", true)}}
+	r := Compare(before, after)
+	if len(r.Changes) != 1 || r.Changes[0].Kind != Glimpsed || !strings.Contains(r.Changes[0].Detail, "one short connection in one sample") || r.Broken() {
+		t.Fatalf("want one glimpsed change, got %+v", r.Changes)
+	}
+}

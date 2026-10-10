@@ -178,3 +178,14 @@ func TestCyclicQueryIsBounded(t *testing.T) {
 	// Ordinary queries are untouched.
 	run(t, s, `{ pods { id edges { peer { id pod { id labels { key value } } } } } }`)
 }
+
+// An unset time is null, not the zero date.
+func TestUnsetTimeIsNull(t *testing.T) {
+	s, err := NewSchema(graph.Result{Schema: graph.Schema, Pods: []graph.Pod{{Namespace: "n", Name: "p"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run(t, s, `{ window { start } }`); got != `{"window":{"start":null}}` {
+		t.Fatalf("window.start of a capture without one = %s", got)
+	}
+}

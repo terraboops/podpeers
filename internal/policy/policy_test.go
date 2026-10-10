@@ -3,12 +3,14 @@ package policy
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 	"unicode"
 
 	netv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/yaml"
 
 	"github.com/terraboops/podpeers/internal/graph"
@@ -655,5 +657,120 @@ func TestYAMLHostileNamesStayInComments(t *testing.T) {
 	}
 	if !strings.Contains(y, `edge/Gateway\u001b]0;title\u0007/gw\u000a---\u000aapiVersion`) {
 		t.Errorf("hostile name should be visible, escaped:\n%s", y)
+	}
+}
+
+// A Service is ingress evidence only for the workloads its selector picks, in
+// its own namespace: a client of shop/api says nothing about shop's cache.
+func TestServiceEvidenceOnlyForWorkloadsItSelects(t *testing.T) {
+	r := shop()
+	cache := obs("shop", "cache-0", "StatefulSet/cache", map[string]string{"app": "cache"})
+	cache.Listening = []graph.Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: 8080}}
+	r.Pods = append(r.Pods, cache)
+	r.Edges = append(r.Edges, edge("shop/cache-0", graph.Outbound, graph.Peer{Kind: graph.PeerExternal, IP: "203.0.113.9"}, 443))
+	for _, rs := range find(t, Suggest(r, Options{}), "StatefulSet/cache").Reasons {
+		if strings.Contains(rs.Peer, "web") || strings.Contains(strings.Join(rs.Evidence, " "), "svc/shop/api") {
+			t.Fatalf("cache got a rule from web's calls to svc/shop/api, whose selector (app=api) does not pick cache: %+v", rs)
+		}
+	}
+}
+
+// A numeric target port is a number in the policy, not a string: "8080" as a
+// string is a port *name*, which Kubernetes rejects or never matches. Reading
+// it back with IntValue() would hide that, so check the type.
+func TestNumericPortsStayNumbers(t *testing.T) {
+	for _, s := range Suggest(shop(), Options{}).Ready() {
+		for _, in := range s.Spec.Ingress {
+			for _, p := range in.Ports {
+				if _, err := strconv.Atoi(p.Port.StrVal); err == nil && p.Port.Type == intstr.String {
+					t.Errorf("%s: port %q is a string, so a name, not a number", s.Name, p.Port.StrVal)
+				}
+			}
+		}
+		for _, eg := range s.Spec.Egress {
+			for _, p := range eg.Ports {
+				if _, err := strconv.Atoi(p.Port.StrVal); err == nil && p.Port.Type == intstr.String {
+					t.Errorf("%s: port %q is a string, so a name, not a number", s.Name, p.Port.StrVal)
+				}
+			}
+		}
+	}
+}
+
+// An address that cannot be parsed (only a hand-written capture holds one)
+// becomes a gap, never an empty peer.
+func TestUnparsablePeerAddressIsAGap(t *testing.T) {
+	r := shop()
+	bad := graph.Peer{Kind: graph.PeerExternal, IP: "not-an-address"}
+	r.Edges = append(r.Edges, edge("shop/api-1", graph.Outbound, bad, 443), edge("shop/api-1", graph.Inbound, bad, 8080))
+	api := find(t, Suggest(r, Options{}), "Deployment/api")
+	if !hasGap(api, `cannot express peer "not-an-address" as an address`) {
+		t.Errorf("want a gap for the unparsable address: %v", api.Gaps)
+	}
+	for _, in := range api.Policy.Spec.Ingress {
+		for _, f := range in.From {
+			if f.IPBlock == nil && f.PodSelector == nil && f.NamespaceSelector == nil {
+				t.Fatalf("an empty ingress peer: %+v", in)
+			}
+		}
+	}
+	for _, eg := range api.Policy.Spec.Egress {
+		for _, to := range eg.To {
+			if to.IPBlock == nil && to.PodSelector == nil && to.NamespaceSelector == nil {
+				t.Fatalf("an empty egress peer: %+v", eg)
+			}
+		}
+	}
+}
+
+// Ready lists only the policies that were suggested, not refused workloads.
+func TestReadyExcludesRefusals(t *testing.T) {
+	rep := Suggest(shop(), Options{})
+	r := shop()
+	loner := obs("shop", "loner-0", "Deployment/loner", map[string]string{"app": "loner"})
+	r.Pods = append(r.Pods, loner)
+	rep = Suggest(r, Options{})
+	for _, p := range rep.Ready() {
+		if p == nil {
+			t.Fatal("Ready returned a refused workload's nil policy")
+		}
+	}
+	if len(rep.Ready()) != len(rep.Suggestions)-1 {
+		t.Fatalf("Ready has %d of %d suggestions; the loner is refused", len(rep.Ready()), len(rep.Suggestions))
+	}
+}
+
+// A peer without stable labels gets a gap and no rule, whichever side saw
+// the flow: outbound from this workload, or only from the client's own side.
+// Without the gap the rule would be written with an empty peer.
+func TestUnselectablePeerIsAGapOnEverySide(t *testing.T) {
+	emptyPeer := func(np *netv1.NetworkPolicy) bool {
+		for _, in := range np.Spec.Ingress {
+			for _, f := range in.From {
+				if f.IPBlock == nil && f.PodSelector == nil && f.NamespaceSelector == nil {
+					return true
+				}
+			}
+		}
+		for _, eg := range np.Spec.Egress {
+			for _, to := range eg.To {
+				if to.IPBlock == nil && to.PodSelector == nil && to.NamespaceSelector == nil {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	r := shop()
+	r.Pods[1].Labels = nil // gateway
+	r.Edges = append(r.Edges,
+		edge("shop/web-a", graph.Outbound, podPeer("edge", "gateway-x"), 9443), // egress to it
+		edge("edge/gateway-x", graph.Outbound, podPeer("shop", "api-1"), 9090)) // its own record of calling api
+	rep := Suggest(r, Options{})
+	for _, wl := range []string{"Deployment/web", "Deployment/api"} {
+		s := find(t, rep, wl)
+		if !hasGap(s, "edge/gateway-x has no stable labels") || emptyPeer(s.Policy) {
+			t.Errorf("%s: want a gap for gateway and no empty peer; gaps %v", wl, s.Gaps)
+		}
 	}
 }

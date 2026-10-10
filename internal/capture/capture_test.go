@@ -393,3 +393,33 @@ func TestCronJobPodsAreNamedAfterTheCronJob(t *testing.T) {
 		t.Errorf("forbidden: got %s, notes %v", got, notes)
 	}
 }
+
+// Without a namespace, options mean "default", never "every namespace": an
+// empty namespace would list pods cluster-wide.
+func TestDefaultsNeverWidenToAllNamespaces(t *testing.T) {
+	o := Options{Duration: time.Minute, Interval: time.Second, LabelSelector: "app"}
+	o.defaults()
+	if o.Namespace != "default" || o.listNamespace() == "" {
+		t.Fatalf("defaults left namespace %q (lists %q)", o.Namespace, o.listNamespace())
+	}
+}
+
+// Run validates its own options, for callers other than the CLI: invalid
+// options fail before the cluster is touched (the nil clientset proves it).
+func TestRunValidatesItsOptions(t *testing.T) {
+	if _, err := Run(context.Background(), nil, nil, Options{Duration: time.Minute, Interval: time.Second}); err == nil || !strings.Contains(err.Error(), "label selector is required") {
+		t.Fatalf("Run without a selector: %v", err)
+	}
+}
+
+// A pod's every address is kept (dual-stack: the IPv6 one is not the primary),
+// and so is its start time.
+func TestToGraphPodKeepsEveryAddressAndStartTime(t *testing.T) {
+	start := metav1.NewTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web"},
+		Status: corev1.PodStatus{PodIP: "192.0.2.10", PodIPs: []corev1.PodIP{{IP: "192.0.2.10"}, {IP: "2001:db8::10"}}, StartTime: &start}}
+	g := toGraphPod(p)
+	if len(g.IPs) != 1 || g.IPs[0] != "2001:db8::10" || !g.StartTime.Equal(start.Time) {
+		t.Fatalf("toGraphPod = IPs %v, start %v", g.IPs, g.StartTime)
+	}
+}

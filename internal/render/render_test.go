@@ -240,3 +240,44 @@ func TestHostileLimitsAreEscaped(t *testing.T) {
 		t.Fatalf("raw limits text in the report: %q", text.String())
 	}
 }
+
+// A probe that did not run its whole window is shown as partial.
+func TestPartialProbeIsShownPartial(t *testing.T) {
+	r := fixture(t)
+	r.Pods = append(r.Pods, graph.Pod{Namespace: "n", Name: "half", Probe: graph.Probe{Status: graph.ProbeObserved, Samples: 3, Complete: false}})
+	var b bytes.Buffer
+	Text(&b, r)
+	if !strings.Contains(b.String(), "n/half  [observed (partial)]") {
+		t.Fatalf("a partial probe should be marked partial:\n%s", b.String())
+	}
+}
+
+// The text view tells an established edge that also had failed connects, and
+// names a node seen on its pod-network address as that node.
+func TestTextShowsFailedConnectsAndPodRangeNodes(t *testing.T) {
+	r := fixture(t)
+	r.Pods = append(r.Pods, graph.Pod{Namespace: "n", Name: "flaky", Probe: graph.Probe{Status: graph.ProbeObserved, Samples: 5, Complete: true}})
+	r.Edges = append(r.Edges,
+		graph.Edge{Pod: "n/flaky", Direction: graph.Outbound, Protocol: "tcp", Port: 9000, Open: true, Connections: 3, FailedConnections: 2,
+			Peer: graph.Peer{Kind: graph.PeerExternal, IP: "203.0.113.20"}},
+		graph.Edge{Pod: "n/flaky", Direction: graph.Inbound, Protocol: "tcp", Port: 8080, Open: true, Connections: 1,
+			Peer: graph.Peer{Kind: graph.PeerNode, Name: "node-x", IP: "192.0.2.40", PodRange: true}})
+	var b bytes.Buffer
+	Text(&b, r)
+	for _, want := range []string{"2 failed connect(s)", "node (pod network 192.0.2.40)"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("text view lacks %q:\n%s", want, b.String())
+		}
+	}
+}
+
+// A flow seen from both ends is drawn once.
+func TestDOTDrawsEachFlowOnce(t *testing.T) {
+	var b bytes.Buffer
+	if err := DOT(&b, fixture(t)); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(b.String(), `"shop/web" -> "shop/api" [`); n != 1 {
+		t.Fatalf("web -> api is drawn %d times, want once:\n%s", n, b.String())
+	}
+}

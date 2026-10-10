@@ -401,6 +401,20 @@ only by accident (ignoring the label selector injected into `kube-system`
 pods). That test now checks the cluster-wide invariant directly: no pod
 outside the selector is touched.
 
+**And nothing chose which guards get mutants.** `make guards`
+(`hack/guard-sweep.py`) removes every `if` guard in the Go code, one at a
+time, all 418 of them, and runs the unit tests. A guard whose removal no
+test notices fails the build unless it is accounted for, with its reason, in
+[`hack/guard-sweep-accepted.txt`](hack/guard-sweep-accepted.txt): caught on
+the real cluster (measured with `--e2e`, not assumed), equivalent (removing it
+changes nothing observable), a sort tie-break, a default the CLI always sets,
+wording only, a usage check, an error path no test provokes, or a fallback
+for a log stream that never broke. The first sweep found 135 such guards; tests
+now catch 33 of them, among them a Service selector that, removed, credited
+every Service to every workload in its namespace, and a capture without `-n`
+that, with both its defaults removed, would have probed every namespace.
+CI runs the sweep on every push.
+
 ### What the tests do not prove on a cluster, and why
 
 Silence is not a pass, so these are written down:
