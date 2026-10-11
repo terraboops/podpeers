@@ -65,8 +65,15 @@ try {
   // name them, and an honest "none observed" for a pod nobody talked to.
   await lookup("web");
   let text = await panel();
-  if (text.includes("listening") && text.includes("tcp/8080") && text.includes("pods (1)")) ok("v-wl: web's panel lists what it listens on and its one pod");
-  else fail(`v-wl: web's panel should say listening tcp/8080 and pods (1): ${text.slice(0, 300)}`);
+  // web and web-b are one Deployment, frontend: one node, named for the
+  // workload, of kind Deployment, with both pods counted once each.
+  const fe = await page.$eval("#detail", d => ({ h2: d.querySelector("h2")?.textContent, kind: d.querySelector(":scope > span.pill")?.textContent }));
+  if (fe.h2 === "frontend" && fe.kind === "Deployment" && text.includes("listening") && text.includes("tcp/8080") && text.includes("pods (2)"))
+    ok("v-wl: web's two replicas are one Deployment, frontend, listening on tcp/8080");
+  else fail(`v-wl: web should fold into Deployment frontend, listening tcp/8080, pods (2): ${JSON.stringify(fe)} ${text.slice(0, 300)}`);
+  const caption = await page.$$eval("#graph g.n", gs => gs.map(g => g.textContent).find(t => t.startsWith("frontend")) || "");
+  if (caption.includes("×2 pods")) ok("v-wl: the frontend node says it stands for two pods");
+  else fail(`v-wl: the frontend node should say ×2 pods: ${caption}`);
   // web's own side never connected to api (failed connects), but api saw web
   // connect: one flow, and since one side saw it established, it is open.
   const toApi = await page.$$eval("#detail tr", rows => rows.map(r => [...r.cells].map(c => c.textContent))
@@ -100,12 +107,58 @@ try {
   if ((await lookup("192.0.2.11")).label === "web") ok("v-pod: search by a pod's address finds it");
   else fail("v-pod: searching 192.0.2.11 should find web");
   const summary = await page.$eval("#summary", s => s.textContent);
-  if (summary.includes("4 pods observed")) ok("the header counts the observed pods");
-  else fail(`the header should say 4 pods observed: ${summary}`);
+  if (summary.includes("5 pods observed, 1 failed, 1 skipped")) ok("the header counts pods by status");
+  else fail(`the header should say 5 pods observed, 1 failed, 1 skipped: ${summary}`);
   await lookup("idle");
   text = await panel();
   if ((text.match(/none observed/g) || []).length === 2) ok("v-pod: an idle pod says none observed, in and out");
   else fail(`v-pod: idle should say none observed twice: ${text.slice(0, 300)}`);
+
+  // A node seen at two addresses is still one node, in either view.
+  for (const view of ["v-wl", "v-pod"]) {
+    await page.click("#" + view);
+    const nodeA = await page.$$eval("#graph g.n", gs => gs.filter(g => g.textContent.startsWith("node-a")).length);
+    if (nodeA === 1) ok(`${view}: node-a, seen at two addresses, is one node`);
+    else fail(`${view}: node-a should be one node, got ${nodeA}`);
+  }
+  // web's panel, pod view: the other end of each flow, its namespace when it
+  // differs, and what state each flow ended in.
+  await lookup("192.0.2.11");
+  const tables = await page.$$eval("#detail table", ts => ts.map(t => ({
+    head: t.rows[0].cells[0].textContent,
+    rows: [...t.rows].slice(1).map(r => [...r.cells].map(c => c.textContent)),
+  })));
+  const [inT, outT] = tables;
+  if (inT?.head === "from" && outT?.head === "to") ok("v-pod: the panel's tables say from and to");
+  else fail(`v-pod: the panel's tables should be headed from / to: ${JSON.stringify(tables.map(t => t.head))}`);
+  if (inT?.rows.some(r => r[0] === "gateway edge")) ok("v-pod: web's inbound names gateway, and its other namespace");
+  else fail(`v-pod: web's inbound should list gateway, tagged edge: ${JSON.stringify(inT?.rows)}`);
+  if (outT?.rows.some(r => r[0].startsWith("api") && r[2] === "never connected")) ok("v-pod: web's own attempt at the api service says never connected");
+  else fail(`v-pod: web -> svc api should say never connected: ${JSON.stringify(outT?.rows)}`);
+  // Flow lines: one attempted, two closed, each says so; lit ones use the lit arrow.
+  const lines = await page.$$eval("#graph path.flow", ps => ps.map(p => ({ cls: p.getAttribute("class"), title: p.querySelector("title")?.textContent || "", marker: p.getAttribute("marker-end") })));
+  const attempted = lines.filter(l => l.cls.includes("attempted")), closed = lines.filter(l => l.cls.includes("closed"));
+  const openOnes = lines.filter(l => !l.cls.includes("attempted") && !l.cls.includes("closed"));
+  if (attempted.length === 1 && closed.length === 2 && attempted[0].title.includes("(never connected)") && closed.every(l => l.title.includes("(closed during window)"))
+      && openOnes.length > 0 && openOnes.every(l => !l.title.includes("(")))
+    ok("v-pod: the one attempted and the two closed flows are drawn and titled so, and open ones are not");
+  else fail(`v-pod: want 1 attempted and 2 closed flows, titled so: ${JSON.stringify(attempted)} ${JSON.stringify(closed)}`);
+  const lit = lines.filter(l => l.cls.includes("hl"));
+  if (lit.length > 0 && lit.every(l => l.marker === "url(#arrow-hl)")) ok("v-pod: lit flows carry the lit arrow");
+  else fail(`v-pod: lit flows should end in the lit arrow: ${JSON.stringify(lit)}`);
+  // The selection carries from pods to workloads too.
+  await page.click("#v-wl");
+  if ((await page.$eval("#detail", d => d.querySelector("h2")?.textContent)) === "frontend") ok("the selection carries from a pod to its workload");
+  else fail("switching to workloads should select frontend, web's workload");
+  // A failed or skipped pod says so, with the reason.
+  await page.click("#v-pod");
+  for (const [q, want] of [["broken", "failed: debug container did not start"], ["queued", "skipped: pod phase is Pending, not Running"]]) {
+    await lookup(q);
+    const st = await page.$eval("#detail", d => [...d.querySelectorAll("div span")].map(s => [s.className, s.textContent]));
+    const bad = q === "broken";
+    if (st.some(([cls, t]) => t === want && (cls === "bad") === bad)) ok(`v-pod: ${q} says ${want}${bad ? ", marked bad" : ""}`);
+    else fail(`v-pod: ${q} should say ${want}: ${JSON.stringify(st)}`);
+  }
 
   // The GraphQL console answers from the same data as `podpeers query`.
   if (!(await page.$eval("#console", c => !c.hidden))) fail("GraphQL console is hidden on the served page");

@@ -408,8 +408,8 @@ tests that should notice:
 | Where | Guards | Removed how | Run against |
 |---|---|---|---|
 | Go (`internal/`, `cmd/`) | 467 | each `if` and tagless-`switch` case made false; each `&&`/`\|\|` in a returned or assigned boolean flipped | the package's tests, then the whole unit suite |
-| shell (the skill's script, `hack/`) | 92 | each `if` made false; each `cond \|\| action` list's action dropped; each one-line `case` arm emptied | the tests that drive that script (`test/skillscript`, `test/hygiene`, `test/tooling`) |
-| the web UI's JavaScript | 55 | as for Go | the browser check (`--browser`) |
+| shell (the skill's script, `hack/`) | 106 | each `if` made false; each `cond \|\| action` list's action dropped; each `case` arm removed (a one-line arm, a default `*)` arm or an arm of a one-line `case ... esac` emptied; a multi-line arm's pattern made to never match) | the tests that drive that script (`test/skillscript`, `test/hygiene`, `test/tooling`) |
+| the web UI's JavaScript | 85 | as for Go, and each ternary `c ? a : b` forced to its else branch | the browser check (`--browser`) |
 
 A guard whose removal no test notices fails the build unless it is accounted
 for, with its reason, in
@@ -431,7 +431,12 @@ invented production-like context, `test/tooling`); and the mutant harness's
 own verdict (now run on a scratch repo with mutants of known outcome). In the
 web UI: a Service without a selector folded into every pod, a selector
 matched across namespaces, a connection one side saw established labelled
-"never connected", and a port mapped by number regardless of protocol. Each
+"never connected", and a port mapped by number regardless of protocol. Its
+ternaries also chose, unchecked, a workload's name and kind over its pods',
+a Service's target port, one node for a node seen at two addresses, a
+failed pod's reason, and what each row of the detail panel shows. In the
+mutant harness, the arm that fails a run when a mutant survives went
+unnoticed: every test also had a stale or broken patch failing the run. Each
 now has a test. Not swept: test code itself (the mutants prove the tests fail
 when a protection breaks), and the Makefile and CI workflow (their steps are
 the commands above, run on every push).

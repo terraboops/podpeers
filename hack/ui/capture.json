@@ -58,6 +58,18 @@
     },
     {
       "namespace": "shop",
+      "name": "broken",
+      "ip": "192.0.2.17",
+      "labels": {
+        "app": "broken"
+      },
+      "probe": {
+        "status": "failed",
+        "reason": "debug container did not start"
+      }
+    },
+    {
+      "namespace": "shop",
       "name": "idle",
       "ip": "192.0.2.15",
       "labels": {
@@ -101,7 +113,30 @@
           "address": "0.0.0.0",
           "port": 8080
         }
-      ]
+      ],
+      "workload": "Deployment/frontend"
+    },
+    {
+      "namespace": "shop",
+      "name": "web-b",
+      "ip": "192.0.2.16",
+      "labels": {
+        "app": "web",
+        "tier": "front"
+      },
+      "probe": {
+        "status": "observed",
+        "samples": 12,
+        "complete": true
+      },
+      "listening": [
+        {
+          "protocol": "tcp",
+          "address": "0.0.0.0",
+          "port": 8080
+        }
+      ],
+      "workload": "Deployment/frontend"
     }
   ],
   "services": [
@@ -117,12 +152,12 @@
       "ports": [
         {
           "protocol": "udp",
-          "port": 9000,
+          "port": 80,
           "targetPort": "9999"
         },
         {
           "protocol": "tcp",
-          "port": 9000,
+          "port": 80,
           "targetPort": "9000"
         }
       ]
@@ -214,7 +249,7 @@
       "firstSeen": "2023-11-14T22:13:25Z",
       "lastSeen": "2023-11-14T22:14:15Z",
       "samples": 9,
-      "open": true
+      "open": false
     },
     {
       "pod": "shop/web",
@@ -243,7 +278,7 @@
         "name": "api",
         "ip": "192.0.2.200"
       },
-      "port": 9000,
+      "port": 80,
       "protocol": "tcp",
       "connections": 1,
       "newConnections": 1,
@@ -299,6 +334,23 @@
         "ip": "192.0.2.202"
       },
       "port": 5432,
+      "protocol": "tcp",
+      "connections": 1,
+      "newConnections": 1,
+      "firstSeen": "2023-11-14T22:13:20Z",
+      "lastSeen": "2023-11-14T22:14:15Z",
+      "samples": 12,
+      "open": true
+    },
+    {
+      "pod": "shop/api",
+      "direction": "inbound",
+      "peer": {
+        "kind": "node",
+        "name": "node-a",
+        "ip": "198.51.100.8"
+      },
+      "port": 9001,
       "protocol": "tcp",
       "connections": 1,
       "newConnections": 1,

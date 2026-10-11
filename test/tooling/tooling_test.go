@@ -164,3 +164,13 @@ func TestClusterScriptUpAndDown(t *testing.T) {
 		t.Fatalf("down: exit %d; want the cluster and its kubeconfig gone, and colima trimmed\n%s", code, read(calls))
 	}
 }
+
+// Anything but up or down is a usage error, and touches nothing.
+func TestClusterScriptRejectsUnknownSubcommands(t *testing.T) {
+	root, script := copyScript(t, "e2e-cluster.sh")
+	bin, calls := shims(t, root)
+	code, out := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "KUBECONFIG="}, "bash", script, "destroy")
+	if code != 2 || !strings.Contains(out, "usage:") || read(calls) != "" {
+		t.Fatalf("destroy: exit %d, want 2 with the usage and no calls\n%s\n%s", code, out, read(calls))
+	}
+}

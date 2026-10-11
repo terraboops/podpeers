@@ -122,6 +122,21 @@ func TestMutantHarnessJudgesEachMutantRight(t *testing.T) {
 	if t.Failed() {
 		t.Fatalf("output:\n%s", out)
 	}
+	// A survivor alone, or a mutant killed for the wrong reason alone, must
+	// fail the run: nothing else (a stale or broken patch) may be what fails it.
+	for _, keep := range []string{"02-survives", "03-wrong-reason"} {
+		for _, name := range []string{"02-survives", "03-wrong-reason", "04-stale", "05-no-compile"} {
+			if name != keep {
+				os.Remove(filepath.Join(h.root, "hack", "mutants", name+".patch"))
+			}
+		}
+		h.commit()
+		if code, out := h.run(nil); code != 1 || strings.Contains(out, "all mutants killed") {
+			t.Fatalf("with %s the only bad mutant: exit %d, want 1\n%s", keep, code, out)
+		}
+		h.git("checkout", "-q", "HEAD~1", "--", "hack/mutants")
+		h.commit()
+	}
 	// Control: with only the good mutants, the run passes.
 	for _, name := range []string{"02-survives", "03-wrong-reason", "04-stale", "05-no-compile"} {
 		os.Remove(filepath.Join(h.root, "hack", "mutants", name+".patch"))

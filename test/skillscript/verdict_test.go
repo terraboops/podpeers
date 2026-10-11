@@ -164,6 +164,12 @@ func TestVerifyArgumentChecks(t *testing.T) {
 			t.Errorf("%v: exit %d, want 1 with %q:\n%s", c.args, code, c.msg, out)
 		}
 	}
+	if code, out, calls := newFake(t).run(t, nil, append([]string{"verify", "--no-such-flag"}, common...)...); code != 1 || !strings.Contains(out, "unknown argument: --no-such-flag") || calls != "" {
+		t.Errorf("an unknown argument: exit %d, want 1 before any call:\n%s\n%s", code, out, calls)
+	}
+	if code, out, _ := f.run(t, nil, append([]string{"deploy"}, common...)...); code != 1 || !strings.Contains(out, "Exit codes: 0 OK") {
+		t.Errorf("an unknown subcommand: exit %d, want 1 with the usage:\n%s", code, out)
+	}
 	if code, out, _ := f.run(t, nil); code != 1 || !strings.Contains(out, "Exit codes: 0 OK") {
 		t.Errorf("no arguments: exit %d, want 1 with the usage:\n%s", code, out)
 	}

@@ -10,10 +10,13 @@ Guards, each disabled one at a time in a scratch worktree of HEAD:
   Shell (the skill's script and hack/*.sh)
     `if <c>; then` / `elif <c>; then`    ->  condition `false`
     `<c> || <action>` / `<c> && <action>` lists  ->  action `true`
-    a one-line `case` arm `<pat>) <body> ;;`    ->  body `:`
+    a one-line `case` arm `<pat>) <body> ;;`, default arms included, and
+      each arm of a one-line `case ... esac`  ->  body `:`
+    a multi-line arm `<pat>)`  ->  a pattern that never matches (the arm is gone)
   JavaScript (the web UI, internal/render/page.html; with --browser)
     `if (<c>)`            ->  `if (false && (<c>))`
     each && or || in `return ...` or `x = ...`  ->  flipped, one at a time
+    each ternary `<c> ? a : b`  ->  `(false && (<c>)) ? a : b`
 
 Go guards run that package's tests (fast), then, for survivors, the whole
 unit suite. A shell guard runs the tests that drive that script (SHELL_TESTS).
@@ -43,6 +46,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 
 ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
 IF = re.compile(r"^(\s*)(\} else )?if (.+) \{\s*$")
@@ -97,6 +101,88 @@ def js_cond(line):
 JS_BOOL = re.compile(r"^\s*(return |(const |let )?[\w.]+ = ).*(&&|\|\|)")
 
 
+def js_code_mask(line):
+    """For each character of a JavaScript line: is it code (not inside a
+    string, a template's text or a regex literal)?"""
+    mask, stack, i = [True] * len(line), [], 0  # stack: "`" in template text, "{" in code
+    def text():
+        return stack and stack[-1] == "`"
+    while i < len(line):
+        c = line[i]
+        if text():
+            mask[i] = False
+            if c == "\\":
+                i += 1
+                if i < len(line):
+                    mask[i] = False
+            elif c == "`":
+                stack.pop()
+            elif line.startswith("${", i):
+                mask[i] = mask[i + 1] = False
+                stack.append("${")
+                i += 1
+        elif c in "'\"":
+            j = i + 1
+            while j < len(line) and line[j] != c:
+                j += 2 if line[j] == "\\" else 1
+            for x in range(i, min(j + 1, len(line))):
+                mask[x] = False
+            i = j
+        elif c == "`":
+            mask[i] = False
+            stack.append("`")
+        elif c == "/" and re.match(r".*[=(,:!&|?]\s*$", line[:i]) and not line.startswith("//", i):
+            j = i + 1  # a regex literal
+            while j < len(line) and line[j] != "/":
+                j += 2 if line[j] == "\\" else 1
+            for x in range(i, min(j + 1, len(line))):
+                mask[x] = False
+            i = j
+        elif c == "{" and stack and stack[-1] == "${":
+            stack.append("{")
+        elif c == "}" and stack and stack[-1] in ("{", "${"):
+            if stack.pop() == "${":
+                mask[i] = False
+        i += 1
+    return mask
+
+
+def ternaries(line):
+    """(start, ?) of the condition of each ternary in a JavaScript line: from
+    its ? back to the nearest delimiter that binds more loosely than ?: (an
+    unmatched bracket, a comma or semicolon, an assignment or arrow, return,
+    or an enclosing ternary's ? or :)."""
+    mask, out = js_code_mask(line), []
+    for q, c in enumerate(line):
+        if c != "?" or not mask[q] or line[q + 1:q + 2] in ("?", ".") or line[q - 1:q] == "?":
+            continue
+        depth, i = 0, q - 1
+        while i >= 0:
+            if mask[i]:
+                ch = line[i]
+                if ch in ")]}":
+                    depth += 1
+                elif ch in "([{":
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif depth == 0:
+                    if line.startswith("=>", i):
+                        i += 1  # past the arrow
+                        break
+                    if ch in ",;?:" or (ch == "=" and line[i + 1:i + 2] not in ("=", ">") and line[i - 1:i] not in ("=", "!", "<", ">")) \
+                            or re.search(r"(^|\W)return$", line[:i + 1]):
+                        break
+            elif depth == 0 and line.startswith("${", i - 1):
+                break  # the start of a template substitution
+            i -= 1
+        start = i + 1
+        while start < q and line[start] == " ":
+            start += 1
+        out.append((start, q))
+    return out
+
+
 def js_guards(rel):
     out = []
     for i, l in enumerate(open(os.path.join(ROOT, rel)).read().split("\n")):
@@ -105,6 +191,9 @@ def js_guards(rel):
         elif JS_BOOL.match(l):
             for k in range(len(OP.findall(l))):
                 out.append((rel, (i + 1, k), f"{l.strip()} [operator {k + 1} flipped]"))
+        if not l.lstrip().startswith("//"):
+            for k in range(len(ternaries(l))):
+                out.append((rel, (i + 1, k, "?"), f"{l.strip()} [ternary {k + 1} forced to its else]"))
     return out
 
 
@@ -117,6 +206,21 @@ NO_HANGS = {"hack/hygiene.sh"}
 
 SH_IF = re.compile(r"^(\s*(?:el)?if )(.+?)(; then\b.*)$")
 SH_ARM = re.compile(r"^(\s*)([^\s#()][^()]*?)\)\s+(.+?)\s*;;\s*$")
+# An arm whose body follows on the next lines: `<pat>)` alone on its line.
+SH_ARM_OPEN = re.compile(r"^(\s*)([^\s#()][^()]*?)\)\s*(#.*)?$")
+NEVER = "__guard_sweep_never_matches__"
+# A whole `case ... in <pat>) <body> ;; ... esac` on one line.
+SH_CASE_LINE = re.compile(r"^\s*case .* in (.*) esac\s*$")
+SH_INLINE_ARM = re.compile(r"(?:^|;;)\s*([^\s()]+)\)\s*((?:(?!;;).)*?)\s*(?=;;)")
+
+
+def inline_arms(line):
+    """(start, end) of the body of each arm with a body, in a one-line case."""
+    m = SH_CASE_LINE.match(line)
+    if not m:
+        return []
+    off = m.start(1)
+    return [(off + a.start(2), off + a.end(2)) for a in SH_INLINE_ARM.finditer(m.group(1)) if a.group(2).strip()]
 
 
 def split_list(line):
@@ -196,13 +300,19 @@ def shell_guards(rel):
         if t == "esac":
             in_case -= 1
             continue
-        if SH_IF.match(l) or (in_case and SH_ARM.match(l) and not t.startswith("*)")) or \
+        if inline_arms(l):
+            for k in range(len(inline_arms(l))):
+                out.append((rel, (i + 1, k), f"{t} [arm {k + 1} emptied]"))
+        elif SH_IF.match(l) or (in_case and (SH_ARM.match(l) or SH_ARM_OPEN.match(l))) or \
                 (split_list(l) is not None and not t.startswith(("trap ", "if ", "elif ", "|"))):
             out.append((rel, i + 1, t))
     return out
 
 
 def mutate_shell(line):
+    m = SH_ARM_OPEN.match(line)
+    if m and not SH_IF.match(line) and split_list(line) is None:
+        return f"{m.group(1)}{NEVER})"  # the arm is gone: input falls to the next one
     m = SH_IF.match(line)
     if m:
         return m.group(1) + "false" + m.group(3)
@@ -213,9 +323,16 @@ def mutate_shell(line):
     return f"{m.group(1)}{m.group(2)}) : ;;"
 
 
+WORKTREE_LOCK = threading.Lock()
+
+
 def worktree():
-    wt = tempfile.mkdtemp() + "/wt"
-    subprocess.run(["git", "-C", ROOT, "worktree", "add", "-q", "--detach", wt, "HEAD"], check=True)
+    # Parallel `git worktree add`s race on .git/worktrees/: one at a time,
+    # each under a name of its own.
+    d = tempfile.mkdtemp()
+    wt = os.path.join(d, "wt-" + os.path.basename(d))
+    with WORKTREE_LOCK:
+        subprocess.run(["git", "-C", ROOT, "worktree", "add", "-q", "--detach", wt, "HEAD"], check=True)
     return wt
 
 
@@ -224,6 +341,19 @@ def mutate(path, n):
     boolean expression n is (line, k): flip its k-th && or ||."""
     lines = open(path).read().split("\n")
     mutated = lines[:]
+    if isinstance(n, tuple) and len(n) == 3:  # a ternary, forced to its else branch
+        n, k, _ = n
+        a, q = ternaries(lines[n - 1])[k]
+        l = lines[n - 1]
+        mutated[n - 1] = l[:a] + "(false && (" + l[a:q].rstrip() + ")) " + l[q:]
+        open(path, "w").write("\n".join(mutated))
+        return lines
+    if isinstance(n, tuple) and not path.endswith((".go", ".html")):  # an arm of a one-line case
+        n, k = n
+        a, b = inline_arms(lines[n - 1])[k]
+        mutated[n - 1] = lines[n - 1][:a] + ":" + lines[n - 1][b:]
+        open(path, "w").write("\n".join(mutated))
+        return lines
     if isinstance(n, tuple):
         n, k = n
         at = [m.start() for m in OP.finditer(lines[n - 1])][k]
