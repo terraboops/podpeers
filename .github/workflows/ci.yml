@@ -44,7 +44,7 @@ jobs:
     # for, with a reason, in hack/guard-sweep-accepted.txt. A new untested
     # guard fails here.
     runs-on: ubuntu-latest
-    timeout-minutes: 180 # ~100 min on a 4-core runner
+    timeout-minutes: 240 # ~150 min on a 4-core runner: the hygiene guards run two at a time
     steps:
       - uses: actions/checkout@v4
         with:

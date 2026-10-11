@@ -53,13 +53,13 @@ BOOL = re.compile(r"^\s*(return |[\w.]+ :?= ).*(&&|\|\|)")
 OP = re.compile(r"&&|\|\|")
 
 # The tests that drive each shell script. hygiene's get room: one equivalent
-# mutant makes --history read every object, about 3x slower, and must not be
-# mistaken for a catch by timing out on a slow runner. hack/check-docs.sh and
-# hack/check-ui.sh are themselves the docs and browser checks: removing one
-# of their guards is caught, or not, by running them (needs node and Chrome).
+# mutant makes --history read every object, about 3x slower (see NO_HANGS).
+# hack/check-docs.sh and hack/check-ui.sh are themselves the docs and browser
+# checks: removing one of their guards is caught, or not, by running them
+# (needs node and Chrome).
 SHELL_TESTS = {
     "skills/podpeers-netpol/scripts/netpol-check.sh": ["go", "test", "-count=1", "-timeout", "5m", "./test/skillscript/"],
-    "hack/hygiene.sh": ["go", "test", "-count=1", "-timeout", "45m", "./test/hygiene/"],
+    "hack/hygiene.sh": ["go", "test", "-count=1", "-timeout", "60m", "./test/hygiene/"],
     "hack/e2e-cluster.sh": ["go", "test", "-count=1", "-timeout", "5m", "./test/tooling/"],
     "hack/mutants.sh": ["go", "test", "-count=1", "-timeout", "5m", "./test/tooling/"],
     "hack/check-docs.sh": ["./hack/check-docs.sh"],
@@ -106,6 +106,13 @@ def js_guards(rel):
             for k in range(len(OP.findall(l))):
                 out.append((rel, (i + 1, k), f"{l.strip()} [operator {k + 1} flipped]"))
     return out
+
+
+# Scripts none of whose guards can turn into an endless loop (their loops
+# run over finite input): a timeout there is slowness, never a catch. They
+# are also the slow ones (OCR, a walk of all history), so they run in a phase
+# of their own with fewer workers, to finish rather than starve.
+NO_HANGS = {"hack/hygiene.sh"}
 
 
 SH_IF = re.compile(r"^(\s*(?:el)?if )(.+?)(; then\b.*)$")
@@ -292,11 +299,14 @@ def run(items, cmd, env=None):
             r = subprocess.CompletedProcess(p.args, p.returncode, out, err)
             open(path, "w").write("\n".join(orig))
             survived = r.returncode == 0
-            # A timeout counts as noticed: right for a mutant that hangs (an
-            # argument loop without its shift), wrong for one that is only
-            # slow. Name each, so a slow one is seen and its timeout raised.
+            # A timeout counts as noticed where a mutant can hang (an argument
+            # loop without its shift). Where none can (NO_HANGS), it only
+            # means slow: count it as not noticed, so it fails --check out
+            # loud instead of passing as a catch.
             if "panic: test timed out" in r.stdout:
-                print(f"timed out: {f}:{n}", file=sys.stderr)
+                hang = f not in NO_HANGS
+                print(f"timed out ({'a hang: noticed' if hang else 'slow, cannot hang: NOT counted as noticed'}): {f}:{n}", file=sys.stderr)
+                survived = survived or not hang
             # A browser check that fails without saying FAIL broke, it did not
             # judge: count that as no test noticing, never as a catch.
             if not survived and cmd(f) == ["./hack/check-ui.sh"] and "\nFAIL " not in "\n" + r.stdout:
@@ -337,7 +347,9 @@ def main():
     br = [g for rel in SHELL_TESTS if browser and rel.startswith("hack/check-") for g in shell_guards(rel)]
     br += [g for rel in JS_TESTS if browser for g in js_guards(rel)]
     cmd = lambda f: SHELL_TESTS.get(f) or JS_TESTS[f]
-    shres = parallel(sh, cmd) + (parallel(br, cmd, workers=1) if br else [])
+    slow = [g for g in sh if g[0] in NO_HANGS]
+    shres = parallel([g for g in sh if g[0] not in NO_HANGS], cmd) + parallel(slow, cmd, workers=2) + \
+        (parallel(br, cmd, workers=1) if br else [])
     sh += br
     left = sorted(left + [(f, n, t) for survived, f, n, t in shres if survived], key=lambda x: (x[0], str(x[1]), x[2]))
     for f, n, t in left:
