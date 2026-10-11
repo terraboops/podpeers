@@ -53,7 +53,7 @@ make e2e                # for anything touching capture, policy, diff, the skill
 make mutants-e2e        # after changing a protection or its test: each mutant must still be killed
 make mutants-ui         # after changing serve or the browser checks: the same, in a real browser
 make guards             # after adding a guard (Go, shell): some test must notice its removal (slow)
-make guards-browser     # the same for the web UI, in a real browser (slower)
+make guards-browser     # the same for the web UI's JavaScript, in a real browser (slow)
 ```
 
 Trunk-based: commit to `main`; branch only to carry a pull request. A change

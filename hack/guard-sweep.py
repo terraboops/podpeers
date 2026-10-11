@@ -28,6 +28,7 @@ accounted for in hack/guard-sweep-accepted.txt: caught on the real cluster
   hack/guard-sweep.py --browser    also the web UI's JavaScript and the browser
                                    checks' own guards, against the browser
                                    check (needs node and Chrome; slow)
+  hack/guard-sweep.py --browser-only   only those (CI runs it as its own job)
   hack/guard-sweep.py --check      sweep, compared with
                                    hack/guard-sweep-accepted.txt: fails on a
                                    survivor nobody has accounted for, and on an
@@ -467,16 +468,29 @@ def main():
         for survived, f, n, text in run(items, cmd, env):  # one cluster: one at a time
             print(f"{'cluster-SURVIVED' if survived else 'cluster-killed'} {f}:{n}: {text}", flush=True)
         return
-    browser = "--browser" in sys.argv
-    own = parallel(guards(), lambda f: ["go", "test", "-count=1", "./" + os.path.dirname(f) + "/"])
+    only = "--browser-only" in sys.argv
+    browser = only or "--browser" in sys.argv
+    cmd = lambda f: SHELL_TESTS.get(f) or JS_TESTS[f]
+    if browser:
+        # The browser checks must pass unmutated first: in a broken
+        # environment every mutant would fail them, for the wrong reason.
+        wt = worktree()
+        try:
+            for c in sorted({tuple(v) for k, v in SHELL_TESTS.items() if k.startswith("hack/check-")} | {tuple(v) for v in JS_TESTS.values()}):
+                r = subprocess.run(list(c), cwd=wt, capture_output=True, text=True)
+                if r.returncode != 0:
+                    print(f"baseline: {' '.join(c)} fails unmutated; nothing swept\n{r.stdout[-2000:]}{r.stderr[-2000:]}", file=sys.stderr)
+                    sys.exit(1)
+        finally:
+            subprocess.run(["git", "-C", ROOT, "worktree", "remove", "--force", wt])
+    own = [] if only else parallel(guards(), lambda f: ["go", "test", "-count=1", "./" + os.path.dirname(f) + "/"])
     first = [(f, n, t) for survived, f, n, t in own if survived]
     whole = parallel(first, lambda f: ["go", "test", "-count=1", "./internal/...", "./cmd/...", "./test/skillscript/"])
     left = [(f, n, t) for survived, f, n, t in whole if survived]
-    sh = [g for rel in SHELL_TESTS if not rel.startswith("hack/check-") for g in shell_guards(rel)]
+    sh = [] if only else [g for rel in SHELL_TESTS if not rel.startswith("hack/check-") for g in shell_guards(rel)]
     # The browser check uses one port and one Chrome: its guards run one at a time.
     br = [g for rel in SHELL_TESTS if browser and rel.startswith("hack/check-") for g in shell_guards(rel)]
     br += [g for rel in JS_TESTS if browser for g in js_guards(rel)]
-    cmd = lambda f: SHELL_TESTS.get(f) or JS_TESTS[f]
     slow = [g for g in sh if g[0] in NO_HANGS]
     shres = parallel([g for g in sh if g[0] not in NO_HANGS], cmd) + parallel(slow, cmd, workers=2) + \
         (parallel(br, cmd, workers=1) if br else [])
@@ -486,20 +500,22 @@ def main():
         print(f"{f}:{n[0] if isinstance(n, tuple) else n}: {t}")
     print(f"{len(own)} Go guards, {len(sh) - len(br)} shell guards, {len(br)} browser-checked guards; {len(left)} survive their tests", file=sys.stderr)
     if "--check" in sys.argv:
-        sys.exit(check(left, browser))
+        sys.exit(check(left, browser, only))
 
 
-def check(left, browser):
+def check(left, browser, only=False):
     """Every survivor must be accepted with a reason, and every acceptance
-    must still be a survivor. Without --browser, the browser checks' own
-    guards are not swept, and their entries are not checked."""
+    must still be a survivor. Only the entries for what was swept are
+    checked: without --browser, not the browser-checked ones; with
+    --browser-only, only those."""
     accepted = []
     for line in open(os.path.join(ROOT, "hack", "guard-sweep-accepted.txt")):
         line = line.rstrip("\n")
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         f, text, category, reason = [x.strip() for x in line.split(" | ", 3)]
-        if browser or not (f.startswith("hack/check-") or f in JS_TESTS):
+        in_browser = f.startswith("hack/check-") or f in JS_TESTS
+        if (in_browser and browser) or (not in_browser and not only):
             accepted.append((f, text))
     pending = accepted[:]
     unaccounted = []

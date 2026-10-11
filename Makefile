@@ -29,10 +29,10 @@ mutants-ui:
 guards:
 	python3 hack/guard-sweep.py --check
 
-# Also the web UI's JavaScript and the browser checks' own guards, against the
-# browser check (needs node and Chrome; slower still).
+# The web UI's JavaScript and the browser checks' own guards, against the
+# browser checks (needs node and Chrome; about 90 min). CI runs both.
 guards-browser:
-	python3 hack/guard-sweep.py --check --browser
+	python3 hack/guard-sweep.py --check --browser-only
 
 # Renders every Mermaid diagram in the Markdown (needs node; set
 # PUPPETEER_EXECUTABLE_PATH to a local Chrome to skip the browser download).

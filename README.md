@@ -417,8 +417,8 @@ for, with its reason, in
 the real cluster (measured with `--e2e`, not assumed), equivalent (removing it
 changes nothing observable), a sort tie-break, a default the CLI always sets,
 wording or layout only, a usage check, an error path no test provokes, or a
-fallback for a log stream that never broke. CI runs the Go and shell sweep on
-every push; the browser part runs locally.
+fallback for a log stream that never broke. CI runs all three on every push,
+the browser part as a job of its own in headless Chrome.
 
 The sweeps found tests missing where it mattered. In the Go code: a Service
 selector that, removed, credited every Service to every workload in its

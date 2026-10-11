@@ -57,6 +57,24 @@ jobs:
       - name: guard sweep
         run: PODPEERS_REQUIRE_OCR=1 python3 hack/guard-sweep.py --check
 
+  guards-browser:
+    # The same for what only a browser can judge: every guard in the web UI's
+    # JavaScript (if, && / ||, ternary) and in the browser checks' own
+    # scripts, removed one at a time and run against the browser checks in
+    # headless Chrome. Both checks must pass unmutated first.
+    runs-on: ubuntu-latest
+    timeout-minutes: 180 # one browser at a time: ~90 runs of about a minute
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: guard sweep in the browser
+        run: python3 hack/guard-sweep.py --check --browser-only
+
   docs:
     # Render every Mermaid diagram in the Markdown with the same library
     # GitHub uses; a diagram that does not parse fails the build.
