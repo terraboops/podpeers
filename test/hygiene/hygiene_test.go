@@ -72,7 +72,7 @@ func gate(t *testing.T, dir string, args ...string) (int, string) {
 func TestCleanRepoPasses(t *testing.T) {
 	dir := repo(t, map[string]string{"README.md": "see 192.0.2.10 and 127.0.0.1\n"})
 	for _, args := range [][]string{nil, {"--history"}} {
-		if code, out := gate(t, dir, args...); code != 0 {
+		if code, out := gate(t, dir, args...); code != 0 || !strings.Contains(out, "hygiene: ok") && !strings.Contains(out, "hygiene: history ok") {
 			t.Fatalf("hygiene.sh %v on a clean repo: exit %d\n%s", args, code, out)
 		}
 	}
@@ -135,10 +135,50 @@ func TestAddressRenderedInAnImageIsFound(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "rendered in") {
 		t.Fatalf("hygiene.sh missed an address rendered in an image (exit %d):\n%s", code, out)
 	}
-	// Listed as a known, already-public blob, history lets exactly it through.
+	// Deleted from the tree, it is still in history, and --history must OCR
+	// that blob (not whatever images the tree holds now).
 	known, _ := exec.Command("git", "-C", dir, "rev-parse", "HEAD:docs/demo.gif").Output()
+	os.Remove(filepath.Join(dir, "docs", "demo.gif"))
+	exec.Command("git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qam", "drop").Run()
+	if code, out := gate(t, dir); code != 0 {
+		t.Fatalf("the tree no longer holds the image: exit %d\n%s", code, out)
+	}
+	if code, out := gate(t, dir, "--history"); code == 0 || !strings.Contains(out, "docs/demo.gif (blob") {
+		t.Fatalf("--history missed an address rendered in an image deleted from the tree (exit %d):\n%s", code, out)
+	}
+	// Listed as a known, already-public blob, history lets exactly it through.
 	os.WriteFile(filepath.Join(dir, "hack", "hygiene-history-known.txt"), []byte(strings.TrimSpace(string(known))+" docs/demo.gif test\n"), 0o644)
 	if code, out := gate(t, dir, "--history"); code != 0 {
 		t.Fatalf("a listed known blob should pass --history: exit %d\n%s", code, out)
+	}
+}
+
+// Forced with HYGIENE_IMAGES=1 (as CI does), missing OCR tools fail the gate
+// instead of skipping the images with a warning. The tools are hidden by a
+// PATH that links every other command.
+func TestForcedImageCheckFailsWithoutTheTools(t *testing.T) {
+	dir := repo(t, map[string]string{"docs/a.png": "not really a png"})
+	bin := filepath.Join(t.TempDir(), "bin")
+	os.MkdirAll(bin, 0o755)
+	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
+		entries, _ := os.ReadDir(d)
+		for _, e := range entries {
+			if e.Name() == "tesseract" || e.Name() == "ffmpeg" {
+				continue
+			}
+			os.Symlink(filepath.Join(d, e.Name()), filepath.Join(bin, e.Name())) // first in PATH wins
+		}
+	}
+	for _, c := range []struct {
+		force, want string
+		code        int
+	}{{"1", "HYGIENE_IMAGES=1 but tesseract/ffmpeg are not installed", 1}, {"", "images were NOT checked", 0}} {
+		cmd := exec.Command("./hack/hygiene.sh")
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "PATH="+bin, "HYGIENE_IMAGES="+c.force)
+		out, _ := cmd.CombinedOutput()
+		if cmd.ProcessState.ExitCode() != c.code || !strings.Contains(string(out), c.want) {
+			t.Errorf("HYGIENE_IMAGES=%q without OCR tools: exit %d, want %d with %q\n%s", c.force, cmd.ProcessState.ExitCode(), c.code, c.want, out)
+		}
 	}
 }

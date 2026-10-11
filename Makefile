@@ -1,4 +1,4 @@
-.PHONY: build test vet docs ui mutants mutants-e2e mutants-ui guards e2e e2e-cluster e2e-down clean
+.PHONY: build test vet docs ui mutants mutants-e2e mutants-ui guards guards-browser e2e e2e-cluster e2e-down clean
 
 build:
 	go build -o bin/podpeers ./cmd/podpeers
@@ -23,10 +23,16 @@ mutants-e2e: e2e-cluster
 mutants-ui:
 	./hack/mutants.sh --ui
 
-# Remove every guard in the Go code, one at a time: each one some unit test
-# notices, or accounted for in hack/guard-sweep-accepted.txt (slow: ~50 min).
+# Remove every guard in the Go code and the shell scripts, one at a time: each
+# one some test notices, or accounted for in hack/guard-sweep-accepted.txt
+# (slow: about 90 min).
 guards:
 	python3 hack/guard-sweep.py --check
+
+# Also the web UI's JavaScript and the browser checks' own guards, against the
+# browser check (needs node and Chrome; slower still).
+guards-browser:
+	python3 hack/guard-sweep.py --check --browser
 
 # Renders every Mermaid diagram in the Markdown (needs node; set
 # PUPPETEER_EXECUTABLE_PATH to a local Chrome to skip the browser download).

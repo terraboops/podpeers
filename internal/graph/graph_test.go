@@ -443,3 +443,11 @@ func TestConnectedUDPServerIsInbound(t *testing.T) {
 		t.Fatalf("TCP must not use the UDP heuristic: %+v", es)
 	}
 }
+
+// With every pod sampled the same number of times, the count is stated once.
+func TestLimitsStateAnEvenSampleCount(t *testing.T) {
+	r := Result{Window: Window{Start: t0, End: t0.Add(time.Minute), Interval: "5s", SamplesMin: 12, SamplesMax: 12}}
+	if l := strings.Join(ComputeLimits(r), "\n"); !strings.Contains(l, "one sample every 5s over 1m0s (12 samples per pod)") {
+		t.Fatalf("limits:\n%s", l)
+	}
+}

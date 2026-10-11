@@ -113,7 +113,19 @@
       ],
       "selector": {
         "app": "api"
-      }
+      },
+      "ports": [
+        {
+          "protocol": "udp",
+          "port": 9000,
+          "targetPort": "9999"
+        },
+        {
+          "protocol": "tcp",
+          "port": 9000,
+          "targetPort": "9000"
+        }
+      ]
     },
     {
       "namespace": "shop",
@@ -124,6 +136,13 @@
       "selector": {
         "app": "web"
       }
+    },
+    {
+      "namespace": "shop",
+      "name": "ext",
+      "clusterIPs": [
+        "192.0.2.202"
+      ]
     }
   ],
   "edges": [
@@ -231,7 +250,9 @@
       "firstSeen": "2023-11-14T22:13:20Z",
       "lastSeen": "2023-11-14T22:14:15Z",
       "samples": 12,
-      "open": true
+      "open": false,
+      "attempted": true,
+      "failedConnections": 3
     },
     {
       "pod": "shop/api",
@@ -260,6 +281,24 @@
         "podRange": true
       },
       "port": 9000,
+      "protocol": "tcp",
+      "connections": 1,
+      "newConnections": 1,
+      "firstSeen": "2023-11-14T22:13:20Z",
+      "lastSeen": "2023-11-14T22:14:15Z",
+      "samples": 12,
+      "open": true
+    },
+    {
+      "pod": "shop/web",
+      "direction": "outbound",
+      "peer": {
+        "kind": "service",
+        "namespace": "shop",
+        "name": "ext",
+        "ip": "192.0.2.202"
+      },
+      "port": 5432,
       "protocol": "tcp",
       "connections": 1,
       "newConnections": 1,

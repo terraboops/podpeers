@@ -39,18 +39,23 @@ jobs:
         run: make build
 
   guards:
-    # Every if-guard in the Go code, removed one at a time: some unit test must
-    # notice, or the guard is accounted for, with a reason, in
-    # hack/guard-sweep-accepted.txt. A new untested guard fails here.
+    # Every guard (Go if and switch case; shell if, ||/&& list and case arm),
+    # removed one at a time: some test must notice, or the guard is accounted
+    # for, with a reason, in hack/guard-sweep-accepted.txt. A new untested
+    # guard fails here.
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the hygiene tests read a blob from history
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: install OCR (the hygiene gate's guards are swept too, and its tests read text in images)
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr ffmpeg
       - name: guard sweep
-        run: python3 hack/guard-sweep.py --check
+        run: PODPEERS_REQUIRE_OCR=1 python3 hack/guard-sweep.py --check
 
   docs:
     # Render every Mermaid diagram in the Markdown with the same library

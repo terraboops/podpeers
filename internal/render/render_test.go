@@ -261,10 +261,13 @@ func TestTextShowsFailedConnectsAndPodRangeNodes(t *testing.T) {
 		graph.Edge{Pod: "n/flaky", Direction: graph.Outbound, Protocol: "tcp", Port: 9000, Open: true, Connections: 3, FailedConnections: 2,
 			Peer: graph.Peer{Kind: graph.PeerExternal, IP: "203.0.113.20"}},
 		graph.Edge{Pod: "n/flaky", Direction: graph.Inbound, Protocol: "tcp", Port: 8080, Open: true, Connections: 1,
-			Peer: graph.Peer{Kind: graph.PeerNode, Name: "node-x", IP: "192.0.2.40", PodRange: true}})
+			Peer: graph.Peer{Kind: graph.PeerNode, Name: "node-x", IP: "192.0.2.40", PodRange: true}},
+		// Never connected: the likeliest sign of a block, and labelled so.
+		graph.Edge{Pod: "n/flaky", Direction: graph.Outbound, Protocol: "tcp", Port: 7000, Attempted: true, FailedConnections: 4,
+			Peer: graph.Peer{Kind: graph.PeerExternal, IP: "203.0.113.21"}})
 	var b bytes.Buffer
 	Text(&b, r)
-	for _, want := range []string{"2 failed connect(s)", "node (pod network 192.0.2.40)"} {
+	for _, want := range []string{"2 failed connect(s)", "node (pod network 192.0.2.40)", "ATTEMPTED, never connected (blocked?)"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("text view lacks %q:\n%s", want, b.String())
 		}

@@ -50,6 +50,63 @@ try {
     if (shots) await page.screenshot({ path: `${shots}/ui-${view}.png` });
   }
 
+  // Services: drawn as squares in the pod view; in the workload view each
+  // folds into the workload behind it, if it has one: ext has no selector,
+  // so it backs no pod and stays a service.
+  const squares = () => page.$$eval("#graph rect.shape", r => r.length);
+  const panel = () => page.$eval("#detail", d => d.textContent);
+  await page.click("#v-pod");
+  if ((await squares()) === 3) ok("v-pod: all three services are drawn, as services");
+  else fail(`v-pod: want 3 services drawn as squares, got ${await squares()}`);
+  await page.click("#v-wl");
+  if ((await squares()) === 1) ok("v-wl: each service with pods folds into the workload behind it; ext, with no selector, stays");
+  else fail(`v-wl: want only ext (no selector) left as a service, got ${await squares()}`);
+  // The panel: listening ports, member pods counted once however many flows
+  // name them, and an honest "none observed" for a pod nobody talked to.
+  await lookup("web");
+  let text = await panel();
+  if (text.includes("listening") && text.includes("tcp/8080") && text.includes("pods (1)")) ok("v-wl: web's panel lists what it listens on and its one pod");
+  else fail(`v-wl: web's panel should say listening tcp/8080 and pods (1): ${text.slice(0, 300)}`);
+  // web's own side never connected to api (failed connects), but api saw web
+  // connect: one flow, and since one side saw it established, it is open.
+  const toApi = await page.$$eval("#detail tr", rows => rows.map(r => [...r.cells].map(c => c.textContent))
+    .filter(c => c[0] && c[0].startsWith("api")).map(c => c[1] + " " + c[2]));
+  // 9000/tcp maps to target 9000; the Service's 9000/udp (target 9999) is
+  // another protocol and must not be picked.
+  if (toApi.length === 1 && toApi[0] === "tcp/9000 open") ok("v-wl: web -> api is one open flow on 9000: one side saw it established, and the port mapped by protocol");
+  else fail(`v-wl: web -> api should be one open flow on 9000, the panel says ${JSON.stringify(toApi)}`);
+  // Where web connects, folded: api (only its own selector's pods, in its
+  // own namespace) and ext. Nothing else in shop.
+  const outRows = await page.$$eval("#detail table", ts => ts.length < 2 ? [] : [...ts[1].rows].slice(1).map(r => r.cells[0].textContent.split(" ")[0]));
+  if (JSON.stringify(outRows.sort()) === '["api","ext"]') ok("v-wl: web connects to api and ext, and nothing else");
+  else fail(`v-wl: web's outbound should be api and ext only, the panel says ${JSON.stringify(outRows)}`);
+  // The selection survives a switch of view.
+  await page.click("#v-pod");
+  if ((await page.$eval("#detail", d => d.querySelector("h2")?.textContent)) === "web") ok("the selection carries across views");
+  else fail(`switching view lost the selection: ${(await panel()).slice(0, 120)}`);
+  // Selecting web (now in the pod view) lights its flows only, and dims
+  // what it does not talk to.
+  const hl = await page.$$eval("#graph path.flow", ps => [ps.filter(p => p.classList.contains("hl")).length, ps.length]);
+  const dims = await page.$$eval("#graph g.n", gs => Object.fromEntries(gs.map(g => [g.textContent, g.classList.contains("dim")])));
+  const dimOf = name => Object.entries(dims).find(([t]) => t.startsWith(name))?.[1];
+  if (hl[0] > 0 && hl[0] < hl[1] && dimOf("idle") === true && dimOf("gateway") === false) ok("v-pod: selecting web lights its flows and dims the rest");
+  else fail(`v-pod: selecting web: ${hl[0]} of ${hl[1]} flows lit, idle dim ${dimOf("idle")}, gateway dim ${dimOf("gateway")}`);
+  // A pod that was not observed is drawn hollow.
+  const fills = await page.$$eval("#graph g.n", gs => Object.fromEntries(gs.map(g => [g.textContent, g.querySelector(".shape")?.getAttribute("fill")])));
+  const fillOf = name => Object.entries(fills).find(([t]) => t.startsWith(name))?.[1];
+  if (fillOf("batch") === "var(--panel)" && fillOf("web") !== "var(--panel)") ok("v-pod: an unobserved pod is drawn hollow");
+  else fail(`v-pod: batch (not observed) should be hollow and web not: ${fillOf("batch")} / ${fillOf("web")}`);
+  // Search finds a pod by its address, and the header counts by status.
+  if ((await lookup("192.0.2.11")).label === "web") ok("v-pod: search by a pod's address finds it");
+  else fail("v-pod: searching 192.0.2.11 should find web");
+  const summary = await page.$eval("#summary", s => s.textContent);
+  if (summary.includes("4 pods observed")) ok("the header counts the observed pods");
+  else fail(`the header should say 4 pods observed: ${summary}`);
+  await lookup("idle");
+  text = await panel();
+  if ((text.match(/none observed/g) || []).length === 2) ok("v-pod: an idle pod says none observed, in and out");
+  else fail(`v-pod: idle should say none observed twice: ${text.slice(0, 300)}`);
+
   // The GraphQL console answers from the same data as `podpeers query`.
   if (!(await page.$eval("#console", c => !c.hidden))) fail("GraphQL console is hidden on the served page");
   await page.$eval("#q", el => { el.value = ""; });

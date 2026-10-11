@@ -312,3 +312,21 @@ func TestNonNumericAnchorIsAnError(t *testing.T) {
 		}
 	}
 }
+
+// A socket has a peer when either half of the remote address is set: a UDP
+// socket connected to an address with no port is not a listener.
+func TestHasRemoteNeedsOnlyOneHalf(t *testing.T) {
+	for remote, want := range map[string]bool{
+		"0.0.0.0:0":       false,
+		"192.0.2.1:0":     true,
+		"0.0.0.0:53":      true,
+		"192.0.2.1:5353":  true,
+		"[::]:0":          false,
+		"[2001:db8::1]:0": true,
+	} {
+		s := Socket{Protocol: UDP, Local: netip.MustParseAddrPort("192.0.2.10:5353"), Remote: netip.MustParseAddrPort(remote)}
+		if s.HasRemote() != want || s.IsListener() == want {
+			t.Errorf("remote %s: HasRemote %v, IsListener %v; want HasRemote %v", remote, s.HasRemote(), s.IsListener(), want)
+		}
+	}
+}

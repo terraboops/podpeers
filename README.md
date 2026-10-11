@@ -402,18 +402,39 @@ pods). That test now checks the cluster-wide invariant directly: no pod
 outside the selector is touched.
 
 **And nothing chose which guards get mutants.** `make guards`
-(`hack/guard-sweep.py`) removes every `if` guard in the Go code, one at a
-time, all 418 of them, and runs the unit tests. A guard whose removal no
-test notices fails the build unless it is accounted for, with its reason, in
+(`hack/guard-sweep.py`) removes every guard, one at a time, and runs the
+tests that should notice:
+
+| Where | Guards | Removed how | Run against |
+|---|---|---|---|
+| Go (`internal/`, `cmd/`) | 467 | each `if` and tagless-`switch` case made false; each `&&`/`\|\|` in a returned or assigned boolean flipped | the package's tests, then the whole unit suite |
+| shell (the skill's script, `hack/`) | 92 | each `if` made false; each `cond \|\| action` list's action dropped; each one-line `case` arm emptied | the tests that drive that script (`test/skillscript`, `test/hygiene`, `test/tooling`) |
+| the web UI's JavaScript | 55 | as for Go | the browser check (`--browser`) |
+
+A guard whose removal no test notices fails the build unless it is accounted
+for, with its reason, in
 [`hack/guard-sweep-accepted.txt`](hack/guard-sweep-accepted.txt): caught on
 the real cluster (measured with `--e2e`, not assumed), equivalent (removing it
 changes nothing observable), a sort tie-break, a default the CLI always sets,
-wording only, a usage check, an error path no test provokes, or a fallback
-for a log stream that never broke. The first sweep found 135 such guards; tests
-now catch 33 of them, among them a Service selector that, removed, credited
-every Service to every workload in its namespace, and a capture without `-n`
-that, with both its defaults removed, would have probed every namespace.
-CI runs the sweep on every push.
+wording or layout only, a usage check, an error path no test provokes, or a
+fallback for a log stream that never broke. CI runs the Go and shell sweep on
+every push; the browser part runs locally.
+
+The sweeps found tests missing where it mattered. In the Go code: a Service
+selector that, removed, credited every Service to every workload in its
+namespace, and a capture without `-n` that, with both its defaults removed,
+would have probed every namespace. In the shell: the skill script's refusal
+when a `HELM_KUBE*` variable would point helm at a cluster podpeers never
+checked; the throwaway-cluster checks in `hack/e2e-cluster.sh`,
+`hack/mutants.sh --e2e` and the e2e suite's `TestMain` (now each run against an
+invented production-like context, `test/tooling`); and the mutant harness's
+own verdict (now run on a scratch repo with mutants of known outcome). In the
+web UI: a Service without a selector folded into every pod, a selector
+matched across namespaces, a connection one side saw established labelled
+"never connected", and a port mapped by number regardless of protocol. Each
+now has a test. Not swept: test code itself (the mutants prove the tests fail
+when a protection breaks), and the Makefile and CI workflow (their steps are
+the commands above, run on every push).
 
 ### What the tests do not prove on a cluster, and why
 

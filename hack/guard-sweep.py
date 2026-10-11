@@ -1,16 +1,31 @@
 #!/usr/bin/env python3
 """Remove every guard, one at a time, and see whether any test notices.
 
-A guard here is any `if <condition> {` in non-test Go code under internal/ and
-cmd/. Each is rewritten to `if false && (<condition>) {` in a scratch worktree
-of HEAD, and the unit tests run: first only that package's (fast), then, for
-the survivors, the whole unit suite (a guard may be tested from another
-package). What survives both is a guard whose removal no unit test notices.
-Each survivor is then accounted for in docs/guard-sweep.md: tested on the real
-cluster (hack/guard-sweep.py --e2e measures it), or why it is not a finding.
+Guards, each disabled one at a time in a scratch worktree of HEAD:
+
+  Go (non-test code under internal/ and cmd/)
+    `if <c> {`            ->  `if false && (<c>) {`
+    `case <c>:` in a tagless `switch {`  ->  `case false && (<c>):`
+    each && or || in `return ...` or `x := ...`  ->  flipped, one at a time
+  Shell (the skill's script and hack/*.sh)
+    `if <c>; then` / `elif <c>; then`    ->  condition `false`
+    `<c> || <action>` / `<c> && <action>` lists  ->  action `true`
+    a one-line `case` arm `<pat>) <body> ;;`    ->  body `:`
+  JavaScript (the web UI, internal/render/page.html; with --browser)
+    `if (<c>)`            ->  `if (false && (<c>))`
+    each && or || in `return ...` or `x = ...`  ->  flipped, one at a time
+
+Go guards run that package's tests (fast), then, for survivors, the whole
+unit suite. A shell guard runs the tests that drive that script (SHELL_TESTS).
+What survives is a guard whose removal no test notices; each must be
+accounted for in hack/guard-sweep-accepted.txt: caught on the real cluster
+(--e2e measures it), or why it is not a finding.
 
   hack/guard-sweep.py              unit sweep; prints survivors
-  hack/guard-sweep.py --check      unit sweep, compared with
+  hack/guard-sweep.py --browser    also the web UI's JavaScript and the browser
+                                   checks' own guards, against the browser
+                                   check (needs node and Chrome; slow)
+  hack/guard-sweep.py --check      sweep, compared with
                                    hack/guard-sweep-accepted.txt: fails on a
                                    survivor nobody has accounted for, and on an
                                    accepted entry that no longer survives
@@ -24,12 +39,169 @@ edits elsewhere in a file do not invalidate them.
 import concurrent.futures
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
 
 ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
 IF = re.compile(r"^(\s*)(\} else )?if (.+) \{\s*$")
+SWITCH = re.compile(r"^(\s*)switch( [^{]*;)? \{\s*$")
+CASE = re.compile(r"^(\s*)case (.+):\s*$")
+# A boolean computed outside an if or case: `return a && b`, `x := a || b`.
+BOOL = re.compile(r"^\s*(return |[\w.]+ :?= ).*(&&|\|\|)")
+OP = re.compile(r"&&|\|\|")
+
+# The tests that drive each shell script. hack/check-docs.sh and
+# hack/check-ui.sh are themselves the docs and browser checks: removing one
+# of their guards is caught, or not, by running them (needs node and Chrome).
+SHELL_TESTS = {
+    "skills/podpeers-netpol/scripts/netpol-check.sh": ["go", "test", "-count=1", "-timeout", "5m", "./test/skillscript/"],
+    "hack/hygiene.sh": ["go", "test", "-count=1", "-timeout", "15m", "./test/hygiene/"],
+    "hack/e2e-cluster.sh": ["go", "test", "-count=1", "-timeout", "5m", "./test/tooling/"],
+    "hack/mutants.sh": ["go", "test", "-count=1", "-timeout", "5m", "./test/tooling/"],
+    "hack/check-docs.sh": ["./hack/check-docs.sh"],
+    "hack/check-ui.sh": ["./hack/check-ui.sh"],
+}
+# The web UI's JavaScript runs only in a browser: its guards are swept with
+# --browser, against the browser check.
+JS_TESTS = {"internal/render/page.html": ["./hack/check-ui.sh"]}
+JS_IF = re.compile(r"^\s*(\} else )?if \(")
+
+
+def js_cond(line):
+    """(start, end) of the condition inside a line's first `if (...)`."""
+    i = line.index("if (") + 4
+    depth, quote, j = 1, None, i
+    while j < len(line):
+        c = line[j]
+        if quote:
+            if c == "\\":
+                j += 1
+            elif c == quote:
+                quote = None
+        elif c in "'\"`":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i, j
+        j += 1
+    return None
+
+
+JS_BOOL = re.compile(r"^\s*(return |(const |let )?[\w.]+ = ).*(&&|\|\|)")
+
+
+def js_guards(rel):
+    out = []
+    for i, l in enumerate(open(os.path.join(ROOT, rel)).read().split("\n")):
+        if JS_IF.match(l) and js_cond(l):
+            out.append((rel, i + 1, l.strip()))
+        elif JS_BOOL.match(l):
+            for k in range(len(OP.findall(l))):
+                out.append((rel, (i + 1, k), f"{l.strip()} [operator {k + 1} flipped]"))
+    return out
+
+
+SH_IF = re.compile(r"^(\s*(?:el)?if )(.+?)(; then\b.*)$")
+SH_ARM = re.compile(r"^(\s*)([^\s#()][^()]*?)\)\s+(.+?)\s*;;\s*$")
+
+
+def split_list(line):
+    """(start, end) of the action after the last top-level `||` or `&&` in a
+    shell line, outside quotes, $( ), [ ] and { }: it runs to the next
+    top-level `;` or the end of the line. None if there is none."""
+    depth, quote, last, end, i = 0, None, None, None, 0
+    while i < len(line):
+        c = line[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and (i == 0 or line[i - 1] in " \t"):
+            break
+        elif c in "({[":
+            depth += 1
+        elif c in ")}]":
+            depth -= 1
+        elif depth == 0 and line[i:i + 2] in ("||", "&&"):
+            last, end = i + 2, None
+            i += 1
+        elif depth == 0 and c == ";" and last is not None and end is None:
+            end = i
+        i += 1
+    if last is None:
+        return None
+    end = len(line) if end is None else end
+    if line[last:end].strip() in ("true", ":", ""):
+        return None  # already tolerant: not a guard
+    return last, end
+
+
+def code_lines(lines):
+    """Whether each line starts as shell code, not inside a quoted string or
+    a heredoc that spans lines (an awk program, a here-document)."""
+    code, quote, heredoc = [], None, None
+    for l in lines:
+        code.append(quote is None and heredoc is None)
+        if heredoc is not None:
+            if l.strip() == heredoc:
+                heredoc = None
+            continue
+        i = 0
+        while i < len(l):
+            c = l[i]
+            if quote:
+                if c == "\\" and quote == '"':
+                    i += 1
+                elif c == quote:
+                    quote = None
+            elif c in "'\"":
+                quote = c
+            elif c == "#" and (i == 0 or l[i - 1] in " \t"):
+                break
+            elif l.startswith("<<", i):
+                m = re.match(r"<<-?\s*['\"]?(\w+)['\"]?", l[i:])
+                if m:
+                    heredoc = m.group(1)
+            i += 1
+    return code
+
+
+def shell_guards(rel):
+    out, in_case = [], 0
+    lines = open(os.path.join(ROOT, rel)).read().split("\n")
+    for i, (l, is_code) in enumerate(zip(lines, code_lines(lines))):
+        t = l.strip()
+        if t.startswith("#") or not t or not is_code:
+            continue
+        if re.match(r"^case .* in$", t):
+            in_case += 1
+            continue
+        if t == "esac":
+            in_case -= 1
+            continue
+        if SH_IF.match(l) or (in_case and SH_ARM.match(l) and not t.startswith("*)")) or \
+                (split_list(l) is not None and not t.startswith(("trap ", "if ", "elif ", "|"))):
+            out.append((rel, i + 1, t))
+    return out
+
+
+def mutate_shell(line):
+    m = SH_IF.match(line)
+    if m:
+        return m.group(1) + "false" + m.group(3)
+    k = split_list(line)
+    if k is not None:
+        return line[:k[0]] + " true" + line[k[1]:]
+    m = SH_ARM.match(line)
+    return f"{m.group(1)}{m.group(2)}) : ;;"
 
 
 def worktree():
@@ -39,8 +211,30 @@ def worktree():
 
 
 def mutate(path, n):
-    """Disable the guard on line n of path; return the original lines."""
+    """Disable the guard on line n of path; return the original lines. For a
+    boolean expression n is (line, k): flip its k-th && or ||."""
     lines = open(path).read().split("\n")
+    mutated = lines[:]
+    if isinstance(n, tuple):
+        n, k = n
+        at = [m.start() for m in OP.finditer(lines[n - 1])][k]
+        mutated[n - 1] = lines[n - 1][:at] + ("||" if lines[n - 1][at] == "&" else "&&") + lines[n - 1][at + 2:]
+        open(path, "w").write("\n".join(mutated))
+        return lines
+    if path.endswith(".html"):
+        a, b = js_cond(lines[n - 1])
+        mutated[n - 1] = lines[n - 1][:a] + "false && (" + lines[n - 1][a:b] + ")" + lines[n - 1][b:]
+        open(path, "w").write("\n".join(mutated))
+        return lines
+    if not path.endswith(".go"):
+        mutated[n - 1] = mutate_shell(lines[n - 1])
+        open(path, "w").write("\n".join(mutated))
+        return lines
+    c = CASE.match(lines[n - 1])
+    if c and not IF.match(lines[n - 1]):
+        mutated[n - 1] = f"{c.group(1)}case false && ({c.group(2)}):"
+        open(path, "w").write("\n".join(mutated))
+        return lines
     m = IF.match(lines[n - 1])
     cond = m.group(3)
     if ";" in cond:
@@ -48,7 +242,6 @@ def mutate(path, n):
         new = f"{m.group(1)}{m.group(2) or ''}if {init}; false && ({c.strip()}) {{"
     else:
         new = f"{m.group(1)}{m.group(2) or ''}if false && ({cond}) {{"
-    mutated = lines[:]
     mutated[n - 1] = new
     open(path, "w").write("\n".join(mutated))
     return lines
@@ -62,9 +255,19 @@ def guards():
             continue
         for f in sorted(fs):
             if f.endswith(".go") and not f.endswith("_test.go"):
+                switches = []  # indents of the tagless switches we are inside
                 for i, l in enumerate(open(os.path.join(dp, f)).read().split("\n")):
-                    if IF.match(l):
+                    sw = SWITCH.match(l)
+                    if sw:
+                        switches.append(sw.group(1))
+                    elif switches and l.rstrip() == switches[-1] + "}":
+                        switches.pop()
+                    c = CASE.match(l)
+                    if IF.match(l) or (switches and c and c.group(1) == switches[-1]):
                         out.append((os.path.join(rel, f), i + 1, l.strip()))
+                    elif BOOL.match(l):
+                        for k in range(len(OP.findall(l))):
+                            out.append((os.path.join(rel, f), (i + 1, k), f"{l.strip()} [operator {k + 1} flipped]"))
     return out
 
 
@@ -75,9 +278,24 @@ def run(items, cmd, env=None):
         for f, n, text in items:
             path = os.path.join(wt, f)
             orig = mutate(path, n)
-            r = subprocess.run(cmd(f), cwd=wt, capture_output=True, text=True, env=env and env(wt))
+            # Own session: a mutant that never ends (an argument loop without
+            # its shift) is killed with everything it started, not orphaned.
+            p = subprocess.Popen(cmd(f), cwd=wt, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                 env=env and env(wt), start_new_session=True)
+            out, err = p.communicate()
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            r = subprocess.CompletedProcess(p.args, p.returncode, out, err)
             open(path, "w").write("\n".join(orig))
-            res.append((r.returncode == 0, f, n, text))
+            survived = r.returncode == 0
+            # A browser check that fails without saying FAIL broke, it did not
+            # judge: count that as no test noticing, never as a catch.
+            if not survived and cmd(f) == ["./hack/check-ui.sh"] and "\nFAIL " not in "\n" + r.stdout:
+                print(f"no verdict (the browser check broke) for {f}:{n}", file=sys.stderr)
+                survived = True
+            res.append((survived, f, n, text))
     finally:
         subprocess.run(["git", "-C", ROOT, "worktree", "remove", "--force", wt])
     return res
@@ -102,34 +320,45 @@ def main():
         for survived, f, n, text in run(items, cmd, env):  # one cluster: one at a time
             print(f"{'cluster-SURVIVED' if survived else 'cluster-killed'} {f}:{n}: {text}", flush=True)
         return
+    browser = "--browser" in sys.argv
     own = parallel(guards(), lambda f: ["go", "test", "-count=1", "./" + os.path.dirname(f) + "/"])
     first = [(f, n, t) for survived, f, n, t in own if survived]
     whole = parallel(first, lambda f: ["go", "test", "-count=1", "./internal/...", "./cmd/...", "./test/skillscript/"])
-    left = sorted((f, n, t) for survived, f, n, t in whole if survived)
+    left = [(f, n, t) for survived, f, n, t in whole if survived]
+    sh = [g for rel in SHELL_TESTS if not rel.startswith("hack/check-") for g in shell_guards(rel)]
+    # The browser check uses one port and one Chrome: its guards run one at a time.
+    br = [g for rel in SHELL_TESTS if browser and rel.startswith("hack/check-") for g in shell_guards(rel)]
+    br += [g for rel in JS_TESTS if browser for g in js_guards(rel)]
+    cmd = lambda f: SHELL_TESTS.get(f) or JS_TESTS[f]
+    shres = parallel(sh, cmd) + (parallel(br, cmd, workers=1) if br else [])
+    sh += br
+    left = sorted(left + [(f, n, t) for survived, f, n, t in shres if survived], key=lambda x: (x[0], str(x[1]), x[2]))
     for f, n, t in left:
-        print(f"{f}:{n}: {t}")
-    print(f"{len(own)} guards, {len(left)} survive the whole unit suite", file=sys.stderr)
-    if sys.argv[1:] == ["--check"]:
-        sys.exit(check(left))
+        print(f"{f}:{n[0] if isinstance(n, tuple) else n}: {t}")
+    print(f"{len(own)} Go guards, {len(sh) - len(br)} shell guards, {len(br)} browser-checked guards; {len(left)} survive their tests", file=sys.stderr)
+    if "--check" in sys.argv:
+        sys.exit(check(left, browser))
 
 
-def check(left):
+def check(left, browser):
     """Every survivor must be accepted with a reason, and every acceptance
-    must still be a survivor."""
+    must still be a survivor. Without --browser, the browser checks' own
+    guards are not swept, and their entries are not checked."""
     accepted = []
     for line in open(os.path.join(ROOT, "hack", "guard-sweep-accepted.txt")):
         line = line.rstrip("\n")
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         f, text, category, reason = [x.strip() for x in line.split(" | ", 3)]
-        accepted.append((f, text))
+        if browser or not (f.startswith("hack/check-") or f in JS_TESTS):
+            accepted.append((f, text))
     pending = accepted[:]
     unaccounted = []
     for f, n, t in left:
         if (f, t) in pending:
             pending.remove((f, t))
         else:
-            unaccounted.append(f"{f}:{n}: {t}")
+            unaccounted.append(f"{f}:{n[0] if isinstance(n, tuple) else n}: {t}")
     for u in unaccounted:
         print(f"UNACCOUNTED  {u}  (no test notices this guard's removal: add one, or accept it with a reason)", file=sys.stderr)
     for f, t in pending:

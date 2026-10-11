@@ -359,6 +359,15 @@ func TestBestPicksTheMoreCompleteLog(t *testing.T) {
 	if o, err := best(procnet.SamplerOutput{}, bad, partialLess, nil); err != nil || len(o.Samples) != 2 {
 		t.Error("a working read beats a failed one")
 	}
+	// A failed read loses even when what it got looks better: complete, and
+	// longer. The comparison must not reach it.
+	looksBetter := procnet.SamplerOutput{Complete: true, Samples: make([]procnet.Sample, 9)}
+	if o, err := best(looksBetter, bad, partialLess, nil); err != nil || o.Complete || len(o.Samples) != 2 {
+		t.Error("a failed read loses, first or second")
+	}
+	if o, err := best(partialLess, nil, looksBetter, bad); err != nil || o.Complete || len(o.Samples) != 2 {
+		t.Error("a failed read loses, first or second")
+	}
 	if _, err := best(procnet.SamplerOutput{}, bad, procnet.SamplerOutput{}, bad); err == nil {
 		t.Error("both failed: error")
 	}
