@@ -52,12 +52,14 @@ CASE = re.compile(r"^(\s*)case (.+):\s*$")
 BOOL = re.compile(r"^\s*(return |[\w.]+ :?= ).*(&&|\|\|)")
 OP = re.compile(r"&&|\|\|")
 
-# The tests that drive each shell script. hack/check-docs.sh and
+# The tests that drive each shell script. hygiene's get room: one equivalent
+# mutant makes --history read every object, about 3x slower, and must not be
+# mistaken for a catch by timing out on a slow runner. hack/check-docs.sh and
 # hack/check-ui.sh are themselves the docs and browser checks: removing one
 # of their guards is caught, or not, by running them (needs node and Chrome).
 SHELL_TESTS = {
     "skills/podpeers-netpol/scripts/netpol-check.sh": ["go", "test", "-count=1", "-timeout", "5m", "./test/skillscript/"],
-    "hack/hygiene.sh": ["go", "test", "-count=1", "-timeout", "15m", "./test/hygiene/"],
+    "hack/hygiene.sh": ["go", "test", "-count=1", "-timeout", "45m", "./test/hygiene/"],
     "hack/e2e-cluster.sh": ["go", "test", "-count=1", "-timeout", "5m", "./test/tooling/"],
     "hack/mutants.sh": ["go", "test", "-count=1", "-timeout", "5m", "./test/tooling/"],
     "hack/check-docs.sh": ["./hack/check-docs.sh"],
@@ -290,6 +292,11 @@ def run(items, cmd, env=None):
             r = subprocess.CompletedProcess(p.args, p.returncode, out, err)
             open(path, "w").write("\n".join(orig))
             survived = r.returncode == 0
+            # A timeout counts as noticed: right for a mutant that hangs (an
+            # argument loop without its shift), wrong for one that is only
+            # slow. Name each, so a slow one is seen and its timeout raised.
+            if "panic: test timed out" in r.stdout:
+                print(f"timed out: {f}:{n}", file=sys.stderr)
             # A browser check that fails without saying FAIL broke, it did not
             # judge: count that as no test noticing, never as a catch.
             if not survived and cmd(f) == ["./hack/check-ui.sh"] and "\nFAIL " not in "\n" + r.stdout:

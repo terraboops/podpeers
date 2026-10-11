@@ -44,7 +44,7 @@ jobs:
     # for, with a reason, in hack/guard-sweep-accepted.txt. A new untested
     # guard fails here.
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 180 # ~100 min on a 4-core runner
     steps:
       - uses: actions/checkout@v4
         with:
