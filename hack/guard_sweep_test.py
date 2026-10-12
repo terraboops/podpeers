@@ -632,6 +632,15 @@ class Headroom(unittest.TestCase):
         self.assertFalse(os.path.exists(seen["cache"]), "and removes it at the end")
         self.assertIsNone(gs.CACHE, "and forgets it")
 
+    def test_an_unset_gocache_is_unset_again(self):
+        # CI's setup-go sets GOCACHE and a laptop often does not: test both.
+        env = {k: v for k, v in os.environ.items() if k != "GOCACHE"}
+        with mock.patch.object(gs, "free_bytes", lambda p: 100 * gs.GIB), mock.patch.object(gs, "sweep", lambda: None), \
+                mock.patch.object(gs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                mock.patch.dict(os.environ, env, clear=True):
+            gs.main()
+            self.assertNotIn("GOCACHE", os.environ)
+
     def test_running_out_mid_sweep_stops_it(self):
         def sweep():
             raise gs.NoHeadroom("only 0.5 GiB free")
