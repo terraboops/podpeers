@@ -9,7 +9,8 @@ Guards, each disabled one at a time in a scratch worktree of HEAD:
     of a tagged or type switch  ->  the default arm's body (or none). A
     mutant the compiler rejects is noticed, by the build, and said so.
   Shell (the skill's script and hack/*.sh)
-    `if <c>; then` / `elif <c>; then`    ->  condition `false`
+    `if <c>; then` / `elif <c>; then`    ->  condition `false`, and each
+      && or || in it flipped, one at a time
     `while <c>; do` / `until <c>; do`     ->  a loop that never runs
     `<c> || <action>` / `<c> && <action>` lists  ->  action `true`
     a one-line `case` arm `<pat>) <body> ;;`, default arms included, and
@@ -24,7 +25,7 @@ Guards, each disabled one at a time in a scratch worktree of HEAD:
     `fetch-depth: 0`  ->  1; the push and pull_request triggers  ->  removed
   JavaScript (the web UI, internal/render/page.html; with --browser)
     `if (<c>)`            ->  `if (false && (<c>))`
-    each && or || in `return ...` or `x = ...`  ->  flipped, one at a time
+    each && or || in an if condition, `return ...` or `x = ...`  ->  flipped
     each ternary `<c> ? a : b`  ->  `(false && (<c>)) ? a : b`
     each `for (...; <c>; ...)` condition  ->  `false`
 
@@ -343,6 +344,11 @@ def js_guards(rel):
     for i, l in enumerate(open(os.path.join(ROOT, rel)).read().split("\n")):
         if JS_IF.match(l) and js_cond(l):
             out.append((rel, i + 1, l.strip()))
+            a, b = js_cond(l)
+            mask = js_code_mask(l)
+            for k, m in enumerate(OP.finditer(l)):
+                if a <= m.start() < b and mask[m.start()]:
+                    out.append((rel, (i + 1, k), f"{l.strip()} [operator {k + 1} flipped]"))
         elif JS_BOOL.match(l):
             for k in range(len(OP.findall(l))):
                 out.append((rel, (i + 1, k), f"{l.strip()} [operator {k + 1} flipped]"))
@@ -418,6 +424,30 @@ def split_list(line):
     return last, end
 
 
+def top_level_ops(text):
+    """Positions of each && and || in a shell condition, outside quotes and
+    brackets."""
+    out, depth, quote, i = [], 0, None, 0
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c in "({[":
+            depth += 1
+        elif c in ")}]":
+            depth -= 1
+        elif depth == 0 and text[i:i + 2] in ("&&", "||"):
+            out.append(i)
+            i += 1
+        i += 1
+    return out
+
+
 def code_lines(lines):
     """Whether each line starts as shell code, not inside a quoted string or
     a heredoc that spans lines (an awk program, a here-document)."""
@@ -469,6 +499,10 @@ def shell_guards(rel):
         elif SH_IF.match(l) or SH_LOOP.match(l) or (in_case and (SH_ARM.match(l) or SH_ARM_OPEN.match(l))) or \
                 (split_list(l) is not None and not t.startswith(("trap ", "if ", "elif ", "|"))):
             out.append((rel, i + 1, t))
+        m = SH_IF.match(l)
+        if m:
+            for k in range(len(top_level_ops(m.group(2)))):
+                out.append((rel, (i + 1, k, "op"), f"{t} [operator {k + 1} flipped]"))
     return out
 
 
@@ -523,6 +557,14 @@ def mutate(path, n):
             b = f.read()
         with open(path, "wb") as f:
             f.write(b[:c["start"]] + c["new"].encode() + b[c["end"]:])
+        return lines
+    if isinstance(n, tuple) and n[-1] == "op" and not path.endswith((".go", ".html")):  # one && or || of a shell if
+        line, k, _ = n
+        m = SH_IF.match(lines[line - 1])
+        at = m.start(2) + top_level_ops(m.group(2))[k]
+        l = lines[line - 1]
+        mutated[line - 1] = l[:at] + ("||" if l[at] == "&" else "&&") + l[at + 2:]
+        open(path, "w").write("\n".join(mutated))
         return lines
     if isinstance(n, tuple) and n[-1] == "sh":  # shell inside a Go raw string
         mutated[n[0] - 1] = mutate_shell(lines[n[0] - 1])

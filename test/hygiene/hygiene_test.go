@@ -164,12 +164,24 @@ func TestAddressRenderedInAnImageIsFound(t *testing.T) {
 // PATH that links every other command.
 func TestForcedImageCheckFailsWithoutTheTools(t *testing.T) {
 	dir := repo(t, map[string]string{"docs/a.png": "not really a png"})
+	// Missing either tool is missing the check: hide ffmpeg alone, then both.
+	for _, hidden := range [][]string{{"ffmpeg"}, {"tesseract", "ffmpeg"}} {
+		forcedWithout(t, dir, hidden)
+	}
+}
+
+func forcedWithout(t *testing.T, dir string, hidden []string) {
+	t.Helper()
 	bin := filepath.Join(t.TempDir(), "bin")
 	os.MkdirAll(bin, 0o755)
+	skip := map[string]bool{}
+	for _, h := range hidden {
+		skip[h] = true
+	}
 	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
 		entries, _ := os.ReadDir(d)
 		for _, e := range entries {
-			if e.Name() == "tesseract" || e.Name() == "ffmpeg" {
+			if skip[e.Name()] {
 				continue
 			}
 			os.Symlink(filepath.Join(d, e.Name()), filepath.Join(bin, e.Name())) // first in PATH wins
@@ -184,7 +196,7 @@ func TestForcedImageCheckFailsWithoutTheTools(t *testing.T) {
 		cmd.Env = append(os.Environ(), "PATH="+bin, "HYGIENE_IMAGES="+c.force)
 		out, _ := cmd.CombinedOutput()
 		if cmd.ProcessState.ExitCode() != c.code || !strings.Contains(string(out), c.want) {
-			t.Errorf("HYGIENE_IMAGES=%q without OCR tools: exit %d, want %d with %q\n%s", c.force, cmd.ProcessState.ExitCode(), c.code, c.want, out)
+			t.Errorf("HYGIENE_IMAGES=%q without %v: exit %d, want %d with %q\n%s", c.force, hidden, cmd.ProcessState.ExitCode(), c.code, c.want, out)
 		}
 	}
 }

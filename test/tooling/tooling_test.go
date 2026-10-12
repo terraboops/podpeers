@@ -35,7 +35,7 @@ func shims(t *testing.T, dir string) (bin, calls string) {
 esac`,
 		"kubectl": `case "$*" in *"config current-context"*) echo "$FAKE_CTX" ;; esac`,
 		"docker":  ``,
-		"colima":  ``,
+		"colima":  `[ "$1" = status ] && exit "${FAKE_COLIMA_STATUS:-0}"`,
 	} {
 		os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\necho \""+name+" $*\" >> \""+calls+"\"\n"+body+"\nexit 0\n"), 0o755)
 	}
@@ -159,6 +159,13 @@ func TestClusterScriptUpAndDown(t *testing.T) {
 	os.MkdirAll(filepath.Join(root, ".e2e"), 0o755)
 	os.WriteFile(filepath.Join(root, ".e2e", "kubeconfig"), []byte(prodLike), 0o600)
 	code, _ := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "KUBECONFIG="}, "bash", script, "down")
+	// A colima that is installed but not running is not asked to trim.
+	root2, script2 := copyScript(t, "e2e-cluster.sh")
+	bin2, calls2 := shims(t, root2)
+	run(t, []string{"PATH=" + bin2 + ":" + os.Getenv("PATH"), "KUBECONFIG=", "FAKE_COLIMA_STATUS=1"}, "bash", script2, "down")
+	if strings.Contains(read(calls2), "fstrim") {
+		t.Errorf("a stopped colima was asked to trim:\n%s", read(calls2))
+	}
 	if _, err := os.Stat(filepath.Join(root, ".e2e", "kubeconfig")); code != 0 || err == nil ||
 		!strings.Contains(read(calls), "k3d cluster delete podpeers-e2e") || !strings.Contains(read(calls), "colima ssh -- sudo fstrim -a") {
 		t.Fatalf("down: exit %d; want the cluster and its kubeconfig gone, and colima trimmed\n%s", code, read(calls))

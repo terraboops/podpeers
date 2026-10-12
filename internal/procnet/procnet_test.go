@@ -240,42 +240,57 @@ func uptimeFile(t *testing.T) string {
 func TestSamplerScriptRunsOnAFixedGrid(t *testing.T) {
 	// The real script under sh. At 100ms the time left to the next tick is
 	// under 10 centiseconds, so it must be zero-padded (0.08s, not 0.8s).
+	// A broken schedule is off on every run; a loaded machine (the guard
+	// sweep runs six of these at once) can delay one sample once. So each
+	// case gets three tries, and fails only if all three do.
 	uptime := uptimeFile(t)
 	for _, c := range []struct {
 		d, i time.Duration
 		n    int
 	}{{2 * time.Second, 200 * time.Millisecond, 11}, {time.Second, 100 * time.Millisecond, 11}} {
-		script := strings.ReplaceAll(SamplerScript(c.d, c.i), "/proc/uptime", uptime)
-		out, err := exec.Command("sh", "-c", script).Output()
-		if err != nil {
-			t.Fatal(err)
-		}
-		parsed, err := ParseSamplerOutput(bytes.NewReader(out))
-		if err != nil || !parsed.Complete {
-			t.Fatalf("%s at %s: err=%v complete=%v", c.d, c.i, err, parsed.Complete)
-		}
-		if n := len(parsed.Samples); n != c.n {
-			t.Errorf("%s at %s on a fixed grid must take %d samples, got %d", c.d, c.i, c.n, n)
-		}
-		// On a fixed grid, each sample sits near its own slot (start + k*i),
-		// however late the one before it was.
-		worst := time.Duration(0)
-		for k, smp := range parsed.Samples {
-			off := smp.Time.Sub(parsed.Samples[0].Time) - time.Duration(k)*c.i
-			if off < 0 {
-				off = -off
+		var why string
+		for try := 0; try < 3; try++ {
+			if why = gridRun(t, uptime, c.d, c.i, c.n); why == "" {
+				break
 			}
-			if off > worst {
-				worst = off
-			}
+			t.Logf("%s at %s, try %d: %s", c.d, c.i, try+1, why)
 		}
-		// Process starts jitter a sample by tens of milliseconds (more on
-		// macOS); a broken schedule is off by most of an interval or more
-		// (an unpadded 0.8s sleep for 0.08s, or no sleep at all).
-		if worst > 150*time.Millisecond {
-			t.Errorf("%s at %s: a sample is %s off its grid slot", c.d, c.i, worst)
+		if why != "" {
+			t.Errorf("%s at %s: %s", c.d, c.i, why)
 		}
 	}
+}
+
+// gridRun runs the sampler once and says what is wrong with its schedule,
+// or "" if nothing is.
+func gridRun(t *testing.T, uptime string, d, i time.Duration, n int) string {
+	t.Helper()
+	script := strings.ReplaceAll(SamplerScript(d, i), "/proc/uptime", uptime)
+	out, err := exec.Command("sh", "-c", script).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseSamplerOutput(bytes.NewReader(out))
+	if err != nil || !parsed.Complete {
+		return fmt.Sprintf("err=%v complete=%v", err, parsed.Complete)
+	}
+	if got := len(parsed.Samples); got != n {
+		return fmt.Sprintf("a fixed grid takes %d samples, got %d", n, got)
+	}
+	// On a fixed grid, each sample sits near its own slot (start + k*i),
+	// however late the one before it was. Process starts jitter a sample by
+	// tens of milliseconds (more on macOS); a broken schedule is off by most
+	// of an interval or more (an unpadded 0.8s sleep for 0.08s, or none).
+	for k, smp := range parsed.Samples {
+		off := smp.Time.Sub(parsed.Samples[0].Time) - time.Duration(k)*i
+		if off < 0 {
+			off = -off
+		}
+		if off > 150*time.Millisecond {
+			return fmt.Sprintf("sample %d is %s off its grid slot", k, off)
+		}
+	}
+	return ""
 }
 
 // Real kernel header lines (Linux 6.8), trailing spaces trimmed.

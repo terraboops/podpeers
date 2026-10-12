@@ -158,7 +158,7 @@ class ShellCases(unittest.TestCase):
         root = tree({"s.sh": script})
         with mock.patch.object(gs, "ROOT", root):
             got = [n for _, n, _ in gs.shell_guards("s.sh")]
-        self.assertEqual(got, [3, 4, 5, 9, 11, 12, 13, (18, 0), 23, 24])
+        self.assertEqual(got, [3, 4, 5, 9, 11, 12, 13, (18, 0), 23, (23, 0, "op"), 24])
 
     def test_nested_cases_count_their_depth(self):
         script = "\n".join(['case "$a" in', "  x)", '    case "$b" in', "      y) z ;;", "    esac", "    ;;",
@@ -251,11 +251,12 @@ class JavaScript(unittest.TestCase):
     def test_which_lines_are_guards(self):
         page = "\n".join(["if (a) b();", "  const x = a && b;", "  return c || d && e;", "// a ? b : c",
                           "const t = p ? 1 : 2;", "if (u) v = w ? 1 : 2;", "if (x ok", "plain();",
-                          "for (let i = 0; i < n; i++) f(i);", "for (const x of xs) g(x);"])
+                          "for (let i = 0; i < n; i++) f(i);", "for (const x of xs) g(x);",
+                          "if (a && 'x || y' || b) c = d && e;"])
         root = tree({"p.html": page})
         with mock.patch.object(gs, "ROOT", root):
             got = [n for _, n, _ in gs.js_guards("p.html")]
-        self.assertEqual(got, [1, (2, 0), (3, 0), (3, 1), (5, 0, "?"), 6, (6, 0, "?"), (9, 0, "for")])
+        self.assertEqual(got, [1, (2, 0), (3, 0), (3, 1), (5, 0, "?"), 6, (6, 0, "?"), (9, 0, "for"), 11, (11, 0), (11, 2)])
 
 
 class Go(unittest.TestCase):
@@ -353,6 +354,15 @@ class Mutate(unittest.TestCase):
         self.assertEqual(self.mutated("p.html", "const x = a && b;", (1, 0)), "const x = a || b;")
         self.assertEqual(self.mutated("p.html", "const x = a ? 1 : 2;", (1, 0, "?")), "const x = (false && (a)) ? 1 : 2;")
         self.assertEqual(self.mutated("p.html", "for (let i = 0; i < n; i++) f(i);", (1, 0, "for")), "for (let i = 0; false; i++) f(i);")
+
+    def test_operators_inside_conditions(self):
+        self.assertEqual(self.mutated("s.sh", 'if [ "$a" = "x||y" ] && [ b ] || c; then', (1, 1, "op")), 'if [ "$a" = "x||y" ] && [ b ] && c; then')
+        self.assertEqual(self.mutated("s.sh", "if [ a ] && [ b ]; then x; fi", (1, 0, "op")), "if [ a ] || [ b ]; then x; fi")
+        self.assertEqual(gs.top_level_ops('[ "a&&b" ] && f "$(g || h)" || i'), [11, 28])
+        self.assertEqual(gs.top_level_ops('a && b "c || d" || e'), [2, 16], "an operator in quotes is text")
+        self.assertEqual(gs.top_level_ops("a && b 'c || d' || e"), [2, 16])
+        self.assertEqual(gs.top_level_ops('a "b\\" || c" || d'), [13], "an escaped quote does not close the string")
+        self.assertEqual(self.mutated("p.html", "if (a && b) c();", (1, 0)), "if (a || b) c();")
 
     def test_shell(self):
         self.assertEqual(self.mutated("s.sh", "a || b", 1), "a || true")

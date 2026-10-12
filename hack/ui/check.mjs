@@ -71,9 +71,10 @@ try {
   if (fe.h2 === "frontend" && fe.kind === "Deployment" && text.includes("listening") && text.includes("tcp/8080") && text.includes("pods (2)"))
     ok("v-wl: web's two replicas are one Deployment, frontend, listening on tcp/8080");
   else fail(`v-wl: web should fold into Deployment frontend, listening tcp/8080, pods (2): ${JSON.stringify(fe)} ${text.slice(0, 300)}`);
-  const caption = await page.$$eval("#graph g.n", gs => gs.map(g => g.textContent).find(t => t.startsWith("frontend")) || "");
-  if (caption.includes("×2 pods")) ok("v-wl: the frontend node says it stands for two pods");
-  else fail(`v-wl: the frontend node should say ×2 pods: ${caption}`);
+  const captions = await page.$$eval("#graph g.n", gs => gs.map(g => g.textContent));
+  const caption = captions.find(t => t.startsWith("frontend")) || "";
+  if (caption.includes("×2 pods") && !captions.some(t => t.includes("×1 pods"))) ok("v-wl: the frontend node says it stands for two pods, and no single-pod node says anything");
+  else fail(`v-wl: only frontend should carry a pod count (×2 pods): ${JSON.stringify(captions)}`);
   // web's own side never connected to api (failed connects), but api saw web
   // connect: one flow, and since one side saw it established, it is open.
   const toApi = await page.$$eval("#detail tr", rows => rows.map(r => [...r.cells].map(c => c.textContent))
