@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -577,6 +578,138 @@ def cmds_first(calls):
         for f, c in zip(files, cs):
             out.setdefault(f, c)
     return out
+
+
+class Headroom(unittest.TestCase):
+    """The sweep never fills the disk: it refuses to start without headroom,
+    keeps its own build cache bounded, and stops if space runs out anyway."""
+
+    def test_refuses_to_start_on_low_space(self):
+        touched = []
+        with mock.patch.object(gs, "free_bytes", lambda p: gs.GIB), \
+                mock.patch.object(gs, "MIN_FREE", 5 * gs.GIB), \
+                mock.patch.object(gs, "sweep", lambda: touched.append("sweep")), \
+                mock.patch.object(gs, "worktree", lambda: touched.append("worktree")), \
+                mock.patch.object(gs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                mock.patch.object(sys, "argv", ["guard-sweep.py", "--check"]), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as e:
+                gs.main()
+        self.assertEqual(e.exception.code, 3)
+        self.assertIn("refusing to start: 1.0 GiB free", err.getvalue())
+        self.assertEqual(touched, [], "nothing swept, no worktree made")
+
+    def test_the_script_itself_refuses(self):
+        # Run as CI runs it, with a threshold no disk meets.
+        r = subprocess.run([sys.executable, os.path.join(HERE, "guard-sweep.py"), "--check"], capture_output=True, text=True,
+                           env=dict(os.environ, GUARD_SWEEP_MIN_FREE_GB="1000000"), timeout=60)
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn("refusing to start", r.stderr)
+        self.assertIn("need 1000000.0", r.stderr)
+
+    def test_starts_with_enough_space_and_cleans_up_its_cache(self):
+        seen = {}
+        def sweep():
+            seen["cache"] = os.environ["GOCACHE"]
+            seen["exists"] = os.path.isdir(os.environ["GOCACHE"])
+        with mock.patch.object(gs, "free_bytes", lambda p: 100 * gs.GIB), mock.patch.object(gs, "sweep", sweep), \
+                mock.patch.object(gs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                mock.patch.dict(os.environ, {"GOCACHE": "/users/own/cache"}):
+            gs.main()
+            self.assertEqual(os.environ["GOCACHE"], "/users/own/cache", "the caller's own cache setting is back")
+        self.assertTrue(seen["exists"])
+        self.assertNotEqual(seen["cache"], "/users/own/cache", "the sweep builds into a cache of its own")
+        self.assertFalse(os.path.exists(seen["cache"]), "and removes it at the end")
+        self.assertIsNone(gs.CACHE, "and forgets it")
+
+    def test_running_out_mid_sweep_stops_it(self):
+        def sweep():
+            raise gs.NoHeadroom("only 0.5 GiB free")
+        with mock.patch.object(gs, "free_bytes", lambda p: 100 * gs.GIB), mock.patch.object(gs, "sweep", sweep), \
+                mock.patch.object(gs.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as e:
+                gs.main()
+        self.assertEqual((e.exception.code, "stopped: only 0.5 GiB free" in err.getvalue()), (3, True))
+
+    def cache(self, size):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "blob"), "wb") as f:
+            f.write(b"x" * size)
+        return gs.Cache(d)
+
+    def test_a_cache_past_its_cap_is_emptied(self):
+        c = self.cache(2000)
+        with mock.patch.object(gs, "MAX_CACHE", 1000), mock.patch.object(gs, "free_bytes", lambda p: 100 * gs.GIB):
+            c.keep_in_bounds(force=True)
+        self.assertTrue(os.path.isdir(c.path))
+        self.assertEqual(os.listdir(c.path), [])
+        c = self.cache(500)
+        with mock.patch.object(gs, "MAX_CACHE", 1000), mock.patch.object(gs, "free_bytes", lambda p: 100 * gs.GIB):
+            c.keep_in_bounds(force=True)
+        self.assertEqual(os.listdir(c.path), ["blob"], "within its cap, the cache is kept")
+
+    def test_the_size_is_measured_only_now_and_then(self):
+        c = self.cache(2000)
+        with mock.patch.object(gs, "MAX_CACHE", 1000), mock.patch.object(gs, "free_bytes", lambda p: 100 * gs.GIB):
+            c.checked = time.time()
+            c.keep_in_bounds()
+            self.assertEqual(os.listdir(c.path), ["blob"], "measured moments ago: not again yet")
+            c.checked = 0
+            c.keep_in_bounds()
+            self.assertEqual(os.listdir(c.path), [], "due: measured, and emptied")
+
+    def test_low_space_empties_the_cache_and_stops_if_still_low(self):
+        c = self.cache(10)
+        frees = iter([gs.GIB, gs.GIB, 100 * gs.GIB])  # low, low, recovered once emptied
+        with mock.patch.object(gs, "free_bytes", lambda p: next(frees)), mock.patch.object(gs, "MIN_FREE", 5 * gs.GIB):
+            c.checked = time.time()
+            c.keep_in_bounds()
+        self.assertEqual(os.listdir(c.path), [])
+        c = self.cache(10)
+        with mock.patch.object(gs, "free_bytes", lambda p: gs.GIB), mock.patch.object(gs, "MIN_FREE", 5 * gs.GIB):
+            with self.assertRaises(gs.NoHeadroom) as e:
+                c.keep_in_bounds()
+        self.assertIn("even with the sweep's build cache emptied", str(e.exception))
+
+    def test_the_cache_is_emptied_only_when_no_command_runs(self):
+        c = self.cache(2000)
+        c.hold()
+        done = threading.Event()
+        def clear():
+            with mock.patch.object(gs, "MAX_CACHE", 1000), mock.patch.object(gs, "free_bytes", lambda p: 100 * gs.GIB):
+                c.keep_in_bounds(force=True)
+            done.set()
+        th = threading.Thread(target=clear)
+        th.start()
+        time.sleep(0.2)
+        self.assertFalse(done.is_set(), "a build is running: the cache must wait")
+        self.assertEqual(os.listdir(c.path), ["blob"])
+        c.release()
+        th.join(5)
+        self.assertTrue(done.is_set())
+        self.assertEqual(os.listdir(c.path), [])
+
+    def test_each_mutant_checks_headroom_and_holds_the_cache(self):
+        events = []
+        class Spy:
+            path = "/x"
+            def keep_in_bounds(self): events.append("check")
+            def hold(self): events.append("hold")
+            def release(self): events.append("release")
+        root = tree({"x.sh": "a || b\n", "t.sh": "#!/bin/sh\nexit 1\n"})
+        os.chmod(os.path.join(root, "t.sh"), 0o755)
+        with mock.patch.object(gs, "CACHE", Spy()), mock.patch.object(gs, "worktree", lambda: root), \
+                mock.patch.object(gs.subprocess, "run"):
+            gs.run([("x.sh", 1, "a || b"), ("x.sh", 1, "a || b")], lambda f: ["./t.sh"])
+        self.assertEqual(events, ["check", "hold", "release"] * 2)
+        def stop(self):
+            raise gs.NoHeadroom("full")
+        with mock.patch.object(gs, "CACHE", Spy()), mock.patch.object(Spy, "keep_in_bounds", stop), \
+                mock.patch.object(gs, "worktree", lambda: root), mock.patch.object(gs.subprocess, "run"):
+            with self.assertRaises(gs.NoHeadroom):
+                gs.run([("x.sh", 1, "a || b")], lambda f: ["./t.sh"])
+        self.assertEqual(open(os.path.join(root, "x.sh")).read(), "a || b\n", "stopped before mutating")
 
 
 class Main(unittest.TestCase):

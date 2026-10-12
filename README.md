@@ -422,7 +422,11 @@ the real cluster (measured with `--e2e`, not assumed), equivalent (removing it
 changes nothing observable), a sort tie-break, a default the CLI always sets,
 wording or layout only, a usage check, an error path no test provokes, or a
 fallback for a log stream that never broke. CI runs all three on every push,
-the browser part as a job of its own in headless Chrome.
+the browser part as a job of its own in headless Chrome. A sweep builds every mutant fresh, gigabytes of
+Go build cache; it refuses to start with less than 5 GiB free where it writes
+(`GUARD_SWEEP_MIN_FREE_GB`), builds into a cache of its own that it empties
+past 4 GiB (`GUARD_SWEEP_MAX_CACHE_GB`) or when free space dips, stops if
+space still runs short, and removes the cache when it ends.
 
 The sweeps found tests missing where it mattered. In the Go code: a Service
 selector that, removed, credited every Service to every workload in its

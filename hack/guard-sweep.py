@@ -58,11 +58,13 @@ import concurrent.futures
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
 OP = re.compile(r"&&|\|\|")
@@ -576,18 +578,105 @@ def guards():
     return out
 
 
+# Headroom. Every mutant is a fresh build, so a sweep writes gigabytes of Go
+# build cache; unchecked, sweeps filled a laptop's disk twice. The sweep
+# refuses to start without MIN_FREE free where it writes, builds into a cache
+# of its own (not the user's), empties that cache when it passes MAX_CACHE or
+# free space dips under MIN_FREE, stops if emptying it does not restore the
+# headroom, and removes it at the end.
+GIB = 1 << 30
+MIN_FREE = float(os.environ.get("GUARD_SWEEP_MIN_FREE_GB", "5")) * GIB
+MAX_CACHE = float(os.environ.get("GUARD_SWEEP_MAX_CACHE_GB", "4")) * GIB
+CACHE_CHECK_EVERY = 30  # seconds between measurements of the cache's size
+
+
+class NoHeadroom(Exception):
+    pass
+
+
+def free_bytes(path):
+    return shutil.disk_usage(path).free
+
+
+def short_of_space(paths):
+    """The first of paths whose filesystem has less than MIN_FREE free, with
+    its free bytes; (None, 0) if none is short."""
+    for p in paths:
+        free = free_bytes(p)
+        if free < MIN_FREE:
+            return p, free
+    return None, 0
+
+
+def dir_size(path):
+    total = 0
+    for dp, _, fs in os.walk(path):
+        for f in fs:
+            try:
+                total += os.lstat(os.path.join(dp, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+class Cache:
+    """The sweep's own Go build cache. Commands run under a shared hold; it is
+    emptied only while none runs, so no build ever loses files mid-way."""
+
+    def __init__(self, path):
+        self.path, self.running, self.checked = path, 0, 0.0
+        self.cond = threading.Condition()
+
+    def hold(self):
+        with self.cond:
+            self.running += 1
+
+    def release(self):
+        with self.cond:
+            self.running -= 1
+            self.cond.notify_all()
+
+    def keep_in_bounds(self, force=False):
+        """Empty the cache if it has grown past MAX_CACHE (measured at most
+        every CACHE_CHECK_EVERY seconds) or free space is under MIN_FREE;
+        raise NoHeadroom if space is still short after emptying it."""
+        if not force and free_bytes(self.path) >= MIN_FREE and time.time() - self.checked < CACHE_CHECK_EVERY:
+            return
+        with self.cond:
+            self.checked = time.time()
+            if free_bytes(self.path) >= MIN_FREE and dir_size(self.path) <= MAX_CACHE:
+                return
+            while self.running:
+                self.cond.wait()
+            shutil.rmtree(self.path, ignore_errors=True)
+            os.makedirs(self.path, exist_ok=True)
+            free = free_bytes(self.path)
+            if free < MIN_FREE:
+                raise NoHeadroom(f"only {free / GIB:.1f} GiB free on {self.path}'s filesystem even with the sweep's build cache emptied; need {MIN_FREE / GIB:.1f}")
+
+
+CACHE = None  # set by main(): the sweep's own build cache
+
+
 def run(items, cmd, env=None):
     wt = worktree()
     res = []
     try:
         for f, n, text in items:
             path = os.path.join(wt, f)
+            if CACHE:
+                CACHE.keep_in_bounds()
+                CACHE.hold()
             orig = mutate(path, n)
             # Own session: a mutant that never ends (an argument loop without
             # its shift) is killed with everything it started, not orphaned.
-            p = subprocess.Popen(cmd(f), cwd=wt, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                 env=env and env(wt), start_new_session=True)
-            out, err = p.communicate()
+            try:
+                p = subprocess.Popen(cmd(f), cwd=wt, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                     env=env and env(wt), start_new_session=True)
+                out, err = p.communicate()
+            finally:
+                if CACHE:
+                    CACHE.release()
             try:
                 os.killpg(p.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -630,6 +719,11 @@ def parallel(items, cmd, workers=6):
 
 
 def main():
+    short, free = short_of_space([tempfile.gettempdir(), ROOT])
+    if short:
+        print(f"guard-sweep: refusing to start: {free / GIB:.1f} GiB free on {short}'s filesystem, and a sweep writes "
+              f"gigabytes of worktrees and build cache; need {MIN_FREE / GIB:.1f} (GUARD_SWEEP_MIN_FREE_GB)", file=sys.stderr)
+        sys.exit(3)
     # Guards are found in the working tree but mutated in a worktree of HEAD:
     # with uncommitted changes the two differ, and a mutant would land on
     # the wrong line, or none.
@@ -638,6 +732,25 @@ def main():
     if dirty.strip():
         print("guard-sweep: commit first: the sweep mutates HEAD, and the working tree differs:\n" + dirty, file=sys.stderr)
         sys.exit(2)
+    global CACHE
+    CACHE = Cache(tempfile.mkdtemp(prefix="guard-sweep-gocache-"))
+    previous = os.environ.get("GOCACHE")
+    os.environ["GOCACHE"] = CACHE.path  # every go command the sweep starts builds here
+    try:
+        sweep()
+    except NoHeadroom as e:
+        print(f"guard-sweep: stopped: {e}", file=sys.stderr)
+        sys.exit(3)
+    finally:
+        shutil.rmtree(CACHE.path, ignore_errors=True)
+        CACHE = None
+        if previous is None:
+            os.environ.pop("GOCACHE", None)
+        else:
+            os.environ["GOCACHE"] = previous
+
+
+def sweep():
     if len(sys.argv) == 3 and sys.argv[1] == "--e2e":
         items = []
         for l in open(sys.argv[2]):
