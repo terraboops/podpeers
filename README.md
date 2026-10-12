@@ -409,6 +409,9 @@ tests that should notice:
 |---|---|---|---|
 | Go (`internal/`, `cmd/`) | 467 | each `if` and tagless-`switch` case made false; each `&&`/`\|\|` in a returned or assigned boolean flipped | the package's tests, then the whole unit suite |
 | shell (the skill's script, `hack/`) | 106 | each `if` made false; each `cond \|\| action` list's action dropped; each `case` arm removed (a one-line arm, a default `*)` arm or an arm of a one-line `case ... esac` emptied; a multi-line arm's pattern made to never match) | the tests that drive that script (`test/skillscript`, `test/hygiene`, `test/tooling`) |
+| the Makefile's recipes | 4 | as for shell | scratch Makefiles in a scratch module (`test/tooling`) |
+| the CI workflow | 32 | each `run:` step's command replaced by `true`, each `X=1` fail-don't-skip flag dropped, `fetch-depth: 0` made shallow, each trigger removed | what the workflow declares (`test/tooling`): GitHub Actions cannot run here |
+| the sweep tool itself (`hack/guard-sweep.py`) | 180 | by its AST: each `if`/`elif`/`while` test, conditional-expression test and comprehension filter made false, each `and`/`or` flipped | its own tests (`hack/guard_sweep_test.py`) |
 | the web UI's JavaScript | 85 | as for Go, and each ternary `c ? a : b` forced to its else branch | the browser check (`--browser`) |
 
 A guard whose removal no test notices fails the build unless it is accounted
@@ -437,9 +440,11 @@ a Service's target port, one node for a node seen at two addresses, a
 failed pod's reason, and what each row of the detail panel shows. In the
 mutant harness, the arm that fails a run when a mutant survives went
 unnoticed: every test also had a stale or broken patch failing the run. Each
-now has a test. Not swept: test code itself (the mutants prove the tests fail
-when a protection breaks), and the Makefile and CI workflow (their steps are
-the commands above, run on every push).
+now has a test. The sweep tool's own tests found three latent bugs in it (a
+here-string read as a heredoc, a comment taken as part of a shell action, a
+one-line `- run:` step missed), and that nothing checked it actually runs
+when CI runs it. Not swept: test code itself (the mutants prove the tests fail
+when a protection breaks).
 
 ### What the tests do not prove on a cluster, and why
 

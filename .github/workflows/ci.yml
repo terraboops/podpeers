@@ -33,6 +33,8 @@ jobs:
           node-version: 22
       - name: mutants (each negative case's protection, broken, must fail the unit tests, and the browser checks where only a browser can tell)
         run: PODPEERS_REQUIRE_OCR=1 ./hack/mutants.sh --ui
+      - name: the guard sweep's own tests (the tool every guard verdict rests on)
+        run: python3 hack/guard_sweep_test.py
       - name: shell syntax
         run: bash -n hack/e2e-cluster.sh skills/podpeers-netpol/scripts/netpol-check.sh
       - name: build

@@ -13,6 +13,13 @@ Guards, each disabled one at a time in a scratch worktree of HEAD:
     a one-line `case` arm `<pat>) <body> ;;`, default arms included, and
       each arm of a one-line `case ... esac`  ->  body `:`
     a multi-line arm `<pat>)`  ->  a pattern that never matches (the arm is gone)
+  Make recipes: as for shell
+  This tool (Python), by its AST, against hack/guard_sweep_test.py
+    each if / elif / while test, conditional-expression test and
+    comprehension filter  ->  `False and (<c>)`; each and / or  ->  flipped
+  The CI workflow (.github/workflows/ci.yml), against what it declares
+    each `run:` step  ->  `run: "true"`; each `X=1 ` flag in it  ->  dropped
+    `fetch-depth: 0`  ->  1; the push and pull_request triggers  ->  removed
   JavaScript (the web UI, internal/render/page.html; with --browser)
     `if (<c>)`            ->  `if (false && (<c>))`
     each && or || in `return ...` or `x = ...`  ->  flipped, one at a time
@@ -40,6 +47,7 @@ accounted for in hack/guard-sweep-accepted.txt: caught on the real cluster
 Accepted entries are matched by file and guard text, not line number, so
 edits elsewhere in a file do not invalidate them.
 """
+import ast
 import concurrent.futures
 import os
 import re
@@ -69,7 +77,93 @@ SHELL_TESTS = {
     "hack/mutants.sh": ["go", "test", "-count=1", "-timeout", "5m", "./test/tooling/"],
     "hack/check-docs.sh": ["./hack/check-docs.sh"],
     "hack/check-ui.sh": ["./hack/check-ui.sh"],
+    # Make recipes are shell: their `cmd || (echo ...; exit 1)` checks and
+    # `a && b` lists are swept like the scripts', against scratch Makefiles.
+    "Makefile": ["go", "test", "-count=1", "-timeout", "5m", "./test/tooling/"],
 }
+
+# This tool itself: its tests import whichever copy sits beside them.
+PY_TESTS = {"hack/guard-sweep.py": ["python3", "hack/guard_sweep_test.py"]}
+
+
+def py_nodes(src):
+    """Every condition in a Python source, by the AST: (kind, node), where
+    kind is "test" (an if, elif or while test, a conditional expression's
+    test, a comprehension filter) or "boolop" (an and / or expression)."""
+    out = []
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, (ast.If, ast.While, ast.IfExp)):
+            out.append(("test", node.test))
+        elif isinstance(node, ast.comprehension):
+            out.extend(("test", c) for c in node.ifs)
+        elif isinstance(node, ast.BoolOp):
+            out.append(("boolop", node))
+    return sorted(out, key=lambda x: (x[1].lineno, x[1].col_offset, x[0]))
+
+
+def py_keyed(src):
+    """Each condition keyed (line, kind, k): the k-th of its kind on its line."""
+    seen, out = {}, []
+    for kind, node in py_nodes(src):
+        k = seen.get((node.lineno, kind), 0)
+        seen[(node.lineno, kind)] = k + 1
+        out.append(((node.lineno, kind, k), node))
+    return out
+
+
+def py_guards(rel):
+    src = open(os.path.join(ROOT, rel)).read()
+    lines = src.split("\n")
+    names = {"test": "condition forced false", "boolop": "and/or flipped"}
+    return [(rel, key, f"{lines[key[0] - 1].strip()} [{names[key[1]]} {key[2] + 1}]") for key, _ in py_keyed(src)]
+
+
+def mutate_py(src, key):
+    """src with the condition at key disabled: a test made False, an and/or
+    flipped."""
+    lines = src.split("\n")
+    node = dict(py_keyed(src))[key]
+    def at(line, col):  # AST columns count UTF-8 bytes
+        return sum(len(l) + 1 for l in lines[:line - 1]) + len(lines[line - 1].encode()[:col].decode())
+    a, b = at(node.lineno, node.col_offset), at(node.end_lineno, node.end_col_offset)
+    if key[1] == "test":
+        new = "(False and (" + src[a:b] + "))"
+    else:
+        op = " and " if isinstance(node.op, ast.Or) else " or "
+        new = "(" + op.join("(" + src[at(v.lineno, v.col_offset):at(v.end_lineno, v.end_col_offset)] + ")" for v in node.values) + ")"
+    return src[:a] + new + src[b:]
+
+
+# The workflow cannot run here. What it declares can be checked, and is:
+# each gate step, its fail-don't-skip flags, full history, its triggers.
+WF_TESTS = {".github/workflows/ci.yml": ["go", "test", "-count=1", "-run", "TestWorkflowDeclaresEveryGate", "./test/tooling/"]}
+WF_ENV = re.compile(r"\b[A-Z_]+=1 ")
+
+
+def wf_guards(rel):
+    out = []
+    for i, l in enumerate(open(os.path.join(ROOT, rel)).read().split("\n")):
+        t = l.strip()
+        if t.startswith(("run:", "- run:")):
+            out.append((rel, (i + 1, 0, "run"), f"{t} [step's command replaced by true]"))
+            for k, m in enumerate(WF_ENV.finditer(l)):
+                out.append((rel, (i + 1, k, "env"), f"{t} [{m.group().strip()} dropped]"))
+        elif t == "fetch-depth: 0" or t.startswith("fetch-depth: 0 "):
+            out.append((rel, (i + 1, 0, "depth"), f"{t} [made shallow]"))
+        elif t in ("branches: [main]", "pull_request:"):
+            out.append((rel, (i + 1, 0, "trigger"), f"{t} [trigger removed]"))
+    return out
+
+
+def mutate_wf(line, k, kind):
+    if kind == "run":
+        return line[:line.index("run:")] + 'run: "true"'
+    if kind == "env":
+        m = list(WF_ENV.finditer(line))[k]
+        return line[:m.start()] + line[m.end():]
+    if kind == "depth":
+        return line.replace("fetch-depth: 0", "fetch-depth: 1", 1)
+    return line.replace("branches: [main]", "branches: [never-a-branch]").replace("pull_request:", "workflow_dispatch:")
 # The web UI's JavaScript runs only in a browser: its guards are swept with
 # --browser, against the browser check.
 JS_TESTS = {"internal/render/page.html": ["./hack/check-ui.sh"]}
@@ -239,6 +333,8 @@ def split_list(line):
         elif c in "'\"":
             quote = c
         elif c == "#" and (i == 0 or line[i - 1] in " \t"):
+            if last is not None and end is None:
+                end = i  # the action ends where the comment starts
             break
         elif c in "({[":
             depth += 1
@@ -280,6 +376,8 @@ def code_lines(lines):
                 quote = c
             elif c == "#" and (i == 0 or l[i - 1] in " \t"):
                 break
+            elif l.startswith("<<<", i):
+                i += 2  # a here-string: one word, not a heredoc
             elif l.startswith("<<", i):
                 m = re.match(r"<<-?\s*['\"]?(\w+)['\"]?", l[i:])
                 if m:
@@ -342,6 +440,15 @@ def mutate(path, n):
     boolean expression n is (line, k): flip its k-th && or ||."""
     lines = open(path).read().split("\n")
     mutated = lines[:]
+    if path.endswith(".py"):
+        src = "\n".join(lines)
+        open(path, "w").write(mutate_py(src, n))
+        return lines
+    if path.endswith(".yml"):
+        n, k, kind = n
+        mutated[n - 1] = mutate_wf(lines[n - 1], k, kind)
+        open(path, "w").write("\n".join(mutated))
+        return lines
     if isinstance(n, tuple) and len(n) == 3:  # a ternary, forced to its else branch
         n, k, _ = n
         a, q = ternaries(lines[n - 1])[k]
@@ -456,6 +563,14 @@ def parallel(items, cmd, workers=6):
 
 
 def main():
+    # Guards are found in the working tree but mutated in a worktree of HEAD:
+    # with uncommitted changes the two differ, and a mutant would land on
+    # the wrong line, or none.
+    dirty = subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "--untracked-files=no"],
+                           capture_output=True, text=True).stdout
+    if dirty.strip():
+        print("guard-sweep: commit first: the sweep mutates HEAD, and the working tree differs:\n" + dirty, file=sys.stderr)
+        sys.exit(2)
     if len(sys.argv) == 3 and sys.argv[1] == "--e2e":
         items = []
         for l in open(sys.argv[2]):
@@ -470,7 +585,7 @@ def main():
         return
     only = "--browser-only" in sys.argv
     browser = only or "--browser" in sys.argv
-    cmd = lambda f: SHELL_TESTS.get(f) or JS_TESTS[f]
+    cmd = lambda f: SHELL_TESTS.get(f) or WF_TESTS.get(f) or PY_TESTS.get(f) or JS_TESTS[f]
     if browser:
         # The browser checks must pass unmutated first: in a broken
         # environment every mutant would fail them, for the wrong reason.
@@ -488,6 +603,8 @@ def main():
     whole = parallel(first, lambda f: ["go", "test", "-count=1", "./internal/...", "./cmd/...", "./test/skillscript/"])
     left = [(f, n, t) for survived, f, n, t in whole if survived]
     sh = [] if only else [g for rel in SHELL_TESTS if not rel.startswith("hack/check-") for g in shell_guards(rel)]
+    sh += [] if only else [g for rel in WF_TESTS for g in wf_guards(rel)]
+    sh += [] if only else [g for rel in PY_TESTS for g in py_guards(rel)]
     # The browser check uses one port and one Chrome: its guards run one at a time.
     br = [g for rel in SHELL_TESTS if browser and rel.startswith("hack/check-") for g in shell_guards(rel)]
     br += [g for rel in JS_TESTS if browser for g in js_guards(rel)]
@@ -498,7 +615,7 @@ def main():
     left = sorted(left + [(f, n, t) for survived, f, n, t in shres if survived], key=lambda x: (x[0], str(x[1]), x[2]))
     for f, n, t in left:
         print(f"{f}:{n[0] if isinstance(n, tuple) else n}: {t}")
-    print(f"{len(own)} Go guards, {len(sh) - len(br)} shell guards, {len(br)} browser-checked guards; {len(left)} survive their tests", file=sys.stderr)
+    print(f"{len(own)} Go guards, {len(sh) - len(br)} shell, Make, workflow and Python guards, {len(br)} browser-checked guards; {len(left)} survive their tests", file=sys.stderr)
     if "--check" in sys.argv:
         sys.exit(check(left, browser, only))
 
@@ -513,7 +630,12 @@ def check(left, browser, only=False):
         line = line.rstrip("\n")
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        f, text, category, reason = [x.strip() for x in line.split(" | ", 3)]
+        # file | guard | category | reason: a guard may itself hold " | " (a
+        # shell pipe), so the file is the first field and the category and
+        # reason the last two.
+        f, rest = line.split(" | ", 1)
+        text, category, reason = [x.strip() for x in rest.rsplit(" | ", 2)]
+        f = f.strip()
         in_browser = f.startswith("hack/check-") or f in JS_TESTS
         if (in_browser and browser) or (not in_browser and not only):
             accepted.append((f, text))
