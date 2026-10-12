@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"net/netip"
 	"strings"
 	"sync"
@@ -286,6 +287,7 @@ func TestWorkload(t *testing.T) {
 	}{
 		{map[string]string{"pod-template-hash": "7d9f8"}, own("ReplicaSet", "web-7d9f8"), "Deployment/web"},
 		{nil, own("ReplicaSet", "hand-made"), "ReplicaSet/hand-made"},
+		{map[string]string{"pod-template-hash": "abc12"}, own("ReplicaSet", "web-7d9f8"), "ReplicaSet/web-7d9f8"}, // hash not its suffix
 		{nil, own("StatefulSet", "db"), "StatefulSet/db"},
 		{nil, own("Job", "migrate"), "Job/migrate"},
 		{nil, []metav1.OwnerReference{{Kind: "ConfigMap", Name: "x"}}, "Pod/p"}, // not a controller
@@ -378,12 +380,22 @@ func TestCronJobPodsAreNamedAfterTheCronJob(t *testing.T) {
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "report-29315467",
 		OwnerReferences: []metav1.OwnerReference{{Kind: "CronJob", Name: "report", Controller: &yes}}}}
 	plain := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "migrate"}}
-	cs := fake.NewSimpleClientset(job, plain)
+	no := false
+	notController := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "adopted",
+		OwnerReferences: []metav1.OwnerReference{{Kind: "CronJob", Name: "report", Controller: &no}}}}
+	unset := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "loose",
+		OwnerReferences: []metav1.OwnerReference{{Kind: "CronJob", Name: "report"}}}}
+	otherKind := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "step-1",
+		OwnerReferences: []metav1.OwnerReference{{Kind: "Workflow", Name: "pipeline", Controller: &yes}}}}
+	cs := fake.NewSimpleClientset(job, plain, notController, unset, otherKind)
 	var notes []string
 	cron := cronJobOwners(context.Background(), cs, Options{Logf: func(f string, a ...any) { notes = append(notes, fmt.Sprintf(f, a...)) }})
 	for in, want := range map[string]string{
 		"Job/report-29315467": "CronJob/report", // a CronJob run
 		"Job/migrate":         "Job/migrate",    // a Job nobody owns
+		"Job/adopted":         "Job/adopted",    // a CronJob ref that is not its controller
+		"Job/loose":           "Job/loose",      // a ref that does not say
+		"Job/step-1":          "Job/step-1",     // controlled, but not by a CronJob
 		"Job/vanished":        "Job/vanished",   // a Job that no longer exists
 		"Deployment/web":      "Deployment/web", // untouched
 	} {
@@ -430,5 +442,89 @@ func TestToGraphPodKeepsEveryAddressAndStartTime(t *testing.T) {
 	g := toGraphPod(p)
 	if len(g.IPs) != 1 || g.IPs[0] != "2001:db8::10" || !g.StartTime.Equal(start.Time) {
 		t.Fatalf("toGraphPod = IPs %v, start %v", g.IPs, g.StartTime)
+	}
+}
+
+// inventory keeps what it lists: Services in every namespace even when the
+// capture is scoped to one, every cluster IP of a dual-stack Service, a
+// numeric target port that differs from the port, every pod CIDR of a node,
+// and the legacy single-value fields where the lists are empty.
+func TestInventoryKeepsWhatItLists(t *testing.T) {
+	api := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "api"}, Spec: corev1.ServiceSpec{
+		ClusterIP: "192.0.2.200", ClusterIPs: []string{"192.0.2.200", "2001:db8::200"},
+		Ports: []corev1.ServicePort{
+			{Protocol: corev1.ProtocolTCP, Port: 80, TargetPort: intstr.FromInt(8080)},
+			{Protocol: corev1.ProtocolUDP, Port: 53},
+			{Protocol: corev1.ProtocolTCP, Port: 443, TargetPort: intstr.FromString("https")},
+		}}}
+	legacy := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "other", Name: "db"}, Spec: corev1.ServiceSpec{ClusterIP: "192.0.2.201"}}
+	headless := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "peers"}, Spec: corev1.ServiceSpec{
+		ClusterIP: corev1.ClusterIPNone, ClusterIPs: []string{corev1.ClusterIPNone}}}
+	elsewhere := pod("other", "db-0", corev1.PodRunning, nil)
+	cs := fake.NewSimpleClientset(api, legacy, headless, elsewhere)
+	nodes := []corev1.Node{
+		{ObjectMeta: metav1.ObjectMeta{Name: "a"}, Spec: corev1.NodeSpec{PodCIDR: "192.0.2.0/26", PodCIDRs: []string{"192.0.2.0/26", "2001:db8:1::/64"}},
+			Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "192.0.2.10"},
+				{Type: corev1.NodeHostName, Address: "a"}, {Type: corev1.NodeExternalIP, Address: "198.51.100.1"}}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "b"}, Spec: corev1.NodeSpec{PodCIDR: "192.0.2.64/26"}},
+	}
+	inv := inventory(context.Background(), cs, nil, nodes, Options{Namespace: "shop", Logf: func(string, ...any) {}})
+	svc := map[string]graph.Service{}
+	for _, s := range inv.Services {
+		svc[s.ID()] = s
+	}
+	if len(inv.Pods) != 1 || inv.Pods[0].Namespace != "other" {
+		t.Errorf("pods are listed cluster-wide: %+v", inv.Pods)
+	}
+	if s, ok := svc["other/db"]; !ok || fmt.Sprint(s.ClusterIPs) != "[192.0.2.201]" {
+		t.Errorf("a Service outside the capture's namespace, by its legacy clusterIP, is kept: %+v", inv.Services)
+	}
+	if got := fmt.Sprint(svc["shop/api"].ClusterIPs); got != "[192.0.2.200 2001:db8::200]" {
+		t.Errorf("both cluster IPs of a dual-stack Service: %s", got)
+	}
+	if got := fmt.Sprint(svc["shop/api"].Ports); got != "[{tcp 80 8080} {udp 53 53} {tcp 443 https}]" {
+		t.Errorf("ports, with target ports: %s", got)
+	}
+	if got := svc["shop/peers"].ClusterIPs; len(got) != 0 {
+		t.Errorf("a headless Service has no cluster IP: %v", got)
+	}
+	if fmt.Sprint(inv.Nodes) != "[{a [192.0.2.10 198.51.100.1] [192.0.2.0/26 2001:db8:1::/64]} {b [] [192.0.2.64/26]}]" {
+		t.Errorf("nodes: %+v", inv.Nodes)
+	}
+}
+
+// A sampler that finished is read: its log is fetched and parsed. (The fake
+// clientset's log is "fake logs", which does not parse.)
+func TestFinishedSamplerIsRead(t *testing.T) {
+	sel := map[string]string{"pp": "target"}
+	cs := fake.NewSimpleClientset(pod("shop", "api", corev1.PodRunning, sel))
+	// The capture polls with a list: answer it with each debug container
+	// already terminated, as a sampler that ran to the end.
+	podsGVR := schema.GroupVersionResource{Version: "v1", Resource: "pods"}
+	podsGVK := schema.GroupVersionKind{Version: "v1", Kind: "Pod"}
+	cs.PrependReactor("list", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		obj, err := cs.Tracker().List(podsGVR, podsGVK, "shop")
+		if err != nil {
+			return false, nil, nil
+		}
+		list := obj.(*corev1.PodList).DeepCopy()
+		for i := range list.Items {
+			p := &list.Items[i]
+			for _, c := range p.Spec.EphemeralContainers {
+				p.Status.EphemeralContainerStatuses = append(p.Status.EphemeralContainerStatuses, corev1.ContainerStatus{
+					Name: c.Name, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}})
+			}
+		}
+		return true, list, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	res, err := Run(ctx, cs, nil, Options{Namespace: "shop", LabelSelector: "pp=target", Duration: time.Second, Interval: time.Second,
+		StartTimeout: time.Second, PollInterval: 10 * time.Millisecond, Logf: func(string, ...any) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Pods) != 1 || res.Pods[0].Probe.Status != graph.ProbeFailed || !strings.HasPrefix(res.Pods[0].Probe.Reason, "parsing sampler log") {
+		t.Fatalf("a finished sampler's log is read and parsed: %+v", res.Pods)
 	}
 }

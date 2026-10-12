@@ -42,6 +42,8 @@ Read this before changing anything in this repo.
 - `skills/podpeers-netpol`: the Claude Code skill (first-class deliverable)
 - `examples/shop`: Helm chart used by the skill e2e and the skill's docs
 - `test/e2e`: real-cluster suite (`//go:build e2e`)
+- `hack/guard-sweep.py`, `hack/gocond`: the guard sweep (`make guards`) and the Go
+  condition lister it reads Go with
 
 ## Working loop
 

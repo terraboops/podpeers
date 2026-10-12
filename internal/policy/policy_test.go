@@ -774,3 +774,127 @@ func TestUnselectablePeerIsAGapOnEverySide(t *testing.T) {
 		}
 	}
 }
+
+// A Service without a selector (manual endpoints) selects no pods: its
+// traffic is evidence for no workload, even though "no labels required"
+// matches every pod.
+func TestSelectorlessServiceIsEvidenceForNoWorkload(t *testing.T) {
+	r := shop()
+	// cache listens on 8080 and was never contacted on its own side: only
+	// Service evidence could put web in its rules.
+	cache := obs("shop", "cache-0", "StatefulSet/cache", map[string]string{"app": "cache"})
+	cache.Listening = []graph.Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: 8080}}
+	r.Pods = append(r.Pods, cache)
+	r.Edges = append(r.Edges, edge("shop/cache-0", graph.Outbound, graph.Peer{Kind: graph.PeerExternal, IP: "203.0.113.9"}, 443))
+	r.Services = append(r.Services, graph.Service{Namespace: "shop", Name: "manual",
+		Ports: []graph.ServicePort{{Protocol: "tcp", Port: 8080, TargetPort: "8080"}}})
+	r.Edges = append(r.Edges, edge("shop/web-a", graph.Outbound, svcPeer("shop", "manual"), 8080))
+	for _, s := range Suggest(r, Options{}).Suggestions {
+		for _, rs := range s.Reasons {
+			if strings.Contains(strings.Join(rs.Evidence, " "), "svc/shop/manual") && s.Workload != "Deployment/web" {
+				t.Errorf("%s got a rule from calls to a Service with no selector: %+v", s.Workload, rs)
+			}
+		}
+	}
+}
+
+// A Service may expose one port number on two protocols with different
+// targets: the target is the one for the flow's protocol, on either side.
+func TestServicePortMatchesByProtocolToo(t *testing.T) {
+	r := shop()
+	r.Services[0].Ports = []graph.ServicePort{{Protocol: "tcp", Port: 80, TargetPort: "http"}, {Protocol: "udp", Port: 80, TargetPort: "5353"}}
+	for _, s := range Suggest(r, Options{}).Ready() {
+		for _, in := range s.Spec.Ingress {
+			for _, p := range in.Ports {
+				if p.Port.String() == "5353" {
+					t.Errorf("%s: ingress on the udp target for a tcp flow", s.Name)
+				}
+			}
+		}
+		for _, eg := range s.Spec.Egress {
+			for _, p := range eg.Ports {
+				if p.Port.String() == "5353" {
+					t.Errorf("%s: egress to the udp target for a tcp flow", s.Name)
+				}
+			}
+		}
+	}
+}
+
+// A client seen only from its own side, through a Service whose target port
+// is named, still gets its rule: the name is not compared with numbers
+// unless this workload saw that client itself.
+func TestClientSeenOnlyThroughANamedServicePort(t *testing.T) {
+	r := shop()
+	var edges []graph.Edge
+	for _, e := range r.Edges {
+		if !(e.Pod == "shop/api-1" && e.Direction == graph.Inbound) {
+			edges = append(edges, e) // api never saw web itself
+		}
+	}
+	r.Edges = edges
+	api := find(t, Suggest(r, Options{}), "Deployment/api")
+	found := false
+	for _, in := range api.Policy.Spec.Ingress {
+		for _, p := range in.Ports {
+			if p.Port.String() == "http" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("web, seen only from its own side through svc/shop/api (target port http), should be allowed: %+v", api.Policy.Spec.Ingress)
+	}
+}
+
+// Only DNS is widened to udp and tcp 53: egress to another pod in the DNS
+// namespace keeps its own port.
+func TestOnlyTheDNSRuleIsWidened(t *testing.T) {
+	r := shop()
+	r.Pods = append(r.Pods, graph.Pod{Namespace: "kube-system", Name: "metrics-0", Workload: "StatefulSet/metrics",
+		Labels: map[string]string{"app": "metrics"}, Probe: graph.Probe{Status: graph.ProbeNotTargeted}})
+	r.Edges = append(r.Edges, edge("shop/web-a", graph.Outbound, podPeer("kube-system", "metrics-0"), 9100))
+	web := find(t, Suggest(r, Options{}), "Deployment/web")
+	for _, e := range web.Policy.Spec.Egress {
+		if e.To[0].PodSelector != nil && e.To[0].PodSelector.MatchLabels["app"] == "metrics" {
+			if len(e.Ports) != 1 || e.Ports[0].Port.String() != "9100" {
+				t.Fatalf("the metrics rule should stay tcp/9100 alone: %+v", e.Ports)
+			}
+		}
+	}
+}
+
+// Calling some other Service in the default namespace is not calling the
+// API server: the warning that the API would be lost stays.
+func TestOnlyTheKubernetesServiceIsTheAPIServer(t *testing.T) {
+	r := shop()
+	r.Services = append(r.Services, graph.Service{Namespace: "default", Name: "other", Selector: map[string]string{"app": "other"},
+		Ports: []graph.ServicePort{{Protocol: "tcp", Port: 443, TargetPort: "443"}}})
+	r.Edges = append(r.Edges, edge("shop/web-a", graph.Outbound, svcPeer("default", "other"), 443))
+	if web := find(t, Suggest(r, Options{}), "Deployment/web"); !hasGap(web, "the Kubernetes API server") {
+		t.Fatalf("a call to default/other must not stand in for the API server: %v", web.Gaps)
+	}
+}
+
+// Egress to a labelled pod is a rule selecting that pod, never its address.
+func TestEgressToAPodSelectsIt(t *testing.T) {
+	r := shop()
+	r.Edges = append(r.Edges, edge("shop/web-a", graph.Outbound, podPeer("shop", "api-1"), 9090))
+	web := find(t, Suggest(r, Options{}), "Deployment/web")
+	for _, e := range web.Policy.Spec.Egress {
+		for _, to := range e.To {
+			if to.IPBlock != nil && strings.HasPrefix(to.IPBlock.CIDR, "192.0.2.1/") {
+				t.Fatalf("egress to pod shop/api-1 became an address rule: %+v", e)
+			}
+		}
+	}
+	found := false
+	for _, e := range web.Policy.Spec.Egress {
+		if e.To[0].PodSelector != nil && e.To[0].PodSelector.MatchLabels["app"] == "api" && len(e.Ports) == 1 && e.Ports[0].Port.String() == "9090" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want a rule selecting app=api on 9090: %+v", web.Policy.Spec.Egress)
+	}
+}

@@ -24,8 +24,6 @@ func probeMark(p graph.Probe) string {
 			return "observed (partial)"
 		}
 		return "observed"
-	case graph.ProbeNotTargeted:
-		return "peer only"
 	}
 	if p.Reason != "" {
 		return string(p.Status) + ": " + p.Reason

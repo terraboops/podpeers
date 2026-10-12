@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/terraboops/podpeers/internal/graph"
 )
@@ -209,9 +211,9 @@ func TestUnreadableCaptureIsAnErrorEverywhere(t *testing.T) {
 		{"render", missing}, {"query", missing, "{ window { interval } }"}, {"suggest", missing},
 		{"serve", "-addr", "127.0.0.1:0", missing}, {"diff", missing, fixture}, {"diff", fixture, missing},
 	} {
-		code, out, _ := runCLI(args...)
-		if code != exitError || strings.Contains(out, "VERDICT") {
-			t.Errorf("%v: exit %d, want %d and no verdict (stdout %.100q)", args, code, exitError, out)
+		code, out, stderr := runCLI(args...)
+		if code != exitError || strings.Contains(out, "VERDICT") || strings.Contains(stderr, "unknown command") {
+			t.Errorf("%v: exit %d, want %d, no verdict, and the command run (stdout %.100q, stderr %.200q)", args, code, exitError, out, stderr)
 		}
 	}
 }
@@ -518,5 +520,101 @@ func TestMCPReportsTheBuildVersion(t *testing.T) {
 	}
 	if want := strings.TrimSpace(strings.TrimPrefix(v, "podpeers ")); resp.Result.ServerInfo.Version != want {
 		t.Errorf("MCP serverInfo.version = %q; `podpeers version` says %q", resp.Result.ServerInfo.Version, want)
+	}
+}
+
+// capturePaths runs capture against a fake API server for context k3d-dev
+// (namespace shop) and returns the request paths and the exit code.
+func capturePaths(t *testing.T, args ...string) ([]string, int, string) {
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/nodes" {
+			fmt.Fprint(w, `{"kind":"NodeList","apiVersion":"v1","items":[{"metadata":{"name":"n1"},"spec":{"providerID":"k3s://k3d-dev-server-0"}}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"kind":"PodList","apiVersion":"v1","items":[]}`)
+	}))
+	defer srv.Close()
+	kc := kubeconfig(t, "k3d-dev", srv.URL)
+	code, _, stderr := runCLI(append([]string{"capture", "--kubeconfig", kc, "-l", "app", "--duration", "1s", "--interval", "1s",
+		"-o", filepath.Join(t.TempDir(), "x.json")}, args...)...)
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]string(nil), paths...), code, stderr
+}
+
+// An explicit -n is the namespace captured, never replaced by the context's;
+// -n and -A together are refused before any request.
+func TestCaptureNamespaceFlags(t *testing.T) {
+	paths, _, stderr := capturePaths(t, "-n", "payments")
+	listed := ""
+	for _, p := range paths {
+		if strings.HasSuffix(p, "/pods") {
+			listed = p
+			break
+		}
+	}
+	if listed != "/api/v1/namespaces/payments/pods" {
+		t.Errorf("capture -n payments listed its targets at %q (stderr %s)", listed, stderr)
+	}
+	paths, code, stderr := capturePaths(t, "-A", "-n", "payments")
+	if code != exitError || !strings.Contains(stderr, "-n and -A are mutually exclusive") || len(paths) != 0 {
+		t.Errorf("-A with -n: exit %d, %d request(s): %s", code, len(paths), stderr)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe to read while another goroutine writes.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+func (s *syncBuffer) String() string { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+// Stopped (its context ended), serve shuts down cleanly: success, no error.
+func TestServeStopsCleanly(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var stderr syncBuffer
+	done := make(chan int)
+	go func() { done <- run(ctx, []string{"serve", "-addr", "127.0.0.1:0", fixture}, io.Discard, &stderr) }()
+	for i := 0; i < 200 && !strings.Contains(stderr.String(), "serving"); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond) // listening
+	cancel()
+	select {
+	case code := <-done:
+		if code != exitOK || strings.Count(stderr.String(), "podpeers:") != 1 {
+			t.Fatalf("a stopped serve: exit %d, want %d and nothing but the serving line:\n%s", code, exitOK, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not stop")
+	}
+}
+
+// `podpeers mcp` serves MCP on stdin and stdout.
+func TestMCPCommandAnswers(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = stdin }()
+	fmt.Fprintln(w, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	w.Close()
+	code, out, stderr := runCLI("mcp", fixture)
+	if code != exitOK || !strings.Contains(out, `"id":1`) || !strings.Contains(out, `"result"`) {
+		t.Fatalf("mcp: exit %d\nstdout %s\nstderr %s", code, out, stderr)
 	}
 }

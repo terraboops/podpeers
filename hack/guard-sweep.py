@@ -3,10 +3,11 @@
 
 Guards, each disabled one at a time in a scratch worktree of HEAD:
 
-  Go (non-test code under internal/ and cmd/)
-    `if <c> {`            ->  `if false && (<c>) {`
-    `case <c>:` in a tagless `switch {`  ->  `case false && (<c>):`
-    each && or || in `return ...` or `x := ...`  ->  flipped, one at a time
+  Go (non-test code under internal/, cmd/ and hack/gocond), by its parser
+    (hack/gocond): each if and for condition and tagless-switch case
+    expression  ->  `false && (<c>)`; each && and ||  ->  flipped; each arm
+    of a tagged or type switch  ->  the default arm's body (or none). A
+    mutant the compiler rejects is noticed, by the build, and said so.
   Shell (the skill's script and hack/*.sh)
     `if <c>; then` / `elif <c>; then`    ->  condition `false`
     `<c> || <action>` / `<c> && <action>` lists  ->  action `true`
@@ -36,6 +37,9 @@ accounted for in hack/guard-sweep-accepted.txt: caught on the real cluster
                                    checks' own guards, against the browser
                                    check (needs node and Chrome; slow)
   hack/guard-sweep.py --browser-only   only those (CI runs it as its own job)
+  hack/guard-sweep.py --go-only        only the Go conditions
+  hack/guard-sweep.py --scripts-only   only the rest: shell, Make, the
+                                       workflow, this tool, embedded shell
   hack/guard-sweep.py --check      sweep, compared with
                                    hack/guard-sweep-accepted.txt: fails on a
                                    survivor nobody has accounted for, and on an
@@ -49,6 +53,7 @@ edits elsewhere in a file do not invalidate them.
 """
 import ast
 import concurrent.futures
+import json
 import os
 import re
 import signal
@@ -58,12 +63,37 @@ import tempfile
 import threading
 
 ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
-IF = re.compile(r"^(\s*)(\} else )?if (.+) \{\s*$")
-SWITCH = re.compile(r"^(\s*)switch( [^{]*;)? \{\s*$")
-CASE = re.compile(r"^(\s*)case (.+):\s*$")
-# A boolean computed outside an if or case: `return a && b`, `x := a || b`.
-BOOL = re.compile(r"^\s*(return |[\w.]+ :?= ).*(&&|\|\|)")
 OP = re.compile(r"&&|\|\|")
+
+# Go is read by its own parser (hack/gocond), built once per sweep.
+GO_DIRS = ("internal", "cmd", os.path.join("hack", "gocond"))
+GOCOND = []
+GOCOND_LOCK = threading.Lock()
+
+
+def gocond(paths, cwd):
+    """hack/gocond's conditions for the Go files at paths (relative to cwd)."""
+    with GOCOND_LOCK:
+        if not GOCOND:
+            out = os.path.join(tempfile.mkdtemp(), "gocond")
+            here = os.path.dirname(os.path.abspath(__file__))  # this checkout's helper
+            subprocess.run(["go", "build", "-o", out, "./gocond"], cwd=here, check=True)
+            GOCOND.append(out)
+    r = subprocess.run([GOCOND[0]] + list(paths), cwd=cwd, capture_output=True, text=True, check=True)
+    return [json.loads(l) for l in r.stdout.splitlines()]
+
+
+GO_LABELS = {"if": "if", "case": "case", "for": "loop condition forced false", "arm": "arm removed"}
+
+
+def go_text(line, kind, k):
+    """A Go condition's name in hack/guard-sweep-accepted.txt: the line, and
+    for all but the first if or case on it, which one and how it is disabled."""
+    if kind == "boolop":
+        return f"{line} [operator {k + 1} flipped]"
+    if kind in ("if", "case") and k == 0:
+        return line
+    return f"{line} [{GO_LABELS[kind]}]" if k == 0 else f"{line} [{GO_LABELS[kind]} {k + 1}]"
 
 # The tests that drive each shell script. hygiene's get room: one equivalent
 # mutant makes --history read every object, about 3x slower (see NO_HANGS).
@@ -458,8 +488,7 @@ def worktree():
 
 
 def mutate(path, n):
-    """Disable the guard on line n of path; return the original lines. For a
-    boolean expression n is (line, k): flip its k-th && or ||."""
+    """Disable the guard keyed n in path; return the original lines."""
     lines = open(path).read().split("\n")
     mutated = lines[:]
     if path.endswith(".py"):
@@ -470,6 +499,15 @@ def mutate(path, n):
         n, k, kind = n
         mutated[n - 1] = mutate_wf(lines[n - 1], k, kind)
         open(path, "w").write("\n".join(mutated))
+        return lines
+    if path.endswith(".go") and isinstance(n, tuple) and n[-1] != "sh":
+        line, kind, k = n
+        c = next(c for c in gocond([os.path.basename(path)], os.path.dirname(path))
+                 if (c["line"], c["kind"], c["k"]) == (line, kind, k))
+        with open(path, "rb") as f:
+            b = f.read()
+        with open(path, "wb") as f:
+            f.write(b[:c["start"]] + c["new"].encode() + b[c["end"]:])
         return lines
     if isinstance(n, tuple) and n[-1] == "sh":  # shell inside a Go raw string
         mutated[n[0] - 1] = mutate_shell(lines[n[0] - 1])
@@ -499,48 +537,23 @@ def mutate(path, n):
         mutated[n - 1] = lines[n - 1][:a] + "false && (" + lines[n - 1][a:b] + ")" + lines[n - 1][b:]
         open(path, "w").write("\n".join(mutated))
         return lines
-    if not path.endswith(".go"):
-        mutated[n - 1] = mutate_shell(lines[n - 1])
-        open(path, "w").write("\n".join(mutated))
-        return lines
-    c = CASE.match(lines[n - 1])
-    if c and not IF.match(lines[n - 1]):
-        mutated[n - 1] = f"{c.group(1)}case false && ({c.group(2)}):"
-        open(path, "w").write("\n".join(mutated))
-        return lines
-    m = IF.match(lines[n - 1])
-    cond = m.group(3)
-    if ";" in cond:
-        init, c = cond.rsplit(";", 1)
-        new = f"{m.group(1)}{m.group(2) or ''}if {init}; false && ({c.strip()}) {{"
-    else:
-        new = f"{m.group(1)}{m.group(2) or ''}if false && ({cond}) {{"
-    mutated[n - 1] = new
+    mutated[n - 1] = mutate_shell(lines[n - 1])
     open(path, "w").write("\n".join(mutated))
     return lines
 
 
 def guards():
-    out = []
-    for dp, _, fs in os.walk(ROOT):
-        rel = os.path.relpath(dp, ROOT)
-        if not (rel.startswith("internal") or rel.startswith("cmd")):
-            continue
-        for f in sorted(fs):
-            if f.endswith(".go") and not f.endswith("_test.go"):
-                switches = []  # indents of the tagless switches we are inside
-                for i, l in enumerate(open(os.path.join(dp, f)).read().split("\n")):
-                    sw = SWITCH.match(l)
-                    if sw:
-                        switches.append(sw.group(1))
-                    elif switches and l.rstrip() == switches[-1] + "}":
-                        switches.pop()
-                    c = CASE.match(l)
-                    if IF.match(l) or (switches and c and c.group(1) == switches[-1]):
-                        out.append((os.path.join(rel, f), i + 1, l.strip()))
-                    elif BOOL.match(l):
-                        for k in range(len(OP.findall(l))):
-                            out.append((os.path.join(rel, f), (i + 1, k), f"{l.strip()} [operator {k + 1} flipped]"))
+    files = []
+    for d in GO_DIRS:
+        for dp, _, fs in os.walk(os.path.join(ROOT, d)):
+            files += [os.path.relpath(os.path.join(dp, f), ROOT) for f in sorted(fs)
+                      if f.endswith(".go") and not f.endswith("_test.go")]
+    out, lines = [], {}
+    for c in gocond(sorted(files), ROOT):
+        if c["file"] not in lines:
+            lines[c["file"]] = open(os.path.join(ROOT, c["file"])).read().split("\n")
+        text = go_text(lines[c["file"]][c["line"] - 1].strip(), c["kind"], c["k"])
+        out.append((c["file"], (c["line"], c["kind"], c["k"]), text))
     return out
 
 
@@ -570,6 +583,8 @@ def run(items, cmd, env=None):
                 with open(os.path.join(os.environ["GUARD_SWEEP_LOG"], name + ".log"), "w") as log:
                     log.write(f"{text}\nexit {r.returncode}\n{out}\n{err}")
             survived = r.returncode == 0
+            if not survived and ("[build failed]" in r.stdout or "[setup failed]" in r.stdout):
+                print(f"does not compile (the build notices): {f}:{n}", file=sys.stderr)
             # A timeout counts as noticed where a mutant can hang (an argument
             # loop without its shift). Where none can (NO_HANGS), it only
             # means slow: count it as not noticed, so it fails --check out
@@ -618,6 +633,9 @@ def main():
         return
     only = "--browser-only" in sys.argv
     browser = only or "--browser" in sys.argv
+    # CI splits the rest in two jobs that run side by side.
+    go_only, scripts_only = "--go-only" in sys.argv, "--scripts-only" in sys.argv
+    no_go, no_scripts = only or scripts_only, only or go_only
     cmd = lambda f: SHELL_TESTS.get(f) or WF_TESTS.get(f) or PY_TESTS.get(f) or EMBEDDED_SH.get(f) or JS_TESTS[f]
     if browser:
         # The browser checks must pass unmutated first: in a broken
@@ -631,15 +649,16 @@ def main():
                     sys.exit(1)
         finally:
             subprocess.run(["git", "-C", ROOT, "worktree", "remove", "--force", wt])
-    own = [] if only else parallel(guards(), lambda f: ["go", "test", "-count=1", "./" + os.path.dirname(f) + "/"])
+    own = [] if no_go else parallel(guards(), lambda f: ["go", "test", "-count=1", "./" + os.path.dirname(f) + "/"])
     first = [(f, n, t) for survived, f, n, t in own if survived]
-    whole = parallel(first, lambda f: ["go", "test", "-count=1", "./internal/...", "./cmd/...", "./test/skillscript/"])
+    whole = parallel(first, lambda f: ["go", "test", "-count=1", "./internal/...", "./cmd/...", "./test/skillscript/", "./hack/gocond/"])
     left = [(f, n, t) for survived, f, n, t in whole if survived]
-    sh = [] if only else [g for rel in SHELL_TESTS if not rel.startswith("hack/check-") for g in shell_guards(rel)]
-    sh += [] if only else [g for rel in WF_TESTS for g in wf_guards(rel)]
-    sh += [] if only else [g for rel in PY_TESTS for g in py_guards(rel)]
-    sh += [] if only else [g for rel in EMBEDDED_SH for g in embedded_guards(rel)]
+    sh = [] if no_scripts else [g for rel in SHELL_TESTS if not rel.startswith("hack/check-") for g in shell_guards(rel)]
+    sh += [] if no_scripts else [g for rel in WF_TESTS for g in wf_guards(rel)]
+    sh += [] if no_scripts else [g for rel in PY_TESTS for g in py_guards(rel)]
+    sh += [] if no_scripts else [g for rel in EMBEDDED_SH for g in embedded_guards(rel)]
     # The browser check uses one port and one Chrome: its guards run one at a time.
+    browser = browser and not (go_only or scripts_only)
     br = [g for rel in SHELL_TESTS if browser and rel.startswith("hack/check-") for g in shell_guards(rel)]
     br += [g for rel in JS_TESTS if browser for g in js_guards(rel)]
     slow = [g for g in sh if g[0] in NO_HANGS]
@@ -651,14 +670,17 @@ def main():
         print(f"{f}:{n[0] if isinstance(n, tuple) else n}: {t}")
     print(f"{len(own)} Go guards, {len(sh) - len(br)} shell, Make, workflow and Python guards, {len(br)} browser-checked guards; {len(left)} survive their tests", file=sys.stderr)
     if "--check" in sys.argv:
-        sys.exit(check(left, browser, only))
+        sys.exit(check(left, browser, only, go=not no_go, scripts=not no_scripts))
 
 
-def check(left, browser, only=False):
+def check(left, browser, only=False, go=None, scripts=None):
     """Every survivor must be accepted with a reason, and every acceptance
     must still be a survivor. Only the entries for what was swept are
-    checked: without --browser, not the browser-checked ones; with
-    --browser-only, only those."""
+    checked: the browser-checked ones with --browser; the Go ones unless
+    --browser-only or --scripts-only; the rest unless --browser-only or
+    --go-only."""
+    go = not only if go is None else go
+    scripts = not only if scripts is None else scripts
     accepted = []
     for line in open(os.path.join(ROOT, "hack", "guard-sweep-accepted.txt")):
         line = line.rstrip("\n")
@@ -671,7 +693,8 @@ def check(left, browser, only=False):
         text, category, reason = [x.strip() for x in rest.rsplit(" | ", 2)]
         f = f.strip()
         in_browser = f.startswith("hack/check-") or f in JS_TESTS
-        if (in_browser and browser) or (not in_browser and not only):
+        in_go = f.endswith(".go") and not text.endswith("[embedded shell]")
+        if (in_browser and browser) or (in_go and go) or (not in_browser and not in_go and scripts):
             accepted.append((f, text))
     pending = accepted[:]
     unaccounted = []

@@ -45,15 +45,12 @@ internal/capture/capture.go | if o.Duration <= 0 { | default | a library default
 internal/capture/capture.go | if !t.done { | cluster | TestE2E log rotation
 internal/capture/capture.go | if err := wait(ctx, cs, targets, name, opts, hardDeadline); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 internal/capture/capture.go | if o.AllNamespaces { | cosmetic | the namespace label in messages
-internal/capture/capture.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 internal/capture/capture.go | if time.Since(lastLog) > 10*time.Second { | cosmetic | progress-log throttling
 internal/capture/capture.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 internal/capture/capture.go | if !ok { | cluster | TestE2E pod deleted outright mid-window
-internal/capture/capture.go | if err == nil { | cluster | TestE2E log rotation
 internal/capture/capture.go | if a.Complete { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
 internal/capture/capture.go | if t.streamDone != nil { | cluster | TestE2E log rotation
 internal/capture/capture.go | if err != nil || !out.Complete { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
-internal/capture/capture.go | if rerr == nil { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
 internal/capture/capture.go | if err == nil && len(out.Samples) == 0 { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
 internal/capture/capture.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 internal/capture/capture.go | if t.note != "" { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
@@ -61,11 +58,6 @@ internal/capture/capture.go | if out.Truncated { | fallback | a fallback for a l
 internal/capture/capture.go | if err != nil && !opts.AllNamespaces { | cluster | TestE2E an identity confined to one namespace (pods), and the namespace where the credentials may not do this
 internal/capture/capture.go | if err == nil { | cluster | TestE2E capture matches the workloads
 internal/capture/capture.go | if err != nil && !opts.AllNamespaces { | cluster | TestE2E an identity confined to one namespace (Services)
-internal/capture/capture.go | if len(ips) == 0 && s.Spec.ClusterIP != "" { | equivalent | a fallback for clusters older than spec.clusterIPs; current API servers always fill it
-internal/capture/capture.go | if ip != corev1.ClusterIPNone { | cluster | TestE2E capture matches the workloads (headless Services)
-internal/capture/capture.go | if sp.TargetPort.IntValue() == 0 && sp.TargetPort.StrVal == "" { | equivalent | the API server always defaults targetPort to port, so it is never empty
-internal/capture/capture.go | if len(gn.PodCIDRs) == 0 && n.Spec.PodCIDR != "" { | equivalent | a fallback for the deprecated single podCIDR; k3s and kind always fill podCIDRs
-internal/capture/capture.go | if a.Type == corev1.NodeInternalIP || a.Type == corev1.NodeExternalIP { | cluster | TestPolicyEnforcement (node addresses)
 internal/capture/capture.go | if apierrors.IsForbidden(err) { | cosmetic | a short 'forbidden' instead of the API's full message, which says forbidden too
 internal/capture/capture.go | if !ok { | equivalent | a non-Job workload name falls through the Job lookup to the same answer, at the cost of one cached list
 internal/diff/diff.go | if a.From != b.From { | order | a sort tie-break: removing it only reorders entries whose earlier keys are equal
@@ -131,4 +123,13 @@ internal/render/page.html | const k = Math.max(0.2, Math.min(4, pan.k * (ev.delt
 .github/workflows/ci.yml | run: go install sigs.k8s.io/kwok/cmd/kwokctl@v0.7.0 && echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH" [step's command replaced by true] | setup | make e2e fails red without it, naming the tool (test/tooling)
 .github/workflows/ci.yml | run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr ffmpeg >/dev/null [step's command replaced by true] | setup | mutants.sh --e2e fails red without it: PODPEERS_REQUIRE_OCR fails its unit baseline, and a failing baseline stops the run (test/tooling)
 .github/workflows/ci.yml | run: ./hack/e2e-cluster.sh down || true [step's command replaced by true] | setup | teardown of a runner that is discarded after the job; nothing depends on it
-hack/guard-sweep.py | if c and not IF.match(lines[n - 1]): [and/or flipped 1] | equivalent | mutate() is only given guard lines, each a Go case or an if: for either, `and` and `or` decide the same
+cmd/podpeers/main.go | if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" { [operator 1 flipped] | cosmetic | the version string from build info
+cmd/podpeers/main.go | if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" { [operator 2 flipped] | cosmetic | the version string from build info
+internal/gql/gql.go | if pod, ok := ix.pods[pr.ID()]; ok && pr.Kind == graph.PeerPod { [operator 1 flipped] | equivalent | the pod index is keyed by the peer's kind-qualified ID, which only a pod peer can match
+internal/gql/gql.go | case *graphql.List: [arm removed] | equivalent | zeroOf only fills fields refused once the query's budget is spent, and Do discards that data and answers one error, whatever the zero values are
+internal/gql/gql.go | case "Int": [arm removed] | equivalent | zeroOf only fills fields refused once the query's budget is spent, and Do discards that data and answers one error, whatever the zero values are
+internal/gql/gql.go | case "Float": [arm removed] | equivalent | zeroOf only fills fields refused once the query's budget is spent, and Do discards that data and answers one error, whatever the zero values are
+internal/gql/gql.go | case "Boolean": [arm removed] | equivalent | zeroOf only fills fields refused once the query's budget is spent, and Do discards that data and answers one error, whatever the zero values are
+internal/policy/policy.go | if c.Kind != graph.PeerPod || !ok || (cp.Phase != "Succeeded" && cp.Phase != "Failed") { [operator 1 flipped] | equivalent | a client that is not a pod has no inventory pod either, and a pod missing from the inventory has no phase, which ends the loop the same way
+internal/capture/capture.go | if err != nil || !out.Complete { [operator 1 flipped] | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
+internal/capture/capture.go | if err == nil && len(out.Samples) == 0 { [operator 1 flipped] | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way

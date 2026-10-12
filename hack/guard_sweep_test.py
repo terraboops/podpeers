@@ -253,50 +253,85 @@ class JavaScript(unittest.TestCase):
 
 
 class Go(unittest.TestCase):
-    def test_which_lines_are_guards(self):
-        code = "\n".join([
-            "package x",                        # 1
-            "func f() bool {",                  # 2
-            "\tif a {",                         # 3
-            "\t} else if b {",                  # 4
-            "\tswitch {",                       # 5
-            "\tcase c:",                        # 6
-            "\t\tswitch v {",                   # 7 tagged: its cases are not guards
-            "\t\tcase 1:",                      # 8
-            "\t\t}",                            # 9
-            "\tcase d && e:",                   # 10
-            "\t}",                              # 11
-            "\tcase f:",                        # 12 after the switch closed: not a guard
-            "\tswitch x := g(); {",             # 13
-            "\tcase h:",                        # 14
-            "\t}",                              # 15
-            "\tok := a || b",                   # 16
-            "\treturn a && b || c",             # 17
-            "}",
-        ])
-        root = tree({"internal/x/x.go": code, "internal/x/x_test.go": "package x\nfunc t() { if a {\n}\n}\n",
-                     "other/y.go": "package y\nfunc g() {\n\tif a {\n\t}\n}\n", "cmd/z/z.go": "package main\nfunc main() {\n\tif a {\n\t}\n}\n",
-                     "internal/x/notes.txt": "if a {\n"})
+    """Go is read by hack/gocond; the sweep names and applies what it lists."""
+
+    CODE = "\n".join([
+        "package x",                                  # 1
+        "func f(a, b, c bool, n int) bool {",         # 2
+        "\tif a {",                                  # 3
+        "\t} else if b && c {",                      # 4
+        "\t}",                                       # 5
+        "\tswitch {",                                # 6
+        "\tcase a, b:",                              # 7
+        "\t}",                                       # 8
+        "\tswitch n {",                              # 9
+        "\tcase 1:",                                 # 10
+        "\t\treturn a",                             # 11
+        "\tdefault:",                                # 12
+        "\t\treturn b",                             # 13
+        "\t}",                                       # 14
+        "\tfor n > 0 {",                             # 15
+        "\t\tn--",                                  # 16
+        "\t}",                                       # 17
+        "\treturn a || b",                           # 18
+        "}",
+        "",
+    ])
+
+    def test_which_conditions_and_their_names(self):
+        root = tree({"internal/x/x.go": self.CODE, "internal/x/x_test.go": "package x\nfunc t(a bool) { if a {\n}\n}\n",
+                     "other/y.go": "package y\nfunc g(a bool) {\n\tif a {\n\t}\n}\n",
+                     "cmd/z/z.go": "package main\nfunc main() {\n\tif true {\n\t}\n}\n",
+                     "hack/gocond/g.go": "package main\nfunc h(a bool) {\n\tif a {\n\t}\n}\n"})
         with mock.patch.object(gs, "ROOT", root):
-            got = [(f, n) for f, n, _ in gs.guards()]
+            got = {(f, n): t for f, n, t in gs.guards()}
         x = "internal/x/x.go"
-        self.assertEqual(sorted(got, key=str), sorted([("cmd/z/z.go", 3), (x, 3), (x, 4), (x, 6), (x, 10), (x, 14),
-                                                       (x, (16, 0)), (x, (17, 0)), (x, (17, 1))], key=str))
+        self.assertEqual(got, {
+            ("cmd/z/z.go", (3, "if", 0)): "if true {",
+            ("hack/gocond/g.go", (3, "if", 0)): "if a {",
+            (x, (3, "if", 0)): "if a {",
+            (x, (4, "if", 0)): "} else if b && c {",
+            (x, (4, "boolop", 0)): "} else if b && c { [operator 1 flipped]",
+            (x, (7, "case", 0)): "case a, b:",
+            (x, (7, "case", 1)): "case a, b: [case 2]",
+            (x, (10, "arm", 0)): "case 1: [arm removed]",
+            (x, (15, "for", 0)): "for n > 0 { [loop condition forced false]",
+            (x, (18, "boolop", 0)): "return a || b [operator 1 flipped]",
+        })
+
+    def test_names_of_later_conditions_on_a_line(self):
+        self.assertEqual(gs.go_text("l", "if", 1), "l [if 2]")
+        self.assertEqual(gs.go_text("l", "case", 1), "l [case 2]")
+        self.assertEqual(gs.go_text("l", "if", 0), "l")
+        self.assertEqual(gs.go_text("l", "for", 1), "l [loop condition forced false 2]")
+        self.assertEqual(gs.go_text("l", "arm", 2), "l [arm removed 3]")
+        self.assertEqual(gs.go_text("l", "boolop", 2), "l [operator 3 flipped]")
 
     def test_each_go_mutation(self):
-        for line, n, want in [
-            ("\tif a {", 1, "\tif false && (a) {"),
-            ("\t} else if a {", 1, "\t} else if false && (a) {"),
-            ("\tif x := f(); x > 0 {", 1, "\tif x := f(); false && (x > 0) {"),
-            ("\tcase a && b:", 1, "\tcase false && (a && b):"),
-            ("\treturn a && b || c", (1, 1), "\treturn a && b && c"),
-            ("\treturn a && b || c", (1, 0), "\treturn a || b || c"),
+        for key, line, want in [
+            ((3, "if", 0), 3, "\tif false && (a) {"),
+            ((4, "boolop", 0), 4, "\t} else if b || c {"),
+            ((7, "case", 1), 7, "\tcase a, false && (b):"),
+            ((15, "for", 0), 15, "\tfor false && (n > 0) {"),
+            ((18, "boolop", 0), 18, "\treturn a && b"),
         ]:
-            d = tree({"x.go": line + "\n"})
+            d = tree({"x.go": self.CODE})
             p = os.path.join(d, "x.go")
-            orig = gs.mutate(p, n)
-            self.assertEqual(open(p).read().split("\n")[0], want, line)
-            self.assertEqual(orig[0], line)
+            orig = gs.mutate(p, key)
+            self.assertEqual(open(p).read().split("\n")[line - 1], want, key)
+            self.assertEqual("\n".join(orig), self.CODE)
+        d = tree({"x.go": self.CODE})
+        p = os.path.join(d, "x.go")
+        gs.mutate(p, (10, "arm", 0))
+        self.assertIn("\tcase 1:\nreturn b\n\tdefault:", open(p).read(), "the arm's values fall to the default")
+
+    def test_the_helper_is_built_once(self):
+        with mock.patch.object(gs, "GOCOND", []):
+            d = tree({"x.go": "package x\nfunc f(a bool) { if a {\n} }\n"})
+            gs.gocond(["x.go"], d)
+            built = list(gs.GOCOND)
+            gs.gocond(["x.go"], d)
+            self.assertEqual(gs.GOCOND, built)
 
 
 class Mutate(unittest.TestCase):
@@ -432,6 +467,16 @@ class Verdicts(unittest.TestCase):
         self.assertEqual(self.judge("p.html", "echo 'xFAIL x'; exit 1", ui)[0], True)
         self.assertEqual(self.judge("p.html", "echo boom; exit 1")[0], False, "other commands judge by exit code")
 
+    def test_a_mutant_the_build_rejects_is_named(self):
+        survived, err = self.judge("x.sh", "echo 'FAIL\tx [build failed]'; exit 1")
+        self.assertEqual((survived, "does not compile" in err), (False, True))
+        survived, err = self.judge("x.sh", "echo 'FAIL\tx [setup failed]'; exit 1")
+        self.assertEqual((survived, "does not compile" in err), (False, True))
+        survived, err = self.judge("x.sh", "echo 'FAIL\tx'; exit 1")
+        self.assertNotIn("does not compile", err, "a test failure is not a build failure")
+        survived, err = self.judge("x.sh", "echo 'ok [build failed] in a test name'; exit 0")
+        self.assertEqual((survived, "does not compile" in err), (True, False))
+
     def test_a_mutant_cannot_outlive_its_run(self):
         pidfile = os.path.join(tempfile.mkdtemp(), "pid")
         self.judge("x.sh", f"sleep 60 >/dev/null 2>&1 & echo $! > {pidfile}; exit 0")
@@ -502,6 +547,16 @@ class Check(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("STALE        x.go: if a {", err)
 
+    def test_go_and_the_rest_are_checked_apart(self):
+        sh = [("hack/x.sh", 1, "a || b")]
+        root = tree({"hack/guard-sweep-accepted.txt": self.ACCEPTED + "hack/x.sh | a || b | equivalent | why\n"})
+        with mock.patch.object(gs, "ROOT", root), contextlib.redirect_stderr(io.StringIO()):
+            gonly = [g for g in self.go if g[0].endswith(".go")]
+            self.assertEqual(gs.check(gonly, False, go=True, scripts=False), 0, "Go alone: the script entries are not checked")
+            rest = sh + [g for g in self.go if not g[0].endswith(".go")]
+            self.assertEqual(gs.check(rest, False, go=False, scripts=True), 0, "scripts alone: the Go entries are not checked")
+            self.assertEqual(gs.check(rest, False, go=True, scripts=True), 1, "both: the Go entries must survive too")
+
     def test_only_what_was_swept_is_checked(self):
         self.assertEqual(self.check(self.go + self.br, False)[0], 1, "unswept browser survivors are unaccounted")
         self.assertEqual(self.check(self.go, True)[0], 1, "browser entries are checked with --browser")
@@ -542,7 +597,7 @@ class Main(unittest.TestCase):
                 mock.patch.object(gs, "py_guards", found["py"]), mock.patch.object(gs, "js_guards", found["js"]), \
                 mock.patch.object(gs, "embedded_guards", found["emb"]), \
                 mock.patch.object(gs, "worktree", lambda: "/nonexistent"), mock.patch.object(gs.subprocess, "run", run), \
-                mock.patch.object(gs, "check", lambda left, b, o=False: ("checked", len(left), b, o)), \
+                mock.patch.object(gs, "check", lambda left, b, o=False, go=None, scripts=None: ("checked", len(left), b, o, go, scripts)), \
                 mock.patch.object(sys, "argv", ["guard-sweep.py"] + argv), \
                 contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
             try:
@@ -582,20 +637,34 @@ class Main(unittest.TestCase):
         self.assertEqual(cmds["internal/procnet/procnet.go"][-1], "./internal/procnet/")
         self.assertEqual(cmds["internal/x.go"], ["go", "test", "-count=1", "./internal/"])
         whole = [cs for files, _, cs in calls if "internal/x.go" in files][1]
-        self.assertEqual(whole, [["go", "test", "-count=1", "./internal/...", "./cmd/...", "./test/skillscript/"]],
+        self.assertEqual(whole, [["go", "test", "-count=1", "./internal/...", "./cmd/...", "./test/skillscript/", "./hack/gocond/"]],
                          "a survivor of its package's tests faces the whole unit suite")
 
     def test_browser_only_sweeps_only_the_browser(self):
         calls, code, run, out, err = self.sweep(["--browser-only", "--check"])
         swept = [f for files, _, _ in calls for f in files]
         self.assertEqual(sorted(set(swept)), ["hack/check-docs.sh", "hack/check-ui.sh", "internal/render/page.html"])
-        self.assertEqual(code, ("checked", 3, True, True))
+        self.assertEqual(code, ("checked", 3, True, True, False, False))
         baselines = [c.args[0] for c in run.call_args_list if c.args[0][0].startswith("./hack/")]
         self.assertEqual(sorted(baselines), [["./hack/check-docs.sh"], ["./hack/check-ui.sh"]], "both browser checks run unmutated first")
 
     def test_check_gets_the_scope(self):
-        self.assertEqual(self.sweep(["--check"])[1][2:], (False, False))
-        self.assertEqual(self.sweep(["--check", "--browser"])[1][2:], (True, False))
+        self.assertEqual(self.sweep(["--check"])[1][2:], (False, False, True, True))
+        self.assertEqual(self.sweep(["--check", "--browser"])[1][2:], (True, False, True, True))
+        self.assertEqual(self.sweep(["--check", "--go-only"])[1][2:], (False, False, True, False))
+        self.assertEqual(self.sweep(["--check", "--scripts-only"])[1][2:], (False, False, False, True))
+
+    def test_go_only_and_scripts_only_split_the_sweep(self):
+        go = {f for files, _, _ in self.sweep(["--go-only"])[0] for f in files}
+        scripts = {f for files, _, _ in self.sweep(["--scripts-only"])[0] for f in files}
+        self.assertEqual(go, {"internal/x.go"})
+        self.assertNotIn("internal/x.go", scripts)
+        self.assertIn("hack/hygiene.sh", scripts)
+        self.assertIn("internal/procnet/procnet.go", scripts, "embedded shell goes with the scripts")
+        self.assertNotIn("internal/render/page.html", go | scripts)
+        for split in ("--go-only", "--scripts-only"):
+            both = {f for files, _, _ in self.sweep(["--browser", split])[0] for f in files}
+            self.assertNotIn("internal/render/page.html", both, f"--browser {split}: the browser guards are a job of their own")
 
     def test_a_dirty_tree_is_refused(self):
         calls, code, run, out, err = self.sweep(["--check"], dirty=" M Makefile\n")

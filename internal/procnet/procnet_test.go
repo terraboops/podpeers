@@ -381,3 +381,27 @@ func TestHasRemoteNeedsOnlyOneHalf(t *testing.T) {
 		}
 	}
 }
+
+// A log whose beginning was lost is read from its self-describing samples
+// only when their anchor parses whole; half an anchor is no anchor.
+func TestHalfAnAnchorIsNoAnchor(t *testing.T) {
+	for _, in := range []string{"@@sample 1000.20 x 1000.00\n@@end\n", "@@sample 1000.20 1700000000 y\n@@end\n"} {
+		if _, err := ParseSamplerOutput(strings.NewReader(in)); err == nil {
+			t.Errorf("%q: want an error, not samples timed from a guessed anchor", in)
+		}
+	}
+}
+
+// Rows are read only inside a sample, after their table's header: a row
+// before the first sample, or before any header, is not a socket, and not a
+// row that failed to parse either.
+func TestRowsOutsideASampleOrTableAreIgnored(t *testing.T) {
+	row := "   0: 0A0200C0:2328 076433C6:D431 01 0:0 0:0 0 0 0 1\n"
+	in := "@@podpeers v2\n@@anchor 1700000000 1000.00\n" + hdrTCP + "\n" + row + // before any sample
+		"@@sample 1000.00\n" + row + // in a sample, before a header
+		hdrTCP + "\n" + row + "@@end\n"
+	out, err := ParseSamplerOutput(strings.NewReader(in))
+	if err != nil || len(out.Samples) != 1 || len(out.Samples[0].Sockets) != 1 || out.Skipped != 0 {
+		t.Fatalf("err=%v samples=%+v skipped=%d", err, out.Samples, out.Skipped)
+	}
+}

@@ -189,3 +189,12 @@ func TestUnsetTimeIsNull(t *testing.T) {
 		t.Fatalf("window.start of a capture without one = %s", got)
 	}
 }
+
+// A pod peer named like a Service (pod shop/web, Service shop/web) has no
+// service: the lookup is by kind as well as by name.
+func TestAPodPeerIsNotAServiceOfTheSameName(t *testing.T) {
+	got := run(t, schema(t), `{ pod(id: "shop/api") { peers(direction: "inbound") { id kind service { name } } } }`)
+	if !strings.Contains(got, `"id":"shop/web"`) || strings.Contains(got, `"service":{`) {
+		t.Fatalf("pod peer shop/web resolved to a service: %s", got)
+	}
+}

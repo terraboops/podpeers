@@ -451,3 +451,30 @@ func TestLimitsStateAnEvenSampleCount(t *testing.T) {
 		t.Fatalf("limits:\n%s", l)
 	}
 }
+
+// A socket with a loopback address at either end is the pod talking to
+// itself, never a peer.
+func TestLoopbackAtEitherEndIsNoPeer(t *testing.T) {
+	r := NewResolver(inv)
+	for _, s := range []procnet.Socket{
+		sock(procnet.TCP, "192.0.2.11:40001", "127.0.0.1:9000", procnet.Established),
+		sock(procnet.TCP, "127.0.0.1:40002", "192.0.2.10:9000", procnet.Established),
+	} {
+		if _, es := Analyze("shop/web", []procnet.Sample{sample(0, s)}, r); len(es) != 0 {
+			t.Errorf("%v -> %v: want no peer, got %+v", s.Local, s.Remote, es)
+		}
+	}
+}
+
+// A connection once established stays established, whatever state it is
+// seen in later: it is not a failed attempt.
+func TestEstablishedOnceStaysEstablished(t *testing.T) {
+	r := NewResolver(inv)
+	_, es := Analyze("shop/web", []procnet.Sample{
+		sample(0, sock(procnet.TCP, "192.0.2.11:40001", "192.0.2.10:9000", procnet.Established)),
+		sample(5, sock(procnet.TCP, "192.0.2.11:40001", "192.0.2.10:9000", procnet.SynSent)),
+	}, r)
+	if len(es) != 1 || es[0].Attempted || es[0].FailedConnections != 0 {
+		t.Fatalf("an established connection is not a failed one: %+v", es)
+	}
+}

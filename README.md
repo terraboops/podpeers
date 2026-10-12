@@ -407,7 +407,7 @@ tests that should notice:
 
 | Where | Guards | Removed how | Run against |
 |---|---|---|---|
-| Go (`internal/`, `cmd/`) | 467 | each `if` and tagless-`switch` case made false; each `&&`/`\|\|` in a returned or assigned boolean flipped | the package's tests, then the whole unit suite |
+| Go (`internal/`, `cmd/`, `hack/gocond`), read by its own parser (`hack/gocond`) | 688 | each `if` and `for` condition and tagless-`switch` case made false; each `&&`/`\|\|` flipped, wherever it is; each arm of a tagged or type switch given the `default` arm's body, so its values fall through | the package's tests, then the whole unit suite |
 | shell (the skill's script, `hack/`, the demo recorder) | 108 | each `if` made false; each `cond \|\| action` list's action dropped; each `case` arm removed (a one-line arm, a default `*)` arm or an arm of a one-line `case ... esac` emptied; a multi-line arm's pattern made to never match) | the tests that drive that script (`test/skillscript`, `test/hygiene`, `test/tooling`) |
 | shell inside Go source (the sampler script each debug container runs) | 3 | as for shell | the tests that run the script under `sh`, on a stand-in `/proc/uptime` where there is no real one |
 | the Makefile's recipes | 4 | as for shell | scratch Makefiles in a scratch module (`test/tooling`) |
@@ -444,7 +444,15 @@ unnoticed: every test also had a stale or broken patch failing the run. Each
 now has a test. The sweep tool's own tests found three latent bugs in it (a
 here-string read as a heredoc, a comment taken as part of a shell action, a
 one-line `- run:` step missed), and that nothing checked it actually runs
-when CI runs it. Not swept: test code itself (the mutants prove the tests fail
+when CI runs it. Reading Go with its own parser instead of line patterns finds 688
+conditions where the patterns found 467 (switch arms, loop conditions,
+every `&&` and `||` inside an `if`, a condition over two lines, and the
+lister's own code) and, among them,
+untested behaviour: a Service with no selector credited to every workload,
+a Service port matched by number regardless of protocol, a dual-stack
+Service or node reduced to one address family, a numeric target port
+replaced by the Service's port, an explicit `-n` overridden by the
+context's namespace, and a dead branch in the text view, now deleted. Not swept: test code itself (the mutants prove the tests fail
 when a protection breaks).
 
 ### What the tests do not prove on a cluster, and why

@@ -300,3 +300,51 @@ func TestOneShortConnectionInAnOldCaptureIsGlimpsed(t *testing.T) {
 		t.Fatalf("want one glimpsed change, got %+v", r.Changes)
 	}
 }
+
+// A pod the comparison never saw is not claimed as started after the change,
+// even in a namespace the existing-pods list covers.
+func TestUnknownPodIsNotStartedAfterTheChange(t *testing.T) {
+	o := Options{ExistingPods: map[string]bool{"shop/a": true}}
+	if o.startedAfterChange("shop/b", map[string]bool{}) {
+		t.Error("a pod the captures do not know is not provably new")
+	}
+	if !o.startedAfterChange("shop/b", map[string]bool{"shop/b": true}) {
+		t.Error("control: a known pod missing from a listed namespace is new")
+	}
+}
+
+// With no samples on one side, the chance of having missed a flow is
+// unknown (-1), not certain either way.
+func TestMissChanceNeedsSamplesOnBothSides(t *testing.T) {
+	b := &flowInfo{samplesBy: map[string]int{"web": 3}}
+	obs := map[string]bool{"web": true}
+	for _, c := range []struct {
+		before, after int
+		observed      bool
+	}{{0, 10, true}, {10, 0, true}, {10, 10, false}} {
+		if chance, _, _, _ := missChance(b, map[string]int{"web": c.before}, map[string]int{"web": c.after}, map[string]bool{"web": c.observed}); chance != -1 {
+			t.Errorf("before %d, after %d, observed %v: chance %v, want -1 (unknown)", c.before, c.after, c.observed, chance)
+		}
+	}
+	if chance, _, _, _ := missChance(b, map[string]int{"web": 10}, map[string]int{"web": 10}, obs); chance < 0 || chance >= 1 {
+		t.Errorf("control: samples on both sides give a chance in [0,1): %v", chance)
+	}
+}
+
+// One replica that never connected, while another did, is not a flow that
+// never connects.
+func TestAFlowSomeReplicaConnectedIsNotNeverConnected(t *testing.T) {
+	before := graph.Result{
+		Pods:  []graph.Pod{pod("web-a", "Deployment/web", true), pod("web-b", "Deployment/web", true)},
+		Edges: []graph.Edge{out("web-a", "api", 9000, false), out("web-b", "api", 9000, false)},
+	}
+	after := graph.Result{
+		Pods:  before.Pods,
+		Edges: []graph.Edge{out("web-a", "api", 9000, true), out("web-b", "api", 9000, false)},
+	}
+	for _, c := range Compare(before, after).Changes {
+		if strings.Contains(c.Detail, "never connected") || strings.Contains(c.Detail, "never completes") {
+			t.Fatalf("web -> api connected from web-b; not blocked: %+v", c)
+		}
+	}
+}

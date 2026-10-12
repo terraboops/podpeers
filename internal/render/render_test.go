@@ -284,3 +284,34 @@ func TestDOTDrawsEachFlowOnce(t *testing.T) {
 		t.Fatalf("web -> api is drawn %d times, want once:\n%s", n, b.String())
 	}
 }
+
+// An open flow with no failures is "open"; a node peer is drawn as a node.
+func TestOpenFlowsAndNodeShapes(t *testing.T) {
+	r := fixture(t)
+	r.Pods = append(r.Pods, graph.Pod{Namespace: "n", Name: "watcher", Probe: graph.Probe{Status: graph.ProbeObserved, Samples: 5, Complete: true}})
+	r.Edges = append(r.Edges,
+		graph.Edge{Pod: "n/watcher", Direction: graph.Outbound, Protocol: "tcp", Port: 7001, Open: true, Connections: 1,
+			Peer: graph.Peer{Kind: graph.PeerExternal, IP: "203.0.113.30"}},
+		graph.Edge{Pod: "n/watcher", Direction: graph.Outbound, Protocol: "tcp", Port: 10250, Open: true, Connections: 1,
+			Peer: graph.Peer{Kind: graph.PeerNode, Name: "node-q", IP: "198.51.100.5"}})
+	var b bytes.Buffer
+	Text(&b, r)
+	text := b.String()
+	for _, l := range strings.Split(text, "\n") {
+		if strings.Contains(l, "203.0.113.30") && !strings.HasSuffix(strings.TrimSpace(l), "open") {
+			t.Errorf("an open flow with no failures should say open: %q", l)
+		}
+	}
+	b.Reset()
+	if err := DOT(&b, r); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range strings.Split(b.String(), "\n") {
+		if strings.Contains(l, "node-q") && strings.Contains(l, "shape=") && !strings.Contains(l, "hexagon") {
+			t.Errorf("a node peer should be drawn as a hexagon: %q", l)
+		}
+	}
+	if !strings.Contains(b.String(), "hexagon") {
+		t.Errorf("no node drawn:\n%s", b.String())
+	}
+}
