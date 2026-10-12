@@ -453,7 +453,13 @@ a Service port matched by number regardless of protocol, a dual-stack
 Service or node reduced to one address family, a numeric target port
 replaced by the Service's port, an explicit `-n` overridden by the
 context's namespace, and a dead branch in the text view, now deleted. Not swept: test code itself (the mutants prove the tests fail
-when a protection breaks).
+when a protection breaks), including the shell in the e2e fixtures'
+container commands; the demo recording (`docs/demo`: its workload's
+shell, the tapes it types, the browser script), which only makes the GIF;
+and the example chart's web container's `while true`, which is its server
+loop, not a check. The chart's smoke test's one check, the condition
+under which `helm test` passes, only a real cluster runs: it is mutant 43,
+caught by the skill's workflow on the cluster in CI.
 
 ### What the tests do not prove on a cluster, and why
 

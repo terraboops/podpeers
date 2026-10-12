@@ -1,0 +1,25 @@
+# Mutant 43-smoke-test-never-passes: breaks the protection for "the example chart's helm test passes only when the front door answers".
+# Bug introduced: the smoke test's pass condition is disabled, so it never
+# passes, whatever the front door does. Only a real cluster runs it: the
+# skill's workflow, whose baseline must then report helm test failing.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: -
+# unit-run: -
+# unit-expect: -
+# e2e-run: TestSkillHelmWorkflow
+# e2e-expect: baseline exit 6
+diff --git a/examples/shop/templates/tests/smoke.yaml b/examples/shop/templates/tests/smoke.yaml
+index fd4ac63..9652d91 100644
+--- a/examples/shop/templates/tests/smoke.yaml
++++ b/examples/shop/templates/tests/smoke.yaml
+@@ -26,7 +26,7 @@ spec:
+       # broken policy. `timeout` bounds each attempt (nc -w alone can hang).
+       for i in 1 2 3 4 5 6 7 8 9 10; do
+         reply=$( (echo ping; sleep 2) | timeout 5 nc -w 2 {{ include "shop.fqdn" (dict "Release" .Release "component" "web" "ns" .Release.Namespace) }} 8080)
+-        if [ "$reply" = "ping" ]; then echo "smoke: front door answered (attempt $i)"; exit 0; fi
++        if false; then echo "smoke: front door answered (attempt $i)"; exit 0; fi
+         echo "smoke: attempt $i got no answer"
+         sleep 2
+       done
