@@ -151,11 +151,13 @@ class ShellCases(unittest.TestCase):
             "EOF",                              # 21
             "",                                 # 22
             "if [ c ] && [ d ]; then x; fi",    # 23 if, not a list
+            "while [ $# -gt 0 ]; do",           # 24 loop
+            "done",                             # 25
         ])
         root = tree({"s.sh": script})
         with mock.patch.object(gs, "ROOT", root):
             got = [n for _, n, _ in gs.shell_guards("s.sh")]
-        self.assertEqual(got, [3, 4, 5, 9, 11, 12, 13, (18, 0), 23])
+        self.assertEqual(got, [3, 4, 5, 9, 11, 12, 13, (18, 0), 23, 24])
 
     def test_nested_cases_count_their_depth(self):
         script = "\n".join(['case "$a" in', "  x)", '    case "$b" in', "      y) z ;;", "    esac", "    ;;",
@@ -175,6 +177,8 @@ class ShellCases(unittest.TestCase):
             ("  *) usage; exit 1 ;;", "  *) : ;;"),
             ("  multi)", "  " + gs.NEVER + ")"),
             ("  multi) # note", "  " + gs.NEVER + ")"),
+            ("while [ $# -gt 0 ]; do", "while false; do"),
+            ("  until ready; do sleep 1; done", "  until true; do sleep 1; done"),
         ]:
             self.assertEqual(gs.mutate_shell(line), want, line)
 
@@ -245,11 +249,12 @@ class JavaScript(unittest.TestCase):
 
     def test_which_lines_are_guards(self):
         page = "\n".join(["if (a) b();", "  const x = a && b;", "  return c || d && e;", "// a ? b : c",
-                          "const t = p ? 1 : 2;", "if (u) v = w ? 1 : 2;", "if (x ok", "plain();"])
+                          "const t = p ? 1 : 2;", "if (u) v = w ? 1 : 2;", "if (x ok", "plain();",
+                          "for (let i = 0; i < n; i++) f(i);", "for (const x of xs) g(x);"])
         root = tree({"p.html": page})
         with mock.patch.object(gs, "ROOT", root):
             got = [n for _, n, _ in gs.js_guards("p.html")]
-        self.assertEqual(got, [1, (2, 0), (3, 0), (3, 1), (5, 0, "?"), 6, (6, 0, "?")])
+        self.assertEqual(got, [1, (2, 0), (3, 0), (3, 1), (5, 0, "?"), 6, (6, 0, "?"), (9, 0, "for")])
 
 
 class Go(unittest.TestCase):
@@ -346,6 +351,7 @@ class Mutate(unittest.TestCase):
         self.assertEqual(self.mutated("p.html", "x\nif (a) b();", 2), "x\nif (false && (a)) b();")
         self.assertEqual(self.mutated("p.html", "const x = a && b;", (1, 0)), "const x = a || b;")
         self.assertEqual(self.mutated("p.html", "const x = a ? 1 : 2;", (1, 0, "?")), "const x = (false && (a)) ? 1 : 2;")
+        self.assertEqual(self.mutated("p.html", "for (let i = 0; i < n; i++) f(i);", (1, 0, "for")), "for (let i = 0; false; i++) f(i);")
 
     def test_shell(self):
         self.assertEqual(self.mutated("s.sh", "a || b", 1), "a || true")

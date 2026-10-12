@@ -160,6 +160,25 @@ try {
     else fail(`v-pod: ${q} should say ${want}: ${JSON.stringify(st)}`);
   }
 
+  // Laid out, no two nodes overlap: each sits clear of the others' shapes.
+  for (const view of ["v-wl", "v-pod"]) {
+    await page.click("#" + view);
+    const clash = await page.$$eval("#graph g.n", gs => {
+      const ns = gs.map(g => {
+        const m = /translate\(([-\d.e]+),([-\d.e]+)\)/.exec(g.getAttribute("transform") || "");
+        const s = g.querySelector(".shape"), r = s.tagName === "rect" ? +s.getAttribute("width") / 2 : +s.getAttribute("r");
+        return { t: g.textContent.slice(0, 20), x: +m[1], y: +m[2], r };
+      });
+      for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {
+        const a = ns[i], b = ns[j];
+        if (Math.hypot(a.x - b.x, a.y - b.y) < a.r + b.r) return `${a.t} and ${b.t}`;
+      }
+      return "";
+    });
+    if (!clash) ok(`${view}: no two nodes overlap`);
+    else fail(`${view}: nodes overlap: ${clash}`);
+  }
+
   // The GraphQL console answers from the same data as `podpeers query`.
   if (!(await page.$eval("#console", c => !c.hidden))) fail("GraphQL console is hidden on the served page");
   await page.$eval("#q", el => { el.value = ""; });

@@ -10,6 +10,7 @@ Guards, each disabled one at a time in a scratch worktree of HEAD:
     mutant the compiler rejects is noticed, by the build, and said so.
   Shell (the skill's script and hack/*.sh)
     `if <c>; then` / `elif <c>; then`    ->  condition `false`
+    `while <c>; do` / `until <c>; do`     ->  a loop that never runs
     `<c> || <action>` / `<c> && <action>` lists  ->  action `true`
     a one-line `case` arm `<pat>) <body> ;;`, default arms included, and
       each arm of a one-line `case ... esac`  ->  body `:`
@@ -25,6 +26,7 @@ Guards, each disabled one at a time in a scratch worktree of HEAD:
     `if (<c>)`            ->  `if (false && (<c>))`
     each && or || in `return ...` or `x = ...`  ->  flipped, one at a time
     each ternary `<c> ? a : b`  ->  `(false && (<c>)) ? a : b`
+    each `for (...; <c>; ...)` condition  ->  `false`
 
 Go guards run that package's tests (fast), then, for survivors, the whole
 unit suite. A shell guard runs the tests that drive that script (SHELL_TESTS).
@@ -245,6 +247,10 @@ def js_cond(line):
     return None
 
 
+# A JavaScript for loop's condition: `for (<init>; <c>; <step>)`.
+JS_FOR = re.compile(r"\bfor \(([^;()]*);([^;()]+);")
+
+
 JS_BOOL = re.compile(r"^\s*(return |(const |let )?[\w.]+ = ).*(&&|\|\|)")
 
 
@@ -338,6 +344,8 @@ def js_guards(rel):
         elif JS_BOOL.match(l):
             for k in range(len(OP.findall(l))):
                 out.append((rel, (i + 1, k), f"{l.strip()} [operator {k + 1} flipped]"))
+        for k in range(len(JS_FOR.findall(l))):
+            out.append((rel, (i + 1, k, "for"), f"{l.strip()} [loop condition {k + 1} forced false]"))
         if not l.lstrip().startswith("//"):
             for k in range(len(ternaries(l))):
                 out.append((rel, (i + 1, k, "?"), f"{l.strip()} [ternary {k + 1} forced to its else]"))
@@ -352,6 +360,8 @@ NO_HANGS = {"hack/hygiene.sh"}
 
 
 SH_IF = re.compile(r"^(\s*(?:el)?if )(.+?)(; then\b.*)$")
+# A loop's condition: `while <c>; do` / `until <c>; do`.
+SH_LOOP = re.compile(r"^(\s*(while|until) )(.+?)(; do\b.*)$")
 SH_ARM = re.compile(r"^(\s*)([^\s#()][^()]*?)\)\s+(.+?)\s*;;\s*$")
 # An arm whose body follows on the next lines: `<pat>)` alone on its line.
 SH_ARM_OPEN = re.compile(r"^(\s*)([^\s#()][^()]*?)\)\s*(#.*)?$")
@@ -454,13 +464,16 @@ def shell_guards(rel):
         if inline_arms(l):
             for k in range(len(inline_arms(l))):
                 out.append((rel, (i + 1, k), f"{t} [arm {k + 1} emptied]"))
-        elif SH_IF.match(l) or (in_case and (SH_ARM.match(l) or SH_ARM_OPEN.match(l))) or \
+        elif SH_IF.match(l) or SH_LOOP.match(l) or (in_case and (SH_ARM.match(l) or SH_ARM_OPEN.match(l))) or \
                 (split_list(l) is not None and not t.startswith(("trap ", "if ", "elif ", "|"))):
             out.append((rel, i + 1, t))
     return out
 
 
 def mutate_shell(line):
+    m = SH_LOOP.match(line)
+    if m:  # the loop never runs
+        return m.group(1) + ("false" if m.group(2) == "while" else "true") + m.group(4)
     m = SH_ARM_OPEN.match(line)
     if m and not SH_IF.match(line) and split_list(line) is None:
         return f"{m.group(1)}{NEVER})"  # the arm is gone: input falls to the next one
@@ -511,6 +524,12 @@ def mutate(path, n):
         return lines
     if isinstance(n, tuple) and n[-1] == "sh":  # shell inside a Go raw string
         mutated[n[0] - 1] = mutate_shell(lines[n[0] - 1])
+        open(path, "w").write("\n".join(mutated))
+        return lines
+    if path.endswith(".html") and isinstance(n, tuple) and n[-1] == "for":  # a loop that never runs
+        line, k, _ = n
+        m = list(JS_FOR.finditer(lines[line - 1]))[k]
+        mutated[line - 1] = lines[line - 1][:m.start(2)] + " false" + lines[line - 1][m.end(2):]
         open(path, "w").write("\n".join(mutated))
         return lines
     if isinstance(n, tuple) and len(n) == 3:  # a ternary, forced to its else branch
