@@ -536,6 +536,13 @@ def run(items, cmd, env=None):
                 pass
             r = subprocess.CompletedProcess(p.args, p.returncode, out, err)
             open(path, "w").write("\n".join(orig))
+            # GUARD_SWEEP_LOG=DIR keeps each mutant's output, so a surprising
+            # verdict (an accepted entry gone stale) can be read, not guessed.
+            if os.environ.get("GUARD_SWEEP_LOG"):
+                os.makedirs(os.environ["GUARD_SWEEP_LOG"], exist_ok=True)
+                name = re.sub(r"[^\w.-]+", "_", f"{f}:{n}")[:200]
+                with open(os.path.join(os.environ["GUARD_SWEEP_LOG"], name + ".log"), "w") as log:
+                    log.write(f"{text}\nexit {r.returncode}\n{out}\n{err}")
             survived = r.returncode == 0
             # A timeout counts as noticed where a mutant can hang (an argument
             # loop without its shift). Where none can (NO_HANGS), it only

@@ -371,9 +371,30 @@ class Verdicts(unittest.TestCase):
         pidfile = os.path.join(tempfile.mkdtemp(), "pid")
         self.judge("x.sh", f"sleep 60 >/dev/null 2>&1 & echo $! > {pidfile}; exit 0")
         pid = int(open(pidfile).read())
-        time.sleep(0.2)
-        with self.assertRaises(ProcessLookupError):
-            os.kill(pid, 0)
+        # Killed is gone, or a zombie not yet reaped; on a loaded machine
+        # either can take a moment, so wait for it rather than guess.
+        def alive():
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
+            return bool(stat.strip()) and not stat.strip().startswith("Z")
+        deadline = time.time() + 10
+        while alive() and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(alive(), "the mutant's child outlived its run")
+
+    def test_each_mutants_output_can_be_kept(self):
+        logs = tempfile.mkdtemp()
+        with mock.patch.dict(os.environ, {"GUARD_SWEEP_LOG": logs}):
+            self.judge("x.sh", "echo the-test-said-this; exit 1")
+        files = os.listdir(logs)
+        self.assertEqual(len(files), 1)
+        body = open(os.path.join(logs, files[0])).read()
+        self.assertIn("the-test-said-this", body)
+        self.assertIn("exit 1", body)
+        self.assertTrue(files[0].startswith("x.sh_1"), files)
 
     def test_parallel_runs_every_item_once(self):
         seen = []

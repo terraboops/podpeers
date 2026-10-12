@@ -124,7 +124,7 @@ func TestWorkflowDeclaresEveryGate(t *testing.T) {
 			`^make build$`,
 			`^python3 hack/guard_sweep_test.py$`,
 		},
-		"guards":         {`^PODPEERS_REQUIRE_OCR=1 python3 hack/guard-sweep.py --check$`},
+		"guards":         {`^PODPEERS_REQUIRE_OCR=1 GUARD_SWEEP_LOG=\S+ python3 hack/guard-sweep.py --check$`},
 		"guards-browser": {`^python3 hack/guard-sweep.py --check --browser-only$`},
 		"docs":           {`^./hack/check-docs.sh$`, `^./hack/check-ui.sh$`},
 		"e2e":            {`^make e2e$`, `^PODPEERS_REQUIRE_OCR=1 ./hack/mutants.sh --e2e$`},

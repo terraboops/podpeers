@@ -57,7 +57,13 @@ jobs:
       - name: install OCR (the hygiene gate's guards are swept too, and its tests read text in images)
         run: sudo apt-get update && sudo apt-get install -y tesseract-ocr ffmpeg
       - name: guard sweep
-        run: PODPEERS_REQUIRE_OCR=1 python3 hack/guard-sweep.py --check
+        run: PODPEERS_REQUIRE_OCR=1 GUARD_SWEEP_LOG=.e2e/guards python3 hack/guard-sweep.py --check
+      - name: keep each mutant's output when the sweep fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guard-sweep-logs
+          path: .e2e/guards/
 
   guards-browser:
     # The same for what only a browser can judge: every guard in the web UI's
