@@ -408,7 +408,8 @@ tests that should notice:
 | Where | Guards | Removed how | Run against |
 |---|---|---|---|
 | Go (`internal/`, `cmd/`) | 467 | each `if` and tagless-`switch` case made false; each `&&`/`\|\|` in a returned or assigned boolean flipped | the package's tests, then the whole unit suite |
-| shell (the skill's script, `hack/`) | 106 | each `if` made false; each `cond \|\| action` list's action dropped; each `case` arm removed (a one-line arm, a default `*)` arm or an arm of a one-line `case ... esac` emptied; a multi-line arm's pattern made to never match) | the tests that drive that script (`test/skillscript`, `test/hygiene`, `test/tooling`) |
+| shell (the skill's script, `hack/`, the demo recorder) | 108 | each `if` made false; each `cond \|\| action` list's action dropped; each `case` arm removed (a one-line arm, a default `*)` arm or an arm of a one-line `case ... esac` emptied; a multi-line arm's pattern made to never match) | the tests that drive that script (`test/skillscript`, `test/hygiene`, `test/tooling`) |
+| shell inside Go source (the sampler script each debug container runs) | 3 | as for shell | the tests that run the script under `sh`, on a stand-in `/proc/uptime` where there is no real one |
 | the Makefile's recipes | 4 | as for shell | scratch Makefiles in a scratch module (`test/tooling`) |
 | the CI workflow | 32 | each `run:` step's command replaced by `true`, each `X=1` fail-don't-skip flag dropped, `fetch-depth: 0` made shallow, each trigger removed | what the workflow declares (`test/tooling`): GitHub Actions cannot run here |
 | the sweep tool itself (`hack/guard-sweep.py`) | 180 | by its AST: each `if`/`elif`/`while` test, conditional-expression test and comprehension filter made false, each `and`/`or` flipped | its own tests (`hack/guard_sweep_test.py`) |

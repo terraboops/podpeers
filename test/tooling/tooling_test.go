@@ -174,3 +174,44 @@ func TestClusterScriptRejectsUnknownSubcommands(t *testing.T) {
 		t.Fatalf("destroy: exit %d, want 2 with the usage and no calls\n%s\n%s", code, out, read(calls))
 	}
 }
+
+// docs/demo/make-demo.sh records the demo against .e2e/kubeconfig, and its
+// tapes run a bare `kubectl apply` with KUBECONFIG set to that file: its
+// check is all that keeps the demo off whatever that file points at.
+func TestDemoScriptRefusesAForeignContext(t *testing.T) {
+	for _, c := range []struct {
+		ctx    string
+		refuse bool
+	}{{"prod-like", true}, {"k3d-podpeers-e2e", false}} {
+		root := t.TempDir()
+		os.MkdirAll(filepath.Join(root, "docs", "demo"), 0o755)
+		b, err := os.ReadFile("../../docs/demo/make-demo.sh")
+		if err != nil {
+			t.Fatal(err)
+		}
+		script := filepath.Join(root, "docs", "demo", "make-demo.sh")
+		os.WriteFile(script, b, 0o755)
+		bin, calls := shims(t, root)
+		// The control runs to the first recording, which stops it; by then the
+		// output directory must exist.
+		stubs := map[string]string{
+			"make":  "exit 0",
+			"sleep": "exit 0",
+			"vhs":   "[ -d .e2e/demo/browser ] && echo 'vhs: output dir ready' >> \"" + calls + "\"; exit 1",
+		}
+		for tool, body := range stubs {
+			os.WriteFile(filepath.Join(bin, tool), []byte("#!/bin/sh\necho \""+tool+" $*\" >> \""+calls+"\"\n"+body+"\n"), 0o755)
+		}
+		code, out := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FAKE_CTX=" + c.ctx, "KUBECONFIG="}, "bash", script)
+		got := read(calls)
+		refused := strings.Contains(out, "refusing: .e2e/kubeconfig is not the local e2e cluster")
+		if c.refuse && (code != 1 || !refused || strings.Contains(got, "make") || strings.Count(got, "\n") != 1) {
+			t.Fatalf("context %s: want refusal before anything but the context check; exit %d\n%s\n%s", c.ctx, code, out, got)
+		}
+		if !c.refuse && (refused || !strings.Contains(got, "make build") ||
+			!strings.Contains(got, "kubectl --kubeconfig .e2e/kubeconfig --context k3d-podpeers-e2e apply -f docs/demo/app.yaml") ||
+			!strings.Contains(got, "vhs: output dir ready")) {
+			t.Fatalf("control, context %s: want it past the check, applying only to the e2e context, to a ready recording; exit %d\n%s\n%s", c.ctx, code, out, got)
+		}
+	}
+}

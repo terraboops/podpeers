@@ -350,6 +350,39 @@ class Mutate(unittest.TestCase):
         self.assertEqual(texts[2], "y = (f or g) and h [and/or flipped 1]")
 
 
+class EmbeddedShell(unittest.TestCase):
+    def test_only_lines_wholly_inside_a_raw_string_are_shell(self):
+        code = "\n".join([
+            "package p",                                  # 1
+            "func s() string {",                          # 2
+            "\tif a || b {",                             # 3 Go, not here
+            "\ts := `[ -n q ] || die",                   # 4 opens the string: half Go, not shell
+            "[ -n x ] || die",                            # 5 shell guard
+            "if [ y ]; then",                             # 6 shell if
+            "  if z; then :; fi",                         # 7 shell if
+            "echo x",                                     # 8 (a raw string holds no backtick)
+            "a && b; c",                                  # 9 shell guard
+            "| grep q || true",                           # 10 not a guard
+            "[ -n r ] || die`",                           # 11 closes it: half Go, not shell
+            "\tok := c || d",                            # 12 Go again
+            "}",
+        ])
+        root = tree({"p.go": code})
+        with mock.patch.object(gs, "ROOT", root):
+            got = [n for _, n, _ in gs.embedded_guards("p.go")]
+        self.assertEqual(got, [(5, "sh"), (6, "sh"), (7, "sh"), (9, "sh")])
+
+    def test_mutated_as_shell(self):
+        d = tree({"p.go": "x\n[ -n a ] || die\nif [ b ]; then\n"})
+        p = os.path.join(d, "p.go")
+        orig = gs.mutate(p, (2, "sh"))
+        self.assertEqual(open(p).read(), "x\n[ -n a ] || true\nif [ b ]; then\n")
+        self.assertEqual("\n".join(orig), "x\n[ -n a ] || die\nif [ b ]; then\n")
+        open(p, "w").write("\n".join(orig))
+        gs.mutate(p, (3, "sh"))
+        self.assertEqual(open(p).read(), "x\n[ -n a ] || die\nif false; then\n")
+
+
 class Workflow(unittest.TestCase):
     def test_which_lines_are_guards(self):
         y = "\n".join(["on:", "  push:", "    branches: [main]", "  pull_request:", "jobs:", "  a:", "    steps:",
@@ -497,7 +530,8 @@ class Main(unittest.TestCase):
                  "shell": lambda rel: [(rel, 1, "a || b")],
                  "wf": lambda rel: [(rel, (1, 0, "run"), "run: x")],
                  "py": lambda rel: [(rel, (1, "test", 0), "if x:")],
-                 "js": lambda rel: [(rel, 1, "if (a) {")]}
+                 "js": lambda rel: [(rel, 1, "if (a) {")],
+                 "emb": lambda rel: [(rel, (1, "sh"), "a || b [embedded shell]")]}
         def fake_run(args, **kw):
             if "status" in args:
                 return subprocess.CompletedProcess(args, 0, dirty, "")
@@ -506,6 +540,7 @@ class Main(unittest.TestCase):
         with mock.patch.object(gs, "parallel", parallel), mock.patch.object(gs, "guards", lambda: found["guards"]), \
                 mock.patch.object(gs, "shell_guards", found["shell"]), mock.patch.object(gs, "wf_guards", found["wf"]), \
                 mock.patch.object(gs, "py_guards", found["py"]), mock.patch.object(gs, "js_guards", found["js"]), \
+                mock.patch.object(gs, "embedded_guards", found["emb"]), \
                 mock.patch.object(gs, "worktree", lambda: "/nonexistent"), mock.patch.object(gs.subprocess, "run", run), \
                 mock.patch.object(gs, "check", lambda left, b, o=False: ("checked", len(left), b, o)), \
                 mock.patch.object(sys, "argv", ["guard-sweep.py"] + argv), \
@@ -524,6 +559,7 @@ class Main(unittest.TestCase):
         self.assertIn("hack/hygiene.sh", swept)
         self.assertIn(".github/workflows/ci.yml", swept)
         self.assertIn("hack/guard-sweep.py", swept)
+        self.assertIn("internal/procnet/procnet.go", swept)
         self.assertNotIn("internal/render/page.html", swept)
         self.assertNotIn("hack/check-ui.sh", swept)
         self.assertEqual([c for c in run.call_args_list if c.args[0][0].startswith("./hack/")], [], "no browser baseline without --browser")
@@ -543,6 +579,7 @@ class Main(unittest.TestCase):
         self.assertEqual(cmds["internal/render/page.html"], ["./hack/check-ui.sh"])
         self.assertEqual(cmds[".github/workflows/ci.yml"][-1], "./test/tooling/")
         self.assertEqual(cmds["hack/guard-sweep.py"], ["python3", "hack/guard_sweep_test.py"])
+        self.assertEqual(cmds["internal/procnet/procnet.go"][-1], "./internal/procnet/")
         self.assertEqual(cmds["internal/x.go"], ["go", "test", "-count=1", "./internal/"])
         whole = [cs for files, _, cs in calls if "internal/x.go" in files][1]
         self.assertEqual(whole, [["go", "test", "-count=1", "./internal/...", "./cmd/...", "./test/skillscript/"]],

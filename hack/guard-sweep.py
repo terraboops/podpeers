@@ -13,7 +13,7 @@ Guards, each disabled one at a time in a scratch worktree of HEAD:
     a one-line `case` arm `<pat>) <body> ;;`, default arms included, and
       each arm of a one-line `case ... esac`  ->  body `:`
     a multi-line arm `<pat>)`  ->  a pattern that never matches (the arm is gone)
-  Make recipes: as for shell
+  Make recipes, and shell inside a Go raw string (the sampler): as for shell
   This tool (Python), by its AST, against hack/guard_sweep_test.py
     each if / elif / while test, conditional-expression test and
     comprehension filter  ->  `False and (<c>)`; each and / or  ->  flipped
@@ -80,7 +80,29 @@ SHELL_TESTS = {
     # Make recipes are shell: their `cmd || (echo ...; exit 1)` checks and
     # `a && b` lists are swept like the scripts', against scratch Makefiles.
     "Makefile": ["go", "test", "-count=1", "-timeout", "5m", "./test/tooling/"],
+    # Records the demo against .e2e/kubeconfig; its context check is tested.
+    "docs/demo/make-demo.sh": ["go", "test", "-count=1", "-timeout", "5m", "./test/tooling/"],
 }
+
+# Shell that lives inside Go source, in a raw string: the sampler script
+# each debug container runs. Its guards are shell, swept as shell, against
+# the tests that run the script under sh.
+EMBEDDED_SH = {"internal/procnet/procnet.go": ["go", "test", "-count=1", "-timeout", "3m", "./internal/procnet/"]}
+
+
+def embedded_guards(rel):
+    """Shell guards on the lines of a Go file's multi-line raw strings."""
+    out, inside = [], False
+    for i, l in enumerate(open(os.path.join(ROOT, rel)).read().split("\n")):
+        was = inside
+        if l.count("`") % 2:
+            inside = not inside
+        if not (was and inside):
+            continue  # only lines wholly inside the string
+        t = l.strip()
+        if SH_IF.match(l) or (split_list(l) is not None and not t.startswith(("trap ", "if ", "elif ", "|"))):
+            out.append((rel, (i + 1, "sh"), f"{t} [embedded shell]"))
+    return out
 
 # This tool itself: its tests import whichever copy sits beside them.
 PY_TESTS = {"hack/guard-sweep.py": ["python3", "hack/guard_sweep_test.py"]}
@@ -449,6 +471,10 @@ def mutate(path, n):
         mutated[n - 1] = mutate_wf(lines[n - 1], k, kind)
         open(path, "w").write("\n".join(mutated))
         return lines
+    if isinstance(n, tuple) and n[-1] == "sh":  # shell inside a Go raw string
+        mutated[n[0] - 1] = mutate_shell(lines[n[0] - 1])
+        open(path, "w").write("\n".join(mutated))
+        return lines
     if isinstance(n, tuple) and len(n) == 3:  # a ternary, forced to its else branch
         n, k, _ = n
         a, q = ternaries(lines[n - 1])[k]
@@ -592,7 +618,7 @@ def main():
         return
     only = "--browser-only" in sys.argv
     browser = only or "--browser" in sys.argv
-    cmd = lambda f: SHELL_TESTS.get(f) or WF_TESTS.get(f) or PY_TESTS.get(f) or JS_TESTS[f]
+    cmd = lambda f: SHELL_TESTS.get(f) or WF_TESTS.get(f) or PY_TESTS.get(f) or EMBEDDED_SH.get(f) or JS_TESTS[f]
     if browser:
         # The browser checks must pass unmutated first: in a broken
         # environment every mutant would fail them, for the wrong reason.
@@ -612,6 +638,7 @@ def main():
     sh = [] if only else [g for rel in SHELL_TESTS if not rel.startswith("hack/check-") for g in shell_guards(rel)]
     sh += [] if only else [g for rel in WF_TESTS for g in wf_guards(rel)]
     sh += [] if only else [g for rel in PY_TESTS for g in py_guards(rel)]
+    sh += [] if only else [g for rel in EMBEDDED_SH for g in embedded_guards(rel)]
     # The browser check uses one port and one Chrome: its guards run one at a time.
     br = [g for rel in SHELL_TESTS if browser and rel.startswith("hack/check-") for g in shell_guards(rel)]
     br += [g for rel in JS_TESTS if browser for g in js_guards(rel)]

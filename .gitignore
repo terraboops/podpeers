@@ -4,3 +4,4 @@
 /peers*.json
 /peers*.html
 /.remember/
+__pycache__/

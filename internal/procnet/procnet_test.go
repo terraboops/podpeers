@@ -2,9 +2,11 @@ package procnet
 
 import (
 	"bytes"
+	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -203,26 +205,75 @@ func TestSamplerScript(t *testing.T) {
 	}
 }
 
+// uptimeFile is /proc/uptime where it exists; elsewhere a stand-in in the
+// same format, kept current until the test ends, so the script's timing
+// logic runs on every machine the tests do.
+func uptimeFile(t *testing.T) string {
+	if _, err := os.Stat("/proc/uptime"); err == nil {
+		return "/proc/uptime"
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "uptime")
+	start, stop := time.Now(), make(chan struct{})
+	write := func() {
+		tmp := p + ".tmp"
+		os.WriteFile(tmp, []byte(fmt.Sprintf("%.2f 0.00\n", 1000+time.Since(start).Seconds())), 0o644)
+		os.Rename(tmp, p) // whole lines only
+	}
+	write()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(2 * time.Millisecond):
+				write()
+			}
+		}
+	}()
+	t.Cleanup(func() { close(stop); <-done })
+	return p
+}
+
 func TestSamplerScriptRunsOnAFixedGrid(t *testing.T) {
-	// Runs the real script under sh where /proc/uptime exists (Linux CI);
-	// elsewhere the e2e suite checks the cadence on a real cluster.
-	if _, err := os.Stat("/proc/uptime"); err != nil {
-		t.Skip("needs /proc/uptime (Linux); the e2e suite checks the cadence on a real cluster")
-	}
-	out, err := exec.Command("sh", "-c", SamplerScript(2*time.Second, 200*time.Millisecond)).Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsed, err := ParseSamplerOutput(bytes.NewReader(out))
-	if err != nil || !parsed.Complete {
-		t.Fatalf("err=%v complete=%v", err, parsed.Complete)
-	}
-	if n := len(parsed.Samples); n != 11 {
-		t.Errorf("2s at 200ms on a fixed grid must take 11 samples, got %d", n)
-	}
-	for i := 1; i < len(parsed.Samples); i++ {
-		if gap := parsed.Samples[i].Time.Sub(parsed.Samples[i-1].Time); gap < 150*time.Millisecond || gap > 260*time.Millisecond {
-			t.Errorf("gap %d = %s; want about 200ms", i, gap)
+	// The real script under sh. At 100ms the time left to the next tick is
+	// under 10 centiseconds, so it must be zero-padded (0.08s, not 0.8s).
+	uptime := uptimeFile(t)
+	for _, c := range []struct {
+		d, i time.Duration
+		n    int
+	}{{2 * time.Second, 200 * time.Millisecond, 11}, {time.Second, 100 * time.Millisecond, 11}} {
+		script := strings.ReplaceAll(SamplerScript(c.d, c.i), "/proc/uptime", uptime)
+		out, err := exec.Command("sh", "-c", script).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := ParseSamplerOutput(bytes.NewReader(out))
+		if err != nil || !parsed.Complete {
+			t.Fatalf("%s at %s: err=%v complete=%v", c.d, c.i, err, parsed.Complete)
+		}
+		if n := len(parsed.Samples); n != c.n {
+			t.Errorf("%s at %s on a fixed grid must take %d samples, got %d", c.d, c.i, c.n, n)
+		}
+		// On a fixed grid, each sample sits near its own slot (start + k*i),
+		// however late the one before it was.
+		worst := time.Duration(0)
+		for k, smp := range parsed.Samples {
+			off := smp.Time.Sub(parsed.Samples[0].Time) - time.Duration(k)*c.i
+			if off < 0 {
+				off = -off
+			}
+			if off > worst {
+				worst = off
+			}
+		}
+		// Process starts jitter a sample by tens of milliseconds (more on
+		// macOS); a broken schedule is off by most of an interval or more
+		// (an unpadded 0.8s sleep for 0.08s, or no sleep at all).
+		if worst > 150*time.Millisecond {
+			t.Errorf("%s at %s: a sample is %s off its grid slot", c.d, c.i, worst)
 		}
 	}
 }
