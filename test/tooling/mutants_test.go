@@ -52,7 +52,8 @@ func newHarness(t *testing.T) *harness {
 
 func (h *harness) git(args ...string) {
 	h.t.Helper()
-	c := exec.Command("git", args...)
+	// No background maintenance: it could outlive the test in .git.
+	c := exec.Command("git", append([]string{"-c", "gc.auto=0", "-c", "maintenance.auto=false"}, args...)...)
 	c.Dir = h.root
 	c.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test")
 	if out, err := c.CombinedOutput(); err != nil {

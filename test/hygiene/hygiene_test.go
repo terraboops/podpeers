@@ -17,13 +17,19 @@ import (
 // leakIP is an address outside the documentation and loopback ranges.
 var leakIP = fmt.Sprintf("%d.%d.%d.%d", 10, 23, 45, 67)
 
+// quietGit commits as an invented identity and starts no background
+// maintenance, which could still be writing in .git when the test's
+// temporary directory is removed.
+var quietGit = []string{"-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false",
+	"-c", "gc.auto=0", "-c", "maintenance.auto=false"}
+
 // repo makes a throwaway git repository holding a copy of the gate and the
 // given files, committed one commit per map, in order.
 func repo(t *testing.T, commits ...map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
 	git := func(args ...string) {
-		c := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false"}, args...)...)
+		c := exec.Command("git", append(quietGit, args...)...)
 		c.Dir = dir
 		if out, err := c.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -139,7 +145,7 @@ func TestAddressRenderedInAnImageIsFound(t *testing.T) {
 	// that blob (not whatever images the tree holds now).
 	known, _ := exec.Command("git", "-C", dir, "rev-parse", "HEAD:docs/demo.gif").Output()
 	os.Remove(filepath.Join(dir, "docs", "demo.gif"))
-	exec.Command("git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qam", "drop").Run()
+	exec.Command("git", append(append([]string{"-C", dir}, quietGit...), "commit", "-qam", "drop")...).Run()
 	if code, out := gate(t, dir); code != 0 {
 		t.Fatalf("the tree no longer holds the image: exit %d\n%s", code, out)
 	}
