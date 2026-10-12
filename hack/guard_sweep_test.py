@@ -9,7 +9,6 @@ how a run is judged.
   python3 hack/guard_sweep_test.py
 """
 import contextlib
-import importlib.util
 import io
 import os
 import signal
@@ -17,13 +16,26 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-spec = importlib.util.spec_from_file_location("guard_sweep", os.path.join(HERE, "guard-sweep.py"))
-gs = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(gs)
+
+
+def load(path, name="guard_sweep"):
+    """The module at path, compiled from its source now. Not through the
+    import system: its bytecode cache trusts a source's mtime (to the
+    second) and size, and two mutants of the same size written within one
+    second would run the first one's code."""
+    mod = types.ModuleType(name)
+    mod.__file__ = path
+    with open(path) as f:
+        exec(compile(f.read(), path, "exec"), mod.__dict__)
+    return mod
+
+
+gs = load(os.path.join(HERE, "guard-sweep.py"))
 
 # A mutant that loops forever must not hang the sweep: give up loudly.
 signal.alarm(300)
@@ -41,6 +53,26 @@ def tree(files):
 
 def span(line, s):
     return None if s is None else line[s[0]:s[1]]
+
+
+class Loading(unittest.TestCase):
+    def test_a_stale_bytecode_cache_is_never_what_runs(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "m.py")
+        def write(v):
+            with open(p, "w") as f:
+                f.write(f"A = {v}\n")
+            os.utime(p, (1_000_000_000, 1_000_000_000))  # same second, same size
+        write(1)
+        # A process importing it the usual way caches its bytecode, wherever
+        # this interpreter keeps that cache.
+        importer = ("import importlib.util as u, sys; s = u.spec_from_file_location('m', sys.argv[1]); "
+                    "m = u.module_from_spec(s); s.loader.exec_module(m); print(m.A)")
+        imported = lambda: subprocess.run([sys.executable, "-c", importer, p], capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(imported(), "1")
+        write(2)
+        self.assertEqual(imported(), "1", "precondition: the import system runs the stale bytecode")
+        self.assertEqual(load(p, "m").A, 2)
 
 
 class ShellLists(unittest.TestCase):
