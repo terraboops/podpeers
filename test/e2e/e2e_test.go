@@ -529,6 +529,19 @@ func TestE2E(t *testing.T) {
 		}
 		text, _ := os.ReadFile(filepath.Join(outDir, "e2e-capture.text"))
 		t.Logf("rendered report:\n%s", text)
+		// What a reader sees, as the README shows it: the pod with no peers says
+		// so, the closed connection is closed in the window on both ends, and
+		// the pending pod is skipped with its reason.
+		for _, want := range []*regexp.Regexp{
+			regexp.MustCompile(`(?m)^pp-app/loner  \[observed\]\n  no peers observed$`),
+			regexp.MustCompile(`(?m)^  <-   pp-app/brief +pod +tcp/9000 +\d+ +closed in window$`),
+			regexp.MustCompile(`(?m)^  ->   svc/pp-app/api +service +tcp/9000 +\d+ +closed in window$`),
+			regexp.MustCompile(`(?m)^pp-app/pending  \[skipped: pod phase is Pending, not Running\]$`),
+		} {
+			if !want.Match(text) {
+				t.Errorf("rendered report lacks %s", want)
+			}
+		}
 	})
 
 	t.Run("suggestions from real traffic, refusing where evidence is thin", func(t *testing.T) {
