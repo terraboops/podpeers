@@ -52,7 +52,7 @@ internal/capture/capture.go | if err != nil { | error | an error the tests do no
 internal/capture/capture.go | if t.note != "" { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
 internal/capture/capture.go | if out.Truncated { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
 internal/capture/capture.go | if err != nil && !opts.AllNamespaces { | cluster | TestE2E an identity confined to one namespace (pods), and the namespace where the credentials may not do this; e2e-run: TestE2E/(an_identity_confined|namespace_where)
-internal/capture/capture.go | if err == nil { | cluster | TestE2E capture matches the workloads; e2e-run: TestE2E/capture_matches
+internal/capture/capture.go | if err == nil { | cluster | the log stream opening: without it the log is read only once, after the window, which serves a quiet pod but loses a busy pod's early samples to log rotation (--cluster found the earlier claim, capture matches the workloads, false); e2e-run: TestE2E/a_busy_pod
 internal/capture/capture.go | if err != nil && !opts.AllNamespaces { | cluster | TestE2E an identity confined to one namespace (Services); e2e-run: TestE2E/an_identity_confined
 internal/capture/capture.go | if apierrors.IsForbidden(err) { | cosmetic | a short 'forbidden' instead of the API's full message, which says forbidden too
 internal/capture/capture.go | if !ok { | equivalent | a non-Job workload name falls through the Job lookup to the same answer, at the cost of one cached list
