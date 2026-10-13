@@ -41,11 +41,23 @@ func TestForgedToolIdentities(t *testing.T) {
 	for _, f := range forged {
 		others = append(others, f.context)
 	}
+	// k3d cluster delete rewrites k3d's default kubeconfig (the first file in
+	// KUBECONFIG, else ~/.kube/config), with no flag to stop it: give it one
+	// of its own.
+	own := filepath.Join(t.TempDir(), "k3d-default-kubeconfig")
+	if err := os.WriteFile(own, []byte("apiVersion: v1\nkind: Config\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	k3d := func(args ...string) *exec.Cmd {
+		c := exec.Command("k3d", args...)
+		c.Env = append(os.Environ(), "KUBECONFIG="+own)
+		return c
+	}
 	for _, f := range forged {
 		t.Run(f.context, func(t *testing.T) {
-			exec.Command("k3d", "cluster", "delete", name).Run()
-			defer exec.Command("k3d", "cluster", "delete", name).Run()
-			out, err := exec.Command("k3d", "cluster", "create", name, "--image", "rancher/k3s:v1.31.5-k3s1",
+			k3d("cluster", "delete", name).Run()
+			defer k3d("cluster", "delete", name).Run()
+			out, err := k3d("cluster", "create", name, "--image", "rancher/k3s:v1.31.5-k3s1",
 				"--servers", "1", "--agents", "0", "--no-lb", "--api-port", "127.0.0.1:6552",
 				"--k3s-arg", "--disable=traefik@server:0", "--k3s-arg", "--disable=servicelb@server:0",
 				"--k3s-arg", "--disable=metrics-server@server:0", "--k3s-arg", "--disable-cloud-controller@server:0",
@@ -54,7 +66,7 @@ func TestForgedToolIdentities(t *testing.T) {
 			if err != nil {
 				t.Fatalf("creating the forging cluster: %v\n%s", err, out)
 			}
-			kc, err := exec.Command("k3d", "kubeconfig", "get", name).Output()
+			kc, err := k3d("kubeconfig", "get", name).Output()
 			if err != nil {
 				t.Fatal(err)
 			}

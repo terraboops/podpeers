@@ -4,7 +4,10 @@
 # Safety: the cluster's kubeconfig is written to ./.e2e/kubeconfig and NEVER merged
 # into ~/.kube/config, and the current context is never switched. Everything the
 # e2e suite does goes through that isolated file, so the operator's default
-# context cannot be touched by accident.
+# context cannot be touched by accident. k3d itself is pointed at a scratch
+# kubeconfig too: `k3d cluster delete` always rewrites its "default"
+# kubeconfig (the first file in KUBECONFIG, else ~/.kube/config), with no flag
+# to stop it.
 set -euo pipefail
 
 CLUSTER="${PODPEERS_E2E_CLUSTER:-podpeers-e2e}"
@@ -15,6 +18,13 @@ K3S_IMAGE="${PODPEERS_E2E_K3S_IMAGE:-rancher/k3s:v1.31.5-k3s1}"
 DEBUG_IMAGE="${PODPEERS_E2E_DEBUG_IMAGE:-busybox:1.36}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KCFG="$ROOT/.e2e/kubeconfig"
+
+# own_kubeconfig gives k3d a "default" kubeconfig of its own to rewrite.
+own_kubeconfig() {
+  mkdir -p "$ROOT/.e2e"
+  export KUBECONFIG="$ROOT/.e2e/k3d-default-kubeconfig"
+  [ -f "$KUBECONFIG" ] || printf 'apiVersion: v1\nkind: Config\n' > "$KUBECONFIG"
+}
 
 up() {
   mkdir -p "$ROOT/.e2e"
@@ -49,7 +59,7 @@ up() {
 
 down() {
   k3d cluster delete "$CLUSTER"
-  rm -f "$KCFG"
+  rm -f "$KCFG" "$KUBECONFIG"
   # On colima, blocks freed inside the VM stay allocated on the host until
   # trimmed; hand them back so repeated cluster runs do not eat the host disk.
   # fstrim only discards free blocks; it deletes nothing.
@@ -59,7 +69,7 @@ down() {
 }
 
 case "${1:-up}" in
-  up) up ;;
-  down) down ;;
+  up) own_kubeconfig; up ;;
+  down) own_kubeconfig; down ;;
   *) echo "usage: $0 [up|down]" >&2; exit 2 ;;
 esac

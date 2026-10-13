@@ -33,6 +33,7 @@ import (
 	netv1 "k8s.io/api/networking/v1"
 
 	"github.com/terraboops/podpeers/internal/graph"
+	"github.com/terraboops/podpeers/internal/guard"
 )
 
 var (
@@ -62,6 +63,20 @@ func TestMain(m *testing.M) {
 		fmt.Printf("e2e: REFUSING: kubeconfig current-context is %q, expected local %q\n", cfg.CurrentContext, kubeCtx)
 		os.Exit(1)
 	}
+	// A local tool's name proves nothing on its own: the server must be on
+	// this machine too.
+	if c := cfg.Contexts[kubeCtx]; c == nil || cfg.Clusters[c.Cluster] == nil || !guard.IsLoopbackServer(cfg.Clusters[c.Cluster].Server) {
+		fmt.Printf("e2e: REFUSING: context %q's API server is not on loopback\n", kubeCtx)
+		os.Exit(1)
+	}
+	// helm reads these over --kubeconfig and --kube-context: one set would
+	// send the suite's helm install to a cluster this check never saw.
+	for _, kv := range os.Environ() {
+		if name, value, _ := strings.Cut(kv, "="); strings.HasPrefix(name, "HELM_KUBE") && value != "" {
+			fmt.Printf("e2e: REFUSING: %s is set; helm would not use the e2e cluster's kubeconfig\n", name)
+			os.Exit(1)
+		}
+	}
 	tmp, err := os.MkdirTemp("", "podpeers-e2e-")
 	if err != nil {
 		panic(err)
@@ -76,7 +91,22 @@ func TestMain(m *testing.M) {
 		outDir = tmp
 	}
 	os.MkdirAll(outDir, 0o755)
+	// Nothing this suite runs may change the operator's own kubeconfig, which
+	// may hold production: k3d, kwokctl, kubectl and helm each have a
+	// default they write to. Byte for byte, before and after.
+	defaults := map[string][]byte{}
+	for _, f := range append(clientcmd.NewDefaultClientConfigLoadingRules().Precedence, clientcmd.RecommendedHomeFile) {
+		if f != kubeconfig {
+			defaults[f], _ = os.ReadFile(f)
+		}
+	}
 	code := m.Run()
+	for f, before := range defaults {
+		if after, _ := os.ReadFile(f); string(after) != string(before) {
+			fmt.Printf("e2e: FAIL: %s changed during the run; the suite must touch only %s\n", f, kubeconfig)
+			code = 1
+		}
+	}
 	os.RemoveAll(tmp)
 	os.Exit(code)
 }

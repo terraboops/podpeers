@@ -50,7 +50,7 @@ func (e env) run(t *testing.T, args ...string) (int, string) {
 	cmd := exec.Command("bash", append([]string{script}, args...)...)
 	cmd.Env = append(os.Environ(),
 		"PATH="+filepath.Join(e.dir, "bin")+":"+os.Getenv("PATH"),
-		"PODPEERS="+e.podpeers, "KUBECONFIG=")
+		"PODPEERS="+e.podpeers, noKubeconfig)
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
@@ -122,3 +122,8 @@ func TestACommandAloneIsNotAUsageError(t *testing.T) {
 		t.Errorf("no command: exit %d\n%s", code, out)
 	}
 }
+
+// noKubeconfig keeps the tools a test runs from the operator's kubeconfig:
+// KUBECONFIG empty means ~/.kube/config, but a file that is not there means
+// no kubeconfig at all.
+const noKubeconfig = "KUBECONFIG=/nonexistent/podpeers-test-kubeconfig"

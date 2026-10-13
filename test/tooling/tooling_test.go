@@ -28,7 +28,8 @@ func shims(t *testing.T, dir string) (bin, calls string) {
 	bin, calls = filepath.Join(dir, "bin"), filepath.Join(dir, "calls.log")
 	os.MkdirAll(bin, 0o755)
 	for name, body := range map[string]string{
-		"k3d": `case "$1 $2" in
+		"k3d": `echo "k3d sees KUBECONFIG=$KUBECONFIG" >> "` + calls + `"
+case "$1 $2" in
   "cluster list") echo "${FAKE_LIST:-[]}" ;;
   "kubeconfig get") cat "$FAKE_KCFG" ;;
   "node list") echo '[]' ;;
@@ -82,7 +83,7 @@ func TestClusterScriptRefusesAForeignContext(t *testing.T) {
 		bin, calls := shims(t, root)
 		kcfg := filepath.Join(root, "from-k3d")
 		os.WriteFile(kcfg, []byte(prodLike), 0o600)
-		code, out := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FAKE_CTX=" + c.ctx, "FAKE_KCFG=" + kcfg, "KUBECONFIG="}, "bash", script, "up")
+		code, out := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FAKE_CTX=" + c.ctx, "FAKE_KCFG=" + kcfg, noKubeconfig}, "bash", script, "up")
 		waited := strings.Contains(read(calls), "kubectl --kubeconfig "+filepath.Join(root, ".e2e", "kubeconfig")+" wait")
 		if c.refuse && (code != 1 || !strings.Contains(out, "refusing: isolated kubeconfig has unexpected context 'prod-like'") || waited) {
 			t.Fatalf("context %s: want refusal before kubectl wait; exit %d waited=%v\n%s\n%s", c.ctx, code, waited, out, read(calls))
@@ -101,7 +102,7 @@ func TestMutantsRefusesAForeignContext(t *testing.T) {
 	}{{"prod-like", true}, {"k3d-podpeers-e2e", false}} {
 		root, script := copyScript(t, "mutants.sh")
 		bin, calls := shims(t, root)
-		code, out := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FAKE_CTX=" + c.ctx, "KUBECONFIG=", "GIT_DIR=" + filepath.Join(root, "no-git")}, "bash", script, "--e2e")
+		code, out := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FAKE_CTX=" + c.ctx, noKubeconfig, "GIT_DIR=" + filepath.Join(root, "no-git")}, "bash", script, "--e2e")
 		refused := strings.Contains(out, "refusing: .e2e/kubeconfig is not the local e2e cluster")
 		if c.refuse && (code != 1 || !refused) {
 			t.Fatalf("context %s: want refusal; exit %d\n%s", c.ctx, code, out)
@@ -137,6 +138,39 @@ func TestE2ESuiteRefusesAForeignContext(t *testing.T) {
 	}
 }
 
+// A local-looking name on a remote server, or a helm override in the
+// environment, is refused before any test runs too.
+func TestE2ESuiteRefusesALocalNameElsewhereAndHelmOverrides(t *testing.T) {
+	dir := t.TempDir()
+	kubeconfig := func(name, ctx, server string) string {
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, []byte(`apiVersion: v1
+kind: Config
+clusters: [{name: c, cluster: {server: `+server+`}}]
+users: [{name: me, user: {token: not-a-real-token}}]
+contexts: [{name: `+ctx+`, context: {cluster: c, user: me}}]
+current-context: `+ctx+`
+`), 0o600)
+		return p
+	}
+	elsewhere := kubeconfig("elsewhere", "kind-prod", "https://cluster.example.invalid:6443")
+	local := kubeconfig("local", "k3d-podpeers-e2e", "https://127.0.0.1:9")
+	for _, c := range []struct {
+		name, says string
+		env        []string
+	}{
+		{"a local name on a remote server", `e2e: REFUSING: context "kind-prod"'s API server is not on loopback`,
+			[]string{"PODPEERS_E2E_KUBECONFIG=" + elsewhere, "PODPEERS_E2E_CONTEXT=kind-prod"}},
+		{"a helm API-server override", "e2e: REFUSING: HELM_KUBEAPISERVER is set",
+			[]string{"PODPEERS_E2E_KUBECONFIG=" + local, "HELM_KUBEAPISERVER=https://192.0.2.1:6443"}},
+	} {
+		code, out := run(t, append(c.env, "PODPEERS_E2E_OUT="+dir), "go", "test", "-tags", "e2e", "-count=1", "-v", "-run", "^TestE2E$", "../e2e/")
+		if code == 0 || !strings.Contains(out, c.says) || strings.Contains(out, "=== RUN") {
+			t.Fatalf("%s: want a refusal before any test runs; exit %d\n%s", c.name, code, out)
+		}
+	}
+}
+
 // up creates the cluster only when it is not there yet; down deletes it and
 // its kubeconfig, and on colima hands freed blocks back to the host.
 func TestClusterScriptUpAndDown(t *testing.T) {
@@ -149,22 +183,40 @@ func TestClusterScriptUpAndDown(t *testing.T) {
 		if exists {
 			list = `[{"name":"podpeers-e2e"}]`
 		}
-		run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FAKE_CTX=k3d-podpeers-e2e", "FAKE_KCFG=" + kcfg, "FAKE_LIST=" + list, "KUBECONFIG="}, "bash", script, "up")
+		run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FAKE_CTX=k3d-podpeers-e2e", "FAKE_KCFG=" + kcfg, "FAKE_LIST=" + list, noKubeconfig}, "bash", script, "up")
 		if created := strings.Contains(read(calls), "k3d cluster create podpeers-e2e"); created == exists {
 			t.Errorf("cluster exists=%v: created=%v\n%s", exists, created, read(calls))
+		}
+		// Created on loopback, and kept out of the default kubeconfig.
+		for _, flag := range []string{" --api-port 127.0.0.1:", " --kubeconfig-update-default=false ", " --kubeconfig-switch-context=false "} {
+			if !exists && !strings.Contains(read(calls), flag) {
+				t.Errorf("k3d cluster create lacks %q\n%s", flag, read(calls))
+			}
+		}
+		if own := "k3d sees KUBECONFIG=" + filepath.Join(root, ".e2e", "k3d-default-kubeconfig") + "\n"; strings.Count(read(calls), "k3d sees") != strings.Count(read(calls), own) {
+			t.Errorf("up ran k3d with a kubeconfig other than the script's own:\n%s", read(calls))
 		}
 	}
 	root, script := copyScript(t, "e2e-cluster.sh")
 	bin, calls := shims(t, root)
 	os.MkdirAll(filepath.Join(root, ".e2e"), 0o755)
 	os.WriteFile(filepath.Join(root, ".e2e", "kubeconfig"), []byte(prodLike), 0o600)
-	code, _ := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "KUBECONFIG="}, "bash", script, "down")
+	code, _ := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), noKubeconfig}, "bash", script, "down")
 	// A colima that is installed but not running is not asked to trim.
 	root2, script2 := copyScript(t, "e2e-cluster.sh")
 	bin2, calls2 := shims(t, root2)
-	run(t, []string{"PATH=" + bin2 + ":" + os.Getenv("PATH"), "KUBECONFIG=", "FAKE_COLIMA_STATUS=1"}, "bash", script2, "down")
+	run(t, []string{"PATH=" + bin2 + ":" + os.Getenv("PATH"), noKubeconfig, "FAKE_COLIMA_STATUS=1"}, "bash", script2, "down")
 	if strings.Contains(read(calls2), "fstrim") {
 		t.Errorf("a stopped colima was asked to trim:\n%s", read(calls2))
+	}
+	// k3d rewrites its default kubeconfig on delete: it must be the script's
+	// scratch file, never the operator's (KUBECONFIG= means ~/.kube/config).
+	own := "k3d sees KUBECONFIG=" + filepath.Join(root, ".e2e", "k3d-default-kubeconfig") + "\n"
+	if strings.Count(read(calls), "k3d sees KUBECONFIG=") != strings.Count(read(calls), own) || !strings.Contains(read(calls), own) {
+		t.Errorf("k3d ran with a kubeconfig other than the script's own:\n%s", read(calls))
+	}
+	if _, err := os.Stat(filepath.Join(root, ".e2e", "k3d-default-kubeconfig")); err == nil {
+		t.Errorf("down left k3d's scratch kubeconfig behind")
 	}
 	if _, err := os.Stat(filepath.Join(root, ".e2e", "kubeconfig")); code != 0 || err == nil ||
 		!strings.Contains(read(calls), "k3d cluster delete podpeers-e2e") || !strings.Contains(read(calls), "colima ssh -- sudo fstrim -a") {
@@ -176,7 +228,7 @@ func TestClusterScriptUpAndDown(t *testing.T) {
 func TestClusterScriptRejectsUnknownSubcommands(t *testing.T) {
 	root, script := copyScript(t, "e2e-cluster.sh")
 	bin, calls := shims(t, root)
-	code, out := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "KUBECONFIG="}, "bash", script, "destroy")
+	code, out := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), noKubeconfig}, "bash", script, "destroy")
 	if code != 2 || !strings.Contains(out, "usage:") || read(calls) != "" {
 		t.Fatalf("destroy: exit %d, want 2 with the usage and no calls\n%s\n%s", code, out, read(calls))
 	}
@@ -209,7 +261,7 @@ func TestDemoScriptRefusesAForeignContext(t *testing.T) {
 		for tool, body := range stubs {
 			os.WriteFile(filepath.Join(bin, tool), []byte("#!/bin/sh\necho \""+tool+" $*\" >> \""+calls+"\"\n"+body+"\n"), 0o755)
 		}
-		code, out := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FAKE_CTX=" + c.ctx, "KUBECONFIG="}, "bash", script)
+		code, out := run(t, []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "FAKE_CTX=" + c.ctx, noKubeconfig}, "bash", script)
 		got := read(calls)
 		refused := strings.Contains(out, "refusing: .e2e/kubeconfig is not the local e2e cluster")
 		if c.refuse && (code != 1 || !refused || strings.Contains(got, "make") || strings.Count(got, "\n") != 1) {
@@ -222,3 +274,43 @@ func TestDemoScriptRefusesAForeignContext(t *testing.T) {
 		}
 	}
 }
+
+// The demo tapes type bare kubectl and podpeers commands: what keeps them on
+// the demo cluster is the KUBECONFIG each tape exports first (make-demo.sh
+// checks that file's context). Every tape exports it before any command that
+// reaches a cluster, and no line points anywhere else.
+func TestDemoTapesUseOnlyTheDemoKubeconfig(t *testing.T) {
+	tapes, _ := filepath.Glob("../../docs/demo/*.tape")
+	if len(tapes) == 0 {
+		t.Fatal("no tapes found")
+	}
+	for _, tape := range tapes {
+		b, err := os.ReadFile(tape)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exported := false
+		for i, line := range strings.Split(string(b), "\n") {
+			if !strings.HasPrefix(line, "Type ") {
+				continue
+			}
+			if strings.Contains(line, "--kubeconfig") || strings.Contains(line, "--context") || strings.Contains(line, noKubeconfig) && !strings.Contains(line, "KUBECONFIG=$PWD/.e2e/kubeconfig ") {
+				t.Errorf("%s:%d points somewhere else: %s", tape, i+1, line)
+			}
+			if strings.Contains(line, "export ") && strings.Contains(line, "KUBECONFIG=$PWD/.e2e/kubeconfig ") {
+				exported = true
+			}
+			if (strings.Contains(line, "kubectl ") || strings.Contains(line, "podpeers capture") || strings.Contains(line, "helm ")) && !exported {
+				t.Errorf("%s:%d reaches a cluster before KUBECONFIG is exported: %s", tape, i+1, line)
+			}
+		}
+		if !exported {
+			t.Errorf("%s never exports the demo KUBECONFIG", tape)
+		}
+	}
+}
+
+// noKubeconfig keeps the tools a test runs from the operator's kubeconfig:
+// KUBECONFIG empty means ~/.kube/config, but a file that is not there means
+// no kubeconfig at all.
+const noKubeconfig = "KUBECONFIG=/nonexistent/podpeers-test-kubeconfig"

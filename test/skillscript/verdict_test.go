@@ -55,7 +55,7 @@ exit 0`,
 	for name, body := range shims {
 		os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755)
 	}
-	f.env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "PODPEERS="+filepath.Join(bin, "podpeers"), "CALLS="+f.calls, "KUBECONFIG=")
+	f.env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "PODPEERS="+filepath.Join(bin, "podpeers"), "CALLS="+f.calls, noKubeconfig)
 	return f
 }
 
