@@ -460,3 +460,30 @@ func TestSamplerSleepsAreFormattedExactly(t *testing.T) {
 		t.Fatalf("sleeps:\n%s", got)
 	}
 }
+
+// Malformed addresses are errors, not zero values.
+func TestRowAddressErrors(t *testing.T) {
+	for _, row := range []string{
+		"0: 0100007F:0035 ZZ:0000 0A",       // remote: not hex
+		"0: 0100007G:0035 00000000:0000 0A", // local: a bad hex digit
+	} {
+		if s, err := ParseRow(TCP, row); err == nil {
+			t.Errorf("%q parsed as %+v", row, s)
+		}
+	}
+}
+
+// In sampler output, a row that does not parse is counted as skipped, not
+// kept as a socket; a line too long for the reader is an error, not a
+// silent end of the log.
+func TestSamplerOutputSkipsBadRowsAndFailsOnOverlongLines(t *testing.T) {
+	head := "@@podpeers v2\n@@anchor 1700000000 1000.00\n@@sample 1000.00\n" + hdrTCP + "\n"
+	good := "   0: 0A0200C0:2328 076433C6:D431 01 0:0 0:0 0 0 0 1\n"
+	out, err := ParseSamplerOutput(strings.NewReader(head + good + "   1: nonsense row here\n@@end\n"))
+	if err != nil || out.Skipped != 1 || len(out.Samples) != 1 || len(out.Samples[0].Sockets) != 1 {
+		t.Fatalf("err=%v skipped=%d samples=%+v", err, out.Skipped, out.Samples)
+	}
+	if _, err := ParseSamplerOutput(strings.NewReader(head + strings.Repeat("x", 5<<20) + "\n@@end\n")); err == nil {
+		t.Fatal("a 5 MiB line must be an error")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -619,5 +620,47 @@ func TestMCPCommandAnswers(t *testing.T) {
 	code, out, stderr := runCLI("mcp", fixture)
 	if code != exitOK || !strings.Contains(out, `"id":1`) || !strings.Contains(out, `"result"`) {
 		t.Fatalf("mcp: exit %d\nstdout %s\nstderr %s", code, out, stderr)
+	}
+}
+
+// Every subcommand refuses a flag it does not know, before doing anything.
+func TestUnknownFlagsAreRefused(t *testing.T) {
+	for _, cmd := range []string{"capture", "check-context", "render", "query", "serve", "suggest", "diff", "mcp"} {
+		code, out, stderr := runCLI(cmd, "--no-such-flag")
+		if code == 0 || out != "" || !strings.Contains(stderr, "no-such-flag") {
+			t.Errorf("%s --no-such-flag: exit %d, stdout %q, stderr %q", cmd, code, out, stderr)
+		}
+	}
+}
+
+// A kubeconfig that does not parse is reported as such, not taken for an
+// empty one.
+func TestMalformedKubeconfigIsReported(t *testing.T) {
+	kc := filepath.Join(t.TempDir(), "kubeconfig")
+	os.WriteFile(kc, []byte("this: [is not: a kubeconfig\n"), 0o600)
+	code, _, stderr := runCLI("check-context", "--kubeconfig", kc)
+	if code == 0 || !strings.Contains(stderr, "yaml") {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+}
+
+// serve on an address already in use fails at once, saying why.
+func TestServeOnABusyAddressFails(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	done := make(chan struct{})
+	var code int
+	var stderr string
+	go func() { code, _, stderr = runCLI("serve", "--addr", l.Addr().String(), fixture); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve kept running on an address it could not listen on")
+	}
+	if code == 0 || !strings.Contains(stderr, "address already in use") {
+		t.Fatalf("exit %d: %s", code, stderr)
 	}
 }

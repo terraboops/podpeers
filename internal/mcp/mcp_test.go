@@ -295,3 +295,13 @@ func TestToolsWithoutRequiredArgumentsListNone(t *testing.T) {
 		t.Fatal("precondition: some tool requires nothing")
 	}
 }
+
+// A tools/call whose params are not an object is invalid params, not a
+// call with no name.
+func TestMalformedCallParamsAreInvalid(t *testing.T) {
+	rs := session(t, &Server{CapturePath: fixture}, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":"pods"}`)
+	e, _ := rs[0]["error"].(map[string]any)
+	if e == nil || e["code"] != float64(-32602) || !strings.Contains(e["message"].(string), "invalid params") {
+		t.Fatalf("response: %v", rs[0])
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -542,5 +543,23 @@ func TestZeroOptionsGetDefaults(t *testing.T) {
 func TestZeroDurationIsRefused(t *testing.T) {
 	if err := (Options{Duration: 0, Interval: time.Second}).Validate(); err == nil || !strings.Contains(err.Error(), "duration must be positive") {
 		t.Fatalf("zero duration: %v", err)
+	}
+}
+
+// A pod list that fails mid-window ends the capture with that error; it is
+// not taken for an empty namespace.
+func TestPollingFailureEndsTheCapture(t *testing.T) {
+	cs := fake.NewSimpleClientset(pod("shop", "api", corev1.PodRunning, map[string]string{"pp": "t"}))
+	var lists atomic.Int32
+	cs.PrependReactor("list", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if lists.Add(1) > 1 {
+			return true, nil, errors.New("apiserver went away")
+		}
+		return false, nil, nil
+	})
+	_, err := Run(context.Background(), cs, nil, Options{Namespace: "shop", LabelSelector: "pp=t",
+		Duration: time.Second, Interval: time.Second, StartTimeout: time.Second, PollInterval: 10 * time.Millisecond})
+	if err == nil || !strings.Contains(err.Error(), "polling pods") || !strings.Contains(err.Error(), "apiserver went away") {
+		t.Fatalf("err = %v", err)
 	}
 }
