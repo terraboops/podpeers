@@ -28,9 +28,13 @@ try {
   // Laid out and fitted, the graph is drawn at a readable scale: no smaller
   // than the zoom's own floor (a layout that flies apart is framed at a few
   // percent).
-  const fitted = await page.$eval("#graph > g", g => +/scale\(([-\d.e]+)\)/.exec(g.getAttribute("transform"))[1]);
+  // The graph's scale, or NaN when it was never fitted (no nodes drawn): a
+  // judged failure below, never a crash of this check.
+  const scaleOf = t => +(/scale\(([-\d.e]+)\)/.exec(t || "") || [])[1];
+  const fitted = scaleOf(await page.$eval("#graph > g", g => g.getAttribute("transform")));
   if (fitted >= 0.2) ok(`the fitted graph is drawn at a readable scale (${fitted.toFixed(2)})`);
-  else fail(`the fitted graph is drawn at scale ${fitted}: laid out far too wide to read`);
+  else fail(Number.isNaN(fitted) ? "the graph was never fitted: no nodes were drawn"
+    : `the fitted graph is drawn at scale ${fitted}: laid out far too wide to read`);
 
   // What the detail panel says about the first match for a search.
   const lookup = async q => {
@@ -175,7 +179,7 @@ try {
       const ns = gs.map(g => {
         const m = /translate\(([-\d.e]+),([-\d.e]+)\)/.exec(g.getAttribute("transform") || "");
         const s = g.querySelector(".shape"), r = s.tagName === "rect" ? +s.getAttribute("width") / 2 : +s.getAttribute("r");
-        return { t: g.textContent.slice(0, 20), x: +m[1], y: +m[2], r };
+        return { t: g.textContent.slice(0, 20), x: m ? +m[1] : NaN, y: m ? +m[2] : NaN, r };
       });
       const lost = ns.find(n => !Number.isFinite(n.x) || !Number.isFinite(n.y));
       if (lost) return `${lost.t} has no position (${lost.x}, ${lost.y})`;
@@ -197,8 +201,7 @@ try {
     await page.mouse.wheel({ deltaX: dx, deltaY: dy });
     await new Promise(r => setTimeout(r, 100));
     const after = await page.$eval("#graph > g", g => g.getAttribute("transform"));
-    const k = t => +/scale\(([-\d.e]+)\)/.exec(t)[1];
-    return k(after) / k(before);
+    return scaleOf(after) / scaleOf(before);
   };
   const [zin, zout, side] = [await zoom(0, -100), await zoom(0, 100), await zoom(100, 0)];
   if (zin > 1 && zout < 1 && side === 1) ok("the wheel zooms in and out, and a sideways scroll leaves the zoom alone");
