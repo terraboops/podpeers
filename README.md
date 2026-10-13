@@ -410,8 +410,8 @@ tests that should notice:
 
 | Where | Guards | Removed how | Run against |
 |---|---|---|---|
-| Go (`internal/`, `cmd/`, `hack/gocond`), read by its own parser (`hack/gocond`) | 781 | each `if` and `for` condition and tagless-`switch` case made false; each `&&`/`\|\|` flipped, wherever it is; each `<`, `<=`, `>` and `>=` moved one step (`<` to `<=` and back), so a guard sits off by one; each arm of a tagged or type switch given the `default` arm's body, so its values fall through | the package's tests, then the whole unit suite |
-| shell (the skill's script, `hack/`, the demo recorder) | 115 | each `if` made false, each `while`/`until` loop made never to run; each `cond \|\| action` list's action dropped; each `case` arm removed (a one-line arm, a default `*)` arm or an arm of a one-line `case ... esac` emptied; a multi-line arm's pattern made to never match); each `-lt`/`-le`/`-gt`/`-ge` moved one step | the tests that drive that script (`test/skillscript`, `test/hygiene`, `test/tooling`) |
+| Go (`internal/`, `cmd/`, `hack/gocond`), read by its own parser (`hack/gocond`) | 793 | each `if` and `for` condition and tagless-`switch` case made false; each `&&`/`\|\|` flipped, wherever it is; each `<`, `<=`, `>` and `>=` moved one step (`<` to `<=` and back), so a guard sits off by one; each arm of a tagged or type switch given the `default` arm's body, so its values fall through | the package's tests, then the whole unit suite |
+| shell (the skill's script, `hack/`, the demo recorder) | 118 | each `if` made false, each `while`/`until` loop made never to run; each `cond \|\| action` list's action dropped; each `case` arm removed (a one-line arm, a default `*)` arm or an arm of a one-line `case ... esac` emptied; a multi-line arm's pattern made to never match); each `-lt`/`-le`/`-gt`/`-ge` moved one step | the tests that drive that script (`test/skillscript`, `test/hygiene`, `test/tooling`) |
 | shell inside Go source (the sampler script each debug container runs) | 6 | as for shell | the tests that run the script under `sh`, on a stand-in `/proc/uptime` where there is no real one |
 | the Makefile's recipes | 4 | as for shell | scratch Makefiles in a scratch module (`test/tooling`) |
 | the CI workflow | 34 | each `run:` step's command replaced by `true`, each `X=1` fail-don't-skip flag dropped, `fetch-depth: 0` made shallow, each trigger removed | what the workflow declares (`test/tooling`): GitHub Actions cannot run here |
@@ -470,7 +470,7 @@ loop, not a check. The chart's smoke test's one check, the condition
 under which `helm test` passes, only a real cluster runs: it is mutant 43,
 caught by the skill's workflow on the cluster in CI.
 
-Moving every comparison's boundary one step (92 of them in the Go code)
+Moving every comparison's boundary one step (93 of them in the Go code)
 found guards whose edge no test pinned: the policy-name length and character
 limits, the ephemeral-port range's ends, the GraphQL field budget at exactly
 its limit, `/proc/net` rows with exactly four or ten fields, a window or
