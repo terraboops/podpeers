@@ -887,6 +887,18 @@ func TestMalformedKubeconfigIsReported(t *testing.T) {
 	}
 }
 
+// Credentials that cannot be loaded are reported before any request.
+func TestUnloadableCredentialsAreReported(t *testing.T) {
+	srv, hits := apiServer(t, "k3s://k3d-dev-server-0")
+	kc := kubeconfig(t, "k3d-dev", srv.URL)
+	b, _ := os.ReadFile(kc)
+	os.WriteFile(kc, []byte(strings.Replace(string(b), "token: not-a-real-token", "client-certificate: /nonexistent/cert.pem\n    client-key: /nonexistent/key.pem", 1)), 0o600)
+	code, _, stderr := runCLI("check-context", "--kubeconfig", kc)
+	if code != exitError || !strings.Contains(stderr, "podpeers: building client config: ") || !strings.Contains(stderr, "/nonexistent/cert.pem") || atomic.LoadInt64(hits) != 0 {
+		t.Fatalf("exit %d, %d request(s), stderr %s", code, atomic.LoadInt64(hits), stderr)
+	}
+}
+
 // serve on an address already in use fails at once, saying why.
 func TestServeOnABusyAddressFails(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
