@@ -675,3 +675,41 @@ func TestPollingFailureEndsTheCapture(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// Without permission to list Services, the capture goes on and says what that
+// costs.
+func TestServicesThatCannotBeListedAreANote(t *testing.T) {
+	cs := fake.NewSimpleClientset(pod("shop", "api", corev1.PodRunning, map[string]string{"pp": "target"}))
+	finishedSamplers(cs)
+	cs.PrependReactor("list", "services", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "services"}, "", errors.New("denied"))
+	})
+	var mu sync.Mutex
+	var logged []string
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, err := Run(ctx, cs, nil, Options{Namespace: "shop", LabelSelector: "pp=target", Duration: time.Second, Interval: time.Second,
+		StartTimeout: time.Second, PollInterval: 10 * time.Millisecond, Logf: func(f string, a ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			logged = append(logged, fmt.Sprintf(f, a...))
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all := strings.Join(logged, "\n"); !strings.Contains(all, "note: cannot list services (forbidden); service IPs will show as addresses") {
+		t.Fatalf("no note about services:\n%s", all)
+	}
+}
+
+// Interrupted mid-window, a capture returns the interruption, not a result.
+func TestInterruptedCaptureFails(t *testing.T) {
+	cs := fake.NewSimpleClientset(pod("shop", "api", corev1.PodRunning, map[string]string{"pp": "target"}))
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	res, err := Run(ctx, cs, nil, Options{Namespace: "shop", LabelSelector: "pp=target", Duration: time.Minute, Interval: time.Second,
+		StartTimeout: time.Minute, PollInterval: 10 * time.Millisecond, Logf: func(string, ...any) {}})
+	if !errors.Is(err, context.Canceled) || len(res.Pods) != 0 {
+		t.Fatalf("err %v, %d pod(s)", err, len(res.Pods))
+	}
+}

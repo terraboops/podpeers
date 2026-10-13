@@ -274,6 +274,9 @@ func cmdCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stderr, "podpeers: --summary must be text or none, not %q\n", format)
 		return exitError
 	}
+	if out != "-" && !writable(out, stderr) {
+		return exitError
+	}
 	if err := opts.Validate(); err != nil {
 		fmt.Fprintf(stderr, "podpeers: %v\n", err)
 		return exitError
@@ -313,6 +316,23 @@ func cmdCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		}
 	}
 	return exitOK
+}
+
+// writable checks that path can be written before a capture touches any
+// pod: found only at the end, every pod would have been changed for nothing.
+// A file it had to create for the check is removed again.
+func writable(path string, stderr io.Writer) bool {
+	_, statErr := os.Stat(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		fmt.Fprintf(stderr, "podpeers: -o cannot be written, so nothing was captured: %v\n", err)
+		return false
+	}
+	f.Close()
+	if statErr != nil {
+		os.Remove(path)
+	}
+	return true
 }
 
 func writeJSON(path string, stdout io.Writer, v any) error {

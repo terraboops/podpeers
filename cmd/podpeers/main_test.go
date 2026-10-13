@@ -333,6 +333,37 @@ func TestCaptureTargetsTheContextNamespace(t *testing.T) {
 	}
 }
 
+// An -o that cannot be written is refused before connecting: found at the
+// end, every targeted pod would have been changed for nothing. A file made
+// for the check is not left behind; one already there is not truncated.
+func TestCaptureChecksItsOutputFirst(t *testing.T) {
+	srv, hits := apiServer(t, "k3s://k3d-dev-server-0")
+	kc := kubeconfig(t, "k3d-dev", srv.URL)
+	dir := t.TempDir()
+	for _, out := range []string{filepath.Join(dir, "missing", "x.json"), dir} {
+		code, _, stderr := runCLI("capture", "--kubeconfig", kc, "-l", "app", "--duration", "1s", "--interval", "1s", "-o", out)
+		if code != exitError || !strings.Contains(stderr, "-o cannot be written, so nothing was captured") || atomic.LoadInt64(hits) != 0 {
+			t.Errorf("-o %s: exit %d, %d API request(s), stderr %s", out, code, atomic.LoadInt64(hits), stderr)
+		}
+	}
+	var b bytes.Buffer
+	fresh := filepath.Join(dir, "fresh.json")
+	if !writable(fresh, &b) {
+		t.Fatal(b.String())
+	}
+	if _, err := os.Stat(fresh); !os.IsNotExist(err) {
+		t.Errorf("the check left %s behind: %v", fresh, err)
+	}
+	kept := filepath.Join(dir, "kept.json")
+	os.WriteFile(kept, []byte("an earlier capture"), 0o600)
+	if !writable(kept, &b) {
+		t.Fatal(b.String())
+	}
+	if got, _ := os.ReadFile(kept); string(got) != "an earlier capture" {
+		t.Errorf("the check changed an existing file to %q", got)
+	}
+}
+
 // A flag written after the capture file is not parsed, so it is refused
 // rather than ignored: "suggest c.json -n shop" would otherwise suggest for
 // every namespace. diff and mcp take an exact count of files.
