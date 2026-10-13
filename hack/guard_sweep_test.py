@@ -303,6 +303,7 @@ class Go(unittest.TestCase):
             (x, (7, "case", 1)): "case a, b: [case 2]",
             (x, (10, "arm", 0)): "case 1: [arm removed]",
             (x, (15, "for", 0)): "for n > 0 { [loop condition forced false]",
+            (x, (15, "bound", 0)): "for n > 0 { [boundary moved]",
             (x, (18, "boolop", 0)): "return a || b [operator 1 flipped]",
         })
 
@@ -312,6 +313,7 @@ class Go(unittest.TestCase):
         self.assertEqual(gs.go_text("l", "if", 0), "l")
         self.assertEqual(gs.go_text("l", "for", 1), "l [loop condition forced false 2]")
         self.assertEqual(gs.go_text("l", "arm", 2), "l [arm removed 3]")
+        self.assertEqual(gs.go_text("l", "bound", 0), "l [boundary moved]")
         self.assertEqual(gs.go_text("l", "boolop", 2), "l [operator 3 flipped]")
 
     def test_each_go_mutation(self):
@@ -320,6 +322,7 @@ class Go(unittest.TestCase):
             ((4, "boolop", 0), 4, "\t} else if b || c {"),
             ((7, "case", 1), 7, "\tcase a, false && (b):"),
             ((15, "for", 0), 15, "\tfor false && (n > 0) {"),
+            ((15, "bound", 0), 15, "\tfor n >= 0 {"),
             ((18, "boolop", 0), 18, "\treturn a && b"),
         ]:
             d = tree({"x.go": self.CODE})

@@ -67,7 +67,9 @@ func TestListsEveryConditionAndHowToDisableIt(t *testing.T) {
 		{4, "boolop", 0, "&&", "||"},
 		{4, "boolop", 1, "||", "&&"},
 		{4, "if", 0, "a && b || c", "false && (a && b || c)"},
+		{7, "bound", 0, ">", ">="},
 		{7, "for", 0, "n > 0", "false && (n > 0)"},
+		{10, "bound", 0, "<", "<="},
 		{10, "for", 0, "i < n", "false && (i < n)"},
 		{16, "case", 0, "a", "false && (a)"},
 		{16, "case", 1, "b", "false && (b)"},
@@ -117,7 +119,7 @@ func TestCommand(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "f.go")
 	os.WriteFile(f, []byte(src), 0o644)
 	out, err := exec.Command(bin, f).Output()
-	if err != nil || strings.Count(string(out), "\n") != 14 || !strings.Contains(string(out), `"kind":"arm"`) {
+	if err != nil || strings.Count(string(out), "\n") != 16 || !strings.Contains(string(out), `"kind":"arm"`) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	for _, c := range []struct {
@@ -149,5 +151,24 @@ func TestAnEmptyDefaultEmptiesTheArms(t *testing.T) {
 	conds, err := List("e.go", []byte(s))
 	if err != nil || len(conds) != 1 || conds[0].Kind != "arm" || conds[0].New != "" {
 		t.Fatalf("%v %+v", err, conds)
+	}
+}
+
+// Each comparison's boundary moves by one, both ways; == and != are left
+// to the condition-level mutations.
+func TestBoundariesMoveByOne(t *testing.T) {
+	s := "package p\n\nfunc f(a, b int) bool { return a < b || a <= b || a > b || a >= b || a == b || a != b }\n"
+	conds, err := List("b.go", []byte(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range conds {
+		if c.Kind == "bound" {
+			got = append(got, s[c.Start:c.End]+">"+c.New)
+		}
+	}
+	if strings.Join(got, " ") != "<><= <=>< >>>= >=>>" {
+		t.Fatalf("boundaries: %v", got)
 	}
 }

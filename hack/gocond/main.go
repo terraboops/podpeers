@@ -11,6 +11,8 @@
 //	if, for, case   an if or for condition, or a tagless switch case's
 //	                expression: replaced by `false && (<cond>)`
 //	boolop          one && or ||: flipped to the other
+//	bound           one <, <=, > or >=: its boundary moved by one (< and <=,
+//	                > and >=), so the guard sits one step off
 //	arm             an arm of a tagged or type switch: its body replaced by
 //	                the default arm's (or none), so its values fall through
 //	                to what the switch does without it
@@ -26,6 +28,9 @@ import (
 	"os"
 	"sort"
 )
+
+// boundary moves a comparison's boundary by one.
+var boundary = map[token.Token]string{token.LSS: "<=", token.LEQ: "<", token.GTR: ">=", token.GEQ: ">"}
 
 // Cond is one condition and the edit that disables it.
 type Cond struct {
@@ -132,6 +137,10 @@ func List(path string, src []byte) ([]Cond, error) {
 					flip = "&&"
 				}
 				add("boolop", x.OpPos, off(x.OpPos), off(x.OpPos)+2, flip)
+			}
+			// A comparison's boundary, moved by one: < and <=, > and >=.
+			if moved, ok := boundary[x.Op]; ok {
+				add("bound", x.OpPos, off(x.OpPos), off(x.OpPos)+len(x.Op.String()), moved)
 			}
 		}
 		return true

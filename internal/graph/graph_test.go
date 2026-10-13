@@ -478,3 +478,20 @@ func TestEstablishedOnceStaysEstablished(t *testing.T) {
 		t.Fatalf("an established connection is not a failed one: %+v", es)
 	}
 }
+
+// Linux's ephemeral range is 32768-60999, both ends included.
+func TestEphemeralRangeEdges(t *testing.T) {
+	for p, want := range map[uint16]bool{32767: false, 32768: true, 60999: true, 61000: false} {
+		if isEphemeral(p) != want {
+			t.Errorf("isEphemeral(%d) = %v", p, !want)
+		}
+	}
+}
+
+// Without samples, or without UDP listeners, the limits say nothing about them.
+func TestLimitsLeaveOutWhatIsNotThere(t *testing.T) {
+	l := strings.Join(ComputeLimits(Result{Window: Window{Start: t0, End: t0.Add(time.Minute), Interval: "5s"}}), "\n")
+	if strings.Contains(l, "samples per pod") || strings.Contains(l, "In this capture that applies to") {
+		t.Fatalf("limits for a capture with no samples and no UDP listener:\n%s", l)
+	}
+}

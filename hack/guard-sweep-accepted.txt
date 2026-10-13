@@ -34,14 +34,10 @@ cmd/podpeers/main.go | if fs.NArg() != 2 { | usage | an argument-count check; re
 cmd/podpeers/main.go | if err := fs.Parse(args); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 cmd/podpeers/main.go | if fs.NArg() != 1 { | usage | an argument-count check; removing it turns a usage message into an index panic
 cmd/podpeers/main.go | if err := srv.Serve(stdin, stdout); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
-internal/capture/capture.go | if o.Interval <= 0 { | default | a library default the CLI always sets explicitly
-internal/capture/capture.go | if o.StartTimeout <= 0 { | default | a library default the CLI always sets explicitly
 internal/capture/capture.go | if o.Image == "" { | default | a library default the CLI always sets explicitly
 internal/capture/capture.go | if o.RunID == "" { | default | a library default the CLI always sets explicitly
-internal/capture/capture.go | if o.PollInterval <= 0 { | default | a library default the CLI always sets explicitly
 internal/capture/capture.go | if o.Logf == nil { | default | a library default the CLI always sets explicitly
 internal/capture/capture.go | if o.AllNamespaces { | equivalent | with -A the namespace is empty, which already means all namespaces
-internal/capture/capture.go | if o.Duration <= 0 { | default | a library default the CLI always sets explicitly
 internal/capture/capture.go | if !t.done { | cluster | TestE2E log rotation
 internal/capture/capture.go | if err := wait(ctx, cs, targets, name, opts, hardDeadline); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 internal/capture/capture.go | if o.AllNamespaces { | cosmetic | the namespace label in messages
@@ -133,3 +129,42 @@ internal/policy/policy.go | if c.Kind != graph.PeerPod || !ok || (cp.Phase != "S
 internal/capture/capture.go | if err != nil || !out.Complete { [operator 1 flipped] | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
 internal/capture/capture.go | if err == nil && len(out.Samples) == 0 { [operator 1 flipped] | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 internal/render/page.html | if (selected && nodes.has(selected)) select(selected); else select(null); [operator 1 flipped] | equivalent | after a re-render the selection is a node of the new view or none: the view switch maps it so, so && and || decide the same (swept with --browser)
+hack/gocond/main.go | return out[i].Line < out[j].Line [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+hack/gocond/main.go | return out[i].Kind < out[j].Kind [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+hack/gocond/main.go | return out[i].at < out[j].at [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/diff/diff.go | return order[a.Kind] < order[b.Kind] [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/diff/diff.go | return a.From < b.From [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/diff/diff.go | return a.To < b.To [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/diff/diff.go | return a.Port < b.Port [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/gql/gql.go | sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key }) [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/gql/gql.go | sort.Slice(out, func(i, j int) bool { return out[i].ID() < out[j].ID() }) [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/graph/graph.go | return outL[i].Protocol < outL[j].Protocol [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/graph/graph.go | return outL[i].Port < outL[j].Port [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/graph/graph.go | return outL[i].Address < outL[j].Address [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/graph/graph.go | return a.Pod < b.Pod [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/graph/graph.go | return a.Direction < b.Direction [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/graph/graph.go | return a.Peer.ID() < b.Peer.ID() [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/graph/graph.go | return a.Port < b.Port [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/graph/graph.go | return a.Protocol < b.Protocol [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/graph/graph.go | return a.Peer.IP < b.Peer.IP [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/graph/graph.go | sort.Slice(out.Services, func(i, j int) bool { return out.Services[i].ID() < out.Services[j].ID() }) [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/policy/policy.go | return keys[i].proto > keys[j].proto // tcp before udp [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/policy/policy.go | return keys[i].target < keys[j].target [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/render/render.go | sort.Slice(ns_, func(a, b int) bool { return ns_[a].id < ns_[b].id }) [boundary moved] | order | a sort comparator reached only when its keys differ (each earlier key is compared with != first), or over keys that are unique: < and <= order the same
+internal/diff/diff.go | if p.Probe.Samples > total[p.WorkloadID()] { [boundary moved] | equivalent | a running maximum or minimum: at equality the kept value is the same
+internal/diff/diff.go | if f.Samples > fi.samples { [boundary moved] | equivalent | a running maximum or minimum: at equality the kept value is the same
+internal/diff/diff.go | if f.Samples > fi.samplesBy[name(f.ObservedOn)] { [boundary moved] | equivalent | a running maximum or minimum: at equality the kept value is the same
+internal/diff/diff.go | if m := math.Pow(1-p, float64(ta)); chance < 0 || m < chance { [boundary moved 2] | equivalent | a running maximum or minimum: at equality the kept value is the same
+internal/graph/graph.go | if win.SamplesMin == 0 || p.Probe.Samples < win.SamplesMin { [boundary moved] | equivalent | a running maximum or minimum: at equality the kept value is the same
+internal/graph/graph.go | if p.Probe.Samples > win.SamplesMax { [boundary moved] | equivalent | a running maximum or minimum: at equality the kept value is the same
+internal/capture/capture.go | if now.Sub(injectedAt) > startTimeout { [boundary moved] | equivalent | a timeout against a clock that keeps moving: the instant of exact equality passes between two polls
+internal/capture/capture.go | case len(b.Samples) > len(a.Samples): [boundary moved] | equivalent | two partial reads of the same sampler log with as many samples hold the same samples: either is the answer
+internal/diff/diff.go | if chance >= MissChance { [boundary moved] | equivalent | equality needs (1-p)^n = 0.05 exactly: for n >= 2 no rational p gives it, and at n = 1 (p = 19/20) floating point lands just above 0.05, so >= and > agree on every count a capture can have
+internal/graph/graph.go | if strings.IndexFunc(s, notPrintable) < 0 { [boundary moved] | equivalent | a fast path; the loop below gives the same answer
+internal/graph/graph.go | case r.Window.SamplesMax > 0 && r.Window.SamplesMin != r.Window.SamplesMax: [boundary moved] | equivalent | with a maximum of 0 the minimum is 0 too, so the second half is false either way
+internal/policy/policy.go | if i := strings.Index(workload, "/"); i >= 0 { [boundary moved] | equivalent | a workload name is Kind/name with a non-empty kind: its / is never at index 0
+internal/policy/policy.go | if len(n) > 63-len(suffix) { [boundary moved] | equivalent | at equality the name is cut to its own length: unchanged
+internal/procnet/procnet.go | if i < 0 { [boundary moved] | equivalent | with ':' at index 0 the address part is empty, which fails to decode either way
+internal/procnet/procnet.go | if ivCS < 1 { [boundary moved] | equivalent | Validate refuses intervals under 100ms, so the interval is never under 1 centisecond
+internal/capture/capture.go | if time.Since(lastLog) > 10*time.Second { [boundary moved] | cosmetic | progress-log throttling
+internal/policy/policy.go | if !fresh && len(line)+1+len(w) > 100 { [boundary moved] | cosmetic | where a YAML comment wraps

@@ -348,3 +348,47 @@ func TestAFlowSomeReplicaConnectedIsNotNeverConnected(t *testing.T) {
 		}
 	}
 }
+
+// The smallest chance wins, even when it is zero.
+func TestMissChanceKeepsAZeroMinimum(t *testing.T) {
+	b := &flowInfo{samplesBy: map[string]int{"a": 5, "b": 1}}
+	// a saw it in all 5 of its samples (missing it after is impossible), b in 1 of 10.
+	chance, _, _, _ := missChance(b, map[string]int{"a": 5, "b": 10}, map[string]int{"a": 10, "b": 10}, map[string]bool{"a": true, "b": true})
+	if chance != 0 {
+		t.Fatalf("chance %v, want 0", chance)
+	}
+}
+
+// "One short connection in one sample" means exactly that: two samples, or
+// two connections, is a flow that went missing.
+func TestOneShortConnectionMeansOne(t *testing.T) {
+	for _, c := range []struct{ samples, conns int }{{2, 1}, {1, 2}} {
+		e := out("web-a", "api", 9000, false)
+		e.Samples, e.Connections = c.samples, c.conns
+		before := graph.Result{Pods: []graph.Pod{pod("web-a", "Deployment/web", true)}, Edges: []graph.Edge{e}}
+		after := graph.Result{Pods: []graph.Pod{pod("web-a", "Deployment/web", true)}}
+		for _, ch := range Compare(before, after).Changes {
+			if strings.Contains(ch.Detail, "one short connection in one sample") {
+				t.Errorf("%d samples, %d connections: called one short connection", c.samples, c.conns)
+			}
+		}
+	}
+}
+
+// A flow seen in every sample before, now absent from every sample after,
+// is lost: it could not have been missed by chance (chance 0), however
+// short it was.
+func TestAFlowSeenEveryTimeAndNowGoneIsLost(t *testing.T) {
+	e := out("web-a", "api", 9000, false)
+	e.Samples, e.Connections = 1, 1
+	w := pod("web-a", "Deployment/web", true)
+	w.Probe.Samples = 1
+	before := graph.Result{Pods: []graph.Pod{w}, Edges: []graph.Edge{e}}
+	w.Probe.Samples = 10
+	after := graph.Result{Pods: []graph.Pod{w}}
+	for _, ch := range Compare(before, after).Changes {
+		if ch.Kind == Glimpsed {
+			t.Fatalf("seen in 1 of 1 samples, absent from all 10 after: not a glimpse: %+v", ch)
+		}
+	}
+}

@@ -528,3 +528,19 @@ func TestFinishedSamplerIsRead(t *testing.T) {
 		t.Fatalf("a finished sampler's log is read and parsed: %+v", res.Pods)
 	}
 }
+
+// Every option left at zero gets its default.
+func TestZeroOptionsGetDefaults(t *testing.T) {
+	o := Options{}
+	o.defaults()
+	if o.Interval <= 0 || o.StartTimeout <= 0 || o.PollInterval <= 0 {
+		t.Fatalf("zero options were not defaulted: %+v", o)
+	}
+}
+
+// A zero duration is not a capture: it is refused, not defaulted.
+func TestZeroDurationIsRefused(t *testing.T) {
+	if err := (Options{Duration: 0, Interval: time.Second}).Validate(); err == nil || !strings.Contains(err.Error(), "duration must be positive") {
+		t.Fatalf("zero duration: %v", err)
+	}
+}

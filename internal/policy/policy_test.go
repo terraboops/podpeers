@@ -898,3 +898,62 @@ func TestEgressToAPodSelectsIt(t *testing.T) {
 		t.Fatalf("want a rule selecting app=api on 9090: %+v", web.Policy.Spec.Egress)
 	}
 }
+
+// The minimums are inclusive: exactly enough samples, or exactly the
+// minimum window, is enough.
+func TestMinimumsAreInclusive(t *testing.T) {
+	r := shop() // every observed pod has 30 samples; the window is 10 minutes
+	if api := find(t, Suggest(r, Options{MinSamples: 30}), "Deployment/api"); api.Refused != "" {
+		t.Errorf("exactly the minimum samples was refused: %s", api.Refused)
+	}
+	for _, g := range Suggest(r, Options{MinWindow: 10 * time.Minute}).Gaps {
+		if strings.Contains(g, "is shorter than") {
+			t.Errorf("a window of exactly the minimum is not too short: %s", g)
+		}
+	}
+}
+
+// Policy names: a-z, 0-9 and '-' are kept, their neighbours are not; 63
+// characters fit, 64 do not, and a hashed name is cut to exactly 63.
+func TestPolicyNamesAtTheEdges(t *testing.T) {
+	if got := policyName("Deployment/az09"); got != "podpeers-az09" {
+		t.Errorf("a-z and 0-9 are kept: %s", got)
+	}
+	for _, odd := range []string{"`", "{", "/", ":"} {
+		if got := policyName("Deployment/x" + odd); !strings.HasPrefix(got, "podpeers-x-") || len(got) <= len("podpeers-x-") {
+			t.Errorf("%q is replaced and the name hashed: %s", odd, got)
+		}
+	}
+	fits := strings.Repeat("a", 63-len("podpeers-"))
+	if got := policyName("Deployment/" + fits); got != "podpeers-"+fits {
+		t.Errorf("63 characters fit: %s", got)
+	}
+	if got := policyName("Deployment/" + fits + "b"); len(got) != 63 || got == "podpeers-"+fits+"b" {
+		t.Errorf("64 characters are hashed down to exactly 63: %d %s", len(got), got)
+	}
+}
+
+// With DNS off and no egress at all, there is nothing to warn about.
+func TestNoDNSWarningWithoutEgress(t *testing.T) {
+	r := shop()
+	var edges []graph.Edge
+	for _, e := range r.Edges {
+		if e.Direction == graph.Inbound {
+			edges = append(edges, e)
+		}
+	}
+	r.Edges = edges
+	if api := find(t, Suggest(r, Options{DNS: DNSNever}), "Deployment/api"); hasGap(api, "DNS egress was not added") {
+		t.Fatalf("no egress, no DNS warning: %v", api.Gaps)
+	}
+}
+
+// Gaps about listeners appear only when there are such listeners.
+func TestNoEmptyListenerGaps(t *testing.T) {
+	r := shop()
+	r.Pods[0].Listening = []graph.Listener{{Protocol: "tcp", Address: "0.0.0.0", Port: 8080}} // api: only what web uses
+	api := find(t, Suggest(r, Options{}), "Deployment/api")
+	if hasGap(api, "but no client was observed there") || hasGap(api, "an unconnected UDP socket") {
+		t.Fatalf("no unmatched or UDP listener, yet: %v", api.Gaps)
+	}
+}

@@ -276,3 +276,22 @@ func TestToolSchemasNameRequiredArguments(t *testing.T) {
 	}
 	t.Fatal("no peers tool")
 }
+
+// A tool that requires nothing says nothing about required arguments: an
+// empty "required" list is noise a client may trip on.
+func TestToolsWithoutRequiredArgumentsListNone(t *testing.T) {
+	rs := session(t, &Server{CapturePath: fixture}, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	none := 0
+	for _, tl := range rs[0]["result"].(map[string]any)["tools"].([]any) {
+		s := tl.(map[string]any)["inputSchema"].(map[string]any)
+		if r, ok := s["required"]; ok && len(r.([]any)) == 0 {
+			t.Errorf("%v: an empty required list", tl.(map[string]any)["name"])
+		}
+		if _, ok := s["required"]; !ok {
+			none++
+		}
+	}
+	if none == 0 {
+		t.Fatal("precondition: some tool requires nothing")
+	}
+}

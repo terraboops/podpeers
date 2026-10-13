@@ -407,7 +407,7 @@ tests that should notice:
 
 | Where | Guards | Removed how | Run against |
 |---|---|---|---|
-| Go (`internal/`, `cmd/`, `hack/gocond`), read by its own parser (`hack/gocond`) | 688 | each `if` and `for` condition and tagless-`switch` case made false; each `&&`/`\|\|` flipped, wherever it is; each arm of a tagged or type switch given the `default` arm's body, so its values fall through | the package's tests, then the whole unit suite |
+| Go (`internal/`, `cmd/`, `hack/gocond`), read by its own parser (`hack/gocond`) | 781 | each `if` and `for` condition and tagless-`switch` case made false; each `&&`/`\|\|` flipped, wherever it is; each `<`, `<=`, `>` and `>=` moved one step (`<` to `<=` and back), so a guard sits off by one; each arm of a tagged or type switch given the `default` arm's body, so its values fall through | the package's tests, then the whole unit suite |
 | shell (the skill's script, `hack/`, the demo recorder) | 110 | each `if` made false, each `while`/`until` loop made never to run; each `cond \|\| action` list's action dropped; each `case` arm removed (a one-line arm, a default `*)` arm or an arm of a one-line `case ... esac` emptied; a multi-line arm's pattern made to never match) | the tests that drive that script (`test/skillscript`, `test/hygiene`, `test/tooling`) |
 | shell inside Go source (the sampler script each debug container runs) | 3 | as for shell | the tests that run the script under `sh`, on a stand-in `/proc/uptime` where there is no real one |
 | the Makefile's recipes | 4 | as for shell | scratch Makefiles in a scratch module (`test/tooling`) |
@@ -464,6 +464,19 @@ and the example chart's web container's `while true`, which is its server
 loop, not a check. The chart's smoke test's one check, the condition
 under which `helm test` passes, only a real cluster runs: it is mutant 43,
 caught by the skill's workflow on the cluster in CI.
+
+Moving every comparison's boundary one step (92 of them in the Go code)
+found guards whose edge no test pinned: the policy-name length and character
+limits, the ephemeral-port range's ends, the GraphQL field budget at exactly
+its limit, `/proc/net` rows with exactly four or ten fields, a window or
+sample count at exactly the minimum, the provider-ID trimming that keeps
+instance IDs out of refusal messages, and a diff calling a flow seen in every
+sample a glimpse. Each now has a test. The 39 left are accounted for: 22 sort
+comparators reached only when their keys differ, where `<` and `<=` order the
+same; running minimums and maximums, equal either way at the edge; timeouts
+against a moving clock; and two cosmetic thresholds. Constants and arithmetic
+are not mutated: the moved boundary covers the off-by-one they would mostly
+find, and the rest would be a set many times larger.
 
 ### What the tests do not prove on a cluster, and why
 

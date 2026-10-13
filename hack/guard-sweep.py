@@ -5,7 +5,8 @@ Guards, each disabled one at a time in a scratch worktree of HEAD:
 
   Go (non-test code under internal/, cmd/ and hack/gocond), by its parser
     (hack/gocond): each if and for condition and tagless-switch case
-    expression  ->  `false && (<c>)`; each && and ||  ->  flipped; each arm
+    expression  ->  `false && (<c>)`; each && and ||  ->  flipped; each <,
+    <=, > and >=  ->  its boundary moved by one (< and <=); each arm
     of a tagged or type switch  ->  the default arm's body (or none). A
     mutant the compiler rejects is noticed, by the build, and said so.
   Shell (the skill's script and hack/*.sh)
@@ -88,7 +89,8 @@ def gocond(paths, cwd):
     return [json.loads(l) for l in r.stdout.splitlines()]
 
 
-GO_LABELS = {"if": "if", "case": "case", "for": "loop condition forced false", "arm": "arm removed"}
+GO_LABELS = {"if": "if", "case": "case", "for": "loop condition forced false", "arm": "arm removed",
+             "bound": "boundary moved"}
 
 
 def go_text(line, kind, k):

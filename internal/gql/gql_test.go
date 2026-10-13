@@ -1,8 +1,10 @@
 package gql
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -196,5 +198,31 @@ func TestAPodPeerIsNotAServiceOfTheSameName(t *testing.T) {
 	got := run(t, schema(t), `{ pod(id: "shop/api") { peers(direction: "inbound") { id kind service { name } } } }`)
 	if !strings.Contains(got, `"id":"shop/web"`) || strings.Contains(got, `"service":{`) {
 		t.Fatalf("pod peer shop/web resolved to a service: %s", got)
+	}
+}
+
+// The budget's edge: a query costing exactly MaxFields is answered in full;
+// one field more is refused, never answered with fields silently zeroed.
+func TestTheBudgetIsExact(t *testing.T) {
+	s := schema(t)
+	q := `{ pods { id peers { id kind } } }`
+	left := &atomic.Int64{}
+	left.Store(1 << 40)
+	full := graphql.Do(graphql.Params{Schema: s, RequestString: q, Context: context.WithValue(context.Background(), budgetKey{}, left)})
+	cost := int64(1<<40) - left.Load()
+	if full.HasErrors() || cost < 2 {
+		t.Fatalf("precondition: %v, cost %d", full.Errors, cost)
+	}
+	want, _ := json.Marshal(full.Data)
+	defer func(m int64) { MaxFields = m }(MaxFields)
+	MaxFields = cost
+	r := Do(s, q, nil)
+	got, _ := json.Marshal(r.Data)
+	if r.HasErrors() || string(got) != string(want) {
+		t.Fatalf("a query costing exactly the budget must be answered in full: %v\n%s", r.Errors, got)
+	}
+	MaxFields = cost - 1
+	if r := Do(s, q, nil); !r.HasErrors() || !strings.Contains(r.Errors[0].Message, "query too large") {
+		t.Fatalf("one field over the budget must be refused: %+v", r)
 	}
 }

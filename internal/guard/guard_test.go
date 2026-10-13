@@ -115,3 +115,13 @@ func TestRefusalDoesNotEchoProviderDetails(t *testing.T) {
 		t.Fatalf("refusal leaked instance id: %q", d.Reason)
 	}
 }
+
+// A provider ID is cut to its scheme even when the scheme is empty: nothing
+// after "://" reaches a terminal or a CI log.
+func TestSchemeOnlyCutsAnEmptyScheme(t *testing.T) {
+	for id, want := range map[string]string{"aws:///us-east-1a/i-0abc": "aws://...", "://acct/instance": "://...", "plain": "plain"} {
+		if got := schemeOnly(id); got != want {
+			t.Errorf("schemeOnly(%q) = %q, want %q", id, got, want)
+		}
+	}
+}

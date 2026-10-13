@@ -420,3 +420,21 @@ func TestRowsOutsideASampleOrTableAreIgnored(t *testing.T) {
 		t.Fatalf("err=%v samples=%+v skipped=%d", err, out.Samples, out.Skipped)
 	}
 }
+
+// A row needs four fields; the inode is the tenth, and read only when
+// present.
+func TestRowFieldCountsAtTheEdges(t *testing.T) {
+	if _, err := ParseRow(TCP, "0: 0100007F:0035 00000000:0000 0A"); err != nil {
+		t.Errorf("four fields are enough: %v", err)
+	}
+	if _, err := ParseRow(TCP, "0: 0100007F:0035 00000000:0000"); err == nil {
+		t.Error("three fields are not")
+	}
+	nine := "0: 0100007F:0035 00000000:0000 0A 0:0 0:0 0 0 0"
+	if s, err := ParseRow(TCP, nine); err != nil || s.Inode != 0 {
+		t.Errorf("nine fields: no inode: %+v %v", s, err)
+	}
+	if s, err := ParseRow(TCP, nine+" 4242"); err != nil || s.Inode != 4242 {
+		t.Errorf("ten fields: inode 4242: %+v %v", s, err)
+	}
+}

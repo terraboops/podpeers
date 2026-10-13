@@ -552,6 +552,9 @@ func capturePaths(t *testing.T, args ...string) ([]string, int, string) {
 // -n and -A together are refused before any request.
 func TestCaptureNamespaceFlags(t *testing.T) {
 	paths, _, stderr := capturePaths(t, "-n", "payments")
+	if strings.Contains(stderr, "WARNING") {
+		t.Errorf("an interval of exactly 1s costs nothing worth a warning: %s", stderr)
+	}
 	listed := ""
 	for _, p := range paths {
 		if strings.HasSuffix(p, "/pods") {
