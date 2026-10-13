@@ -502,7 +502,7 @@ stand-in server fails the run if reached); `suggest c.json -n shop`
 silently dropped `-n` (flags after the file are now refused); `render
 -format <unknown> -o FILE` emptied FILE; an unwritable `-o` was found only
 after every pod had a debug container; `--rollback-on-fail` rolled back on
-INCONCLUSIVE, not only BROKEN; and 20 accepted survivors' reasons were
+INCONCLUSIVE, not only BROKEN; and 19 accepted survivors' reasons were
 untrue (a decode that fails partway keeps the schema it already read; a
 missing client certificate provokes the client-config error offline; the
 argument-count checks never panicked; the log-stream fallbacks, and three
