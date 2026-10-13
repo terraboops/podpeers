@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"net/http"
 	"net/netip"
 	"strings"
 	"sync"
@@ -18,7 +20,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes/scheme"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/rest"
+	fakerest "k8s.io/client-go/rest/fake"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/terraboops/podpeers/internal/graph"
@@ -496,11 +503,9 @@ func TestInventoryKeepsWhatItLists(t *testing.T) {
 
 // A sampler that finished is read: its log is fetched and parsed. (The fake
 // clientset's log is "fake logs", which does not parse.)
-func TestFinishedSamplerIsRead(t *testing.T) {
-	sel := map[string]string{"pp": "target"}
-	cs := fake.NewSimpleClientset(pod("shop", "api", corev1.PodRunning, sel))
-	// The capture polls with a list: answer it with each debug container
-	// already terminated, as a sampler that ran to the end.
+// finishedSamplers answers the capture's polling with every debug container
+// already terminated, as samplers that ran to the end.
+func finishedSamplers(cs *fake.Clientset) {
 	podsGVR := schema.GroupVersionResource{Version: "v1", Resource: "pods"}
 	podsGVK := schema.GroupVersionKind{Version: "v1", Kind: "Pod"}
 	cs.PrependReactor("list", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
@@ -518,6 +523,12 @@ func TestFinishedSamplerIsRead(t *testing.T) {
 		}
 		return true, list, nil
 	})
+}
+
+func TestFinishedSamplerIsRead(t *testing.T) {
+	sel := map[string]string{"pp": "target"}
+	cs := fake.NewSimpleClientset(pod("shop", "api", corev1.PodRunning, sel))
+	finishedSamplers(cs)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	res, err := Run(ctx, cs, nil, Options{Namespace: "shop", LabelSelector: "pp=target", Duration: time.Second, Interval: time.Second,
@@ -527,6 +538,107 @@ func TestFinishedSamplerIsRead(t *testing.T) {
 	}
 	if len(res.Pods) != 1 || res.Pods[0].Probe.Status != graph.ProbeFailed || !strings.HasPrefix(res.Pods[0].Probe.Reason, "parsing sampler log") {
 		t.Fatalf("a finished sampler's log is read and parsed: %+v", res.Pods)
+	}
+}
+
+// logs serves each sampler log read from read (follow: the stream, else the
+// plain read); the fake clientset answers every one with "fake logs".
+type logs struct {
+	kubernetes.Interface
+	read func(follow bool) (string, error)
+}
+
+func (l logs) CoreV1() corev1client.CoreV1Interface {
+	return logsCore{l.Interface.CoreV1(), l.read}
+}
+
+type logsCore struct {
+	corev1client.CoreV1Interface
+	read func(follow bool) (string, error)
+}
+
+func (c logsCore) Pods(ns string) corev1client.PodInterface {
+	return logsPods{c.CoreV1Interface.Pods(ns), c.read}
+}
+
+type logsPods struct {
+	corev1client.PodInterface
+	read func(follow bool) (string, error)
+}
+
+func (p logsPods) GetLogs(name string, o *corev1.PodLogOptions) *rest.Request {
+	body, err := p.read(o.Follow)
+	return (&fakerest.RESTClient{
+		Client: fakerest.CreateHTTPClient(func(*http.Request) (*http.Response, error) {
+			if err != nil {
+				return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader(err.Error()))}, nil
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+		}),
+		NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
+		GroupVersion:         corev1.SchemeGroupVersion,
+		VersionedAPIPath:     "/api/v1/namespaces/shop/pods/" + name + "/log",
+	}).Request()
+}
+
+// How a sampler's log is read: the stream, and a plain read when the stream
+// did not reach the end, whichever is more complete.
+func TestSamplerLogFallbacks(t *testing.T) {
+	const (
+		v1     = "@@podpeers v1\n"
+		one    = "@@sample 1700000000\n@@file tcp\n"
+		two    = one + "@@sample 1700000005\n@@file tcp\n"
+		end    = "@@end\n"
+		denied = "denied"
+		// A log whose beginning kubelet rotated away: no header, each sample
+		// carrying its own anchor.
+		rotated = "@@sample 1000.00 1700000000 1000.00\n@@file tcp\n@@sample 1005.00 1700000000 1000.00\n@@file tcp\n" + end
+	)
+	for _, c := range []struct {
+		name, stream, plain string
+		status              graph.ProbeStatus
+		samples             int
+		complete            bool
+		reason              string
+		plainReads          int
+	}{
+		{"the stream reached the end", v1 + two + end, "", graph.ProbeObserved, 2, true, "", 0},
+		{"a stream cut short is read again in full", v1 + one, v1 + two + end, graph.ProbeObserved, 2, true, "", 1},
+		// A sample counts once the next marker shows it whole: a log cut after
+		// two sample markers holds one sample.
+		{"a cut stream is kept when the plain read fails", v1 + two, denied, graph.ProbeObserved, 1, false, "", 1},
+		{"a cut stream is kept over a shorter plain read", v1 + two, v1 + one, graph.ProbeObserved, 1, false, "", 1},
+		{"a sampler with no samples failed", v1 + end, "", graph.ProbeFailed, 0, false, "parsing sampler log: sampler produced no samples", 0},
+		// A rotated log is never whole, so it is read again too.
+		{"a rotated log says what was lost", rotated, rotated, graph.ProbeObserved, 2, false, "only the latest samples survived: the log's beginning was lost (kubelet log rotation?)", 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cs := fake.NewSimpleClientset(pod("shop", "api", corev1.PodRunning, map[string]string{"pp": "target"}))
+			finishedSamplers(cs)
+			var plainReads atomic.Int64
+			lc := logs{cs, func(follow bool) (string, error) {
+				if follow {
+					return c.stream, nil
+				}
+				plainReads.Add(1)
+				if c.plain == denied {
+					return "", errors.New("pods/log is forbidden")
+				}
+				return c.plain, nil
+			}}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			res, err := Run(ctx, lc, nil, Options{Namespace: "shop", LabelSelector: "pp=target", Duration: time.Second, Interval: time.Second,
+				StartTimeout: time.Second, PollInterval: 10 * time.Millisecond, Logf: func(string, ...any) {}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := res.Pods[0].Probe
+			if p.Status != c.status || p.Samples != c.samples || p.Complete != c.complete || p.Reason != c.reason || plainReads.Load() != int64(c.plainReads) {
+				t.Fatalf("probe %+v after %d plain read(s); want %s, %d sample(s), complete %v, reason %q, %d plain read(s)",
+					p, plainReads.Load(), c.status, c.samples, c.complete, c.reason, c.plainReads)
+			}
+		})
 	}
 }
 
