@@ -412,6 +412,44 @@ func TestE2E(t *testing.T) {
 		}
 	})
 
+	t.Run("guard refuses a local context name whose API server is not on loopback", func(t *testing.T) {
+		// The cluster's own context name, pointed at its server node's
+		// address on the cluster network: the same cluster, reached off
+		// loopback, as a remote cluster would be. Refused by the pre-flight.
+		ip := strings.TrimSpace(kubectl(t, "get", "nodes", "-l", "node-role.kubernetes.io/control-plane", "-o",
+			`jsonpath={.items[0].status.addresses[?(@.type=="InternalIP")].address}`))
+		if net.ParseIP(ip) == nil || net.ParseIP(ip).IsLoopback() {
+			t.Fatalf("server node InternalIP %q is not a non-loopback address", ip)
+		}
+		cfg, err := clientcmd.LoadFromFile(kubeconfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl := cfg.Clusters[cfg.Contexts[kubeCtx].Cluster]
+		cl.Server = "https://" + net.JoinHostPort(ip, "6443")
+		cl.TLSServerName = "127.0.0.1" // the serving certificate names it; the address stays off loopback
+		offLoop := filepath.Join(t.TempDir(), "kubeconfig")
+		if err := clientcmd.WriteToFile(*cfg, offLoop); err != nil {
+			t.Fatal(err)
+		}
+		// Control: the address really reaches this cluster, so the refusal is
+		// not just a connection failure. Docker's bridge network is routable
+		// from a Linux host (CI); from a VM-backed Docker it may not be.
+		ctl, err := exec.Command("kubectl", "--kubeconfig", offLoop, "--context", kubeCtx, "--request-timeout", "5s", "get", "--raw", "/readyz").CombinedOutput()
+		reachable := err == nil && strings.TrimSpace(string(ctl)) == "ok"
+		t.Logf("control: kubectl via %s: reachable=%v %s", cl.Server, reachable, strings.TrimSpace(string(ctl)))
+		if !reachable && os.Getenv("CI") != "" {
+			t.Fatalf("control: %s should reach the cluster on the CI runner", cl.Server)
+		}
+		before := clusterState(t)
+		r := podpeers(ctx, t, "capture", "--kubeconfig", offLoop, "-A", "-l", "podpeers-e2e=target", "--duration", "5s", "--interval", "1s", "-o", filepath.Join(t.TempDir(), "x.json"))
+		t.Logf("exit=%d stderr:\n%s", r.code, r.stderr)
+		if r.code != 2 || !strings.Contains(r.stderr, "its API server is not on loopback") {
+			t.Fatalf("want the pre-flight refusal (exit 2), got %d", r.code)
+		}
+		unmodified(t, before)
+	})
+
 	t.Run("capture matches the workloads that were built", func(t *testing.T) {
 		out := filepath.Join(outDir, "e2e-capture.json")
 		before := clusterState(t)
