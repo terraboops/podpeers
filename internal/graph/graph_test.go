@@ -294,6 +294,13 @@ func TestLoadRejectsGarbage(t *testing.T) {
 	if _, err := Load(strings.NewReader("not json")); err == nil {
 		t.Error("garbage should fail")
 	}
+	// The schema is read before the error: a cut-off or mistyped capture
+	// must still fail, not load with what came before it.
+	for _, bad := range []string{`{"schema":"podpeers/v1","pods":[`, `{"schema":"podpeers/v1","pods":"none"}`} {
+		if _, err := Load(strings.NewReader(bad)); err == nil {
+			t.Errorf("%s should fail", bad)
+		}
+	}
 	if _, err := LoadFile("/does/not/exist"); err == nil {
 		t.Error("missing file should fail")
 	}

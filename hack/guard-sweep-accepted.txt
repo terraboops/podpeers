@@ -63,7 +63,6 @@ internal/graph/graph.go | if a.Peer.ID() != b.Peer.ID() { | order | a sort tie-b
 internal/graph/graph.go | if a.Port != b.Port { | order | a sort tie-break: removing it only reorders entries whose earlier keys are equal
 internal/graph/graph.go | if a.Protocol != b.Protocol { | order | a sort tie-break: removing it only reorders entries whose earlier keys are equal
 internal/graph/graph.go | if strings.IndexFunc(s, notPrintable) < 0 { | equivalent | a fast path; the loop below gives the same answer
-internal/graph/graph.go | if err := json.NewDecoder(r).Decode(&res); err != nil { | equivalent | a decode error leaves the schema field empty, and the schema check refuses it
 internal/graph/graph.go | if err != nil { | equivalent | an unopened file fails to decode, and the schema check refuses it
 internal/graph/graph.go | if interval == "" { | cosmetic | the limits wording for captures without an interval
 internal/mcp/mcp.go | if len(line) == 0 { | cosmetic | blank lines between requests get a parse-error reply instead of none
