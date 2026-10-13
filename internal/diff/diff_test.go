@@ -250,6 +250,8 @@ func TestRarelySampledFlowIsGlimpsedNotLost(t *testing.T) {
 	}{
 		{2, Glimpsed}, // 2 of 31: unseen in 31 after by chance 13% of the time
 		{1, Glimpsed}, // the old single-sample case
+		{4, Glimpsed}, // 4 of 31: by chance 1.4% of the time, just over MissChance
+		{5, Lost},     // 5 of 31: by chance 0.4%, just under it
 		{12, Lost},    // 12 of 31: by chance 0.02% of the time
 		{31, Lost},    // always there before
 	} {

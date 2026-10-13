@@ -656,9 +656,12 @@ func (b *builder) suggest(pods []graph.Pod, o Options) Suggestion {
 		}
 	}
 	sort.Strings(testOnly)
+	// First among the gaps: the one most likely to shut real users out.
+	var entry []string
 	for _, t := range testOnly {
-		gap(fmt.Sprintf("ENTRY POINT WARNING: ingress on %s. Every client seen there had already completed by the end of the window: a test pod or a Job, not real traffic. If this port is the app's entry point, its real clients (ingress controller, other services, users) were NOT observed and this policy SHUTS THEM OUT. Add them deliberately, or capture under real traffic.", t))
+		entry = append(entry, fmt.Sprintf("ENTRY POINT WARNING: ingress on %s. Every client seen there had already completed by the end of the window: a test pod or a Job, not real traffic. If this port is the app's entry point, its real clients (ingress controller, other services, users) were NOT observed and this policy SHUTS THEM OUT. Add them deliberately, or capture under real traffic.", t))
 	}
+	s.Gaps = append(entry, s.Gaps...)
 	var tcpUnmatched, udpListen []string
 	for _, l := range unmatched {
 		if strings.HasPrefix(l, "udp/") {

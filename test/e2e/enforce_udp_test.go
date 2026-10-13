@@ -171,6 +171,11 @@ func TestPolicyEnforcementUDPAndDNS(t *testing.T) {
 	if ok {
 		t.Error("DNS RULE: lookups still work with the DNS rule removed; the rule is not what allows them")
 	}
+	// As docs/method.md says: no answer at all, so the resolver gives up after
+	// its timeout; a quick failure would be a refusal, not the policy's drop.
+	if took < 4*time.Second || !strings.Contains(txt, "no servers could be reached") {
+		t.Errorf("DNS RULE: want the lookup to time out (no servers could be reached) after the resolver's 5s; got after %s:\n%s", took.Round(100*time.Millisecond), txt)
+	}
 	if checks[3].probe() {
 		t.Error("DNS RULE: tcp/53 to the DNS pod still connects with the DNS rule removed")
 	}

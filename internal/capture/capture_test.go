@@ -652,6 +652,10 @@ func TestZeroOptionsGetDefaults(t *testing.T) {
 	if o.Interval <= 0 || o.StartTimeout <= 0 || o.PollInterval <= 0 {
 		t.Fatalf("zero options were not defaulted: %+v", o)
 	}
+	// The documented defaults (docs/method.md): a 5-minute window, a sample a second.
+	if o.Interval != time.Second || DefaultInterval != time.Second || DefaultDuration != 5*time.Minute {
+		t.Errorf("defaults: interval %s (%s), duration %s; want 1s and 5m", o.Interval, DefaultInterval, DefaultDuration)
+	}
 }
 
 // A zero duration is not a capture: it is refused, not defaulted.

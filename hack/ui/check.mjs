@@ -36,6 +36,13 @@ try {
   else fail(Number.isNaN(fitted) ? "the graph was never fitted: no nodes were drawn"
     : `the fitted graph is drawn at scale ${fitted}: laid out far too wide to read`);
 
+  // Before anything is selected, the panel lists what the capture could not
+  // see: every limit the page carries, as written.
+  const [carried, shown] = await page.evaluate(() =>
+    [DATA.limits || [], [...document.querySelectorAll("#detail details.limits li")].map(l => l.textContent)]);
+  if (carried.length > 0 && JSON.stringify(carried) === JSON.stringify(shown)) ok(`the idle panel lists the capture's ${carried.length} limits`);
+  else fail(`the idle panel should list the capture's limits: the page carries ${JSON.stringify(carried)}, the panel shows ${JSON.stringify(shown)}`);
+
   // What the detail panel says about the first match for a search.
   const lookup = async q => {
     await page.click("#find", { clickCount: 3 });

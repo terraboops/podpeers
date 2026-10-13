@@ -644,6 +644,30 @@ func mustLoad(t *testing.T) graph.Result {
 	return r
 }
 
+// The defaults the docs promise (README, docs/method.md, the skill), as the
+// CLI states them in its help.
+func TestDocumentedDefaults(t *testing.T) {
+	for cmd, want := range map[string][]string{
+		"capture": {"duration=5m0s", "interval=1s"},
+		"suggest": {"min-window=24h0m0s", "min-samples=3", "dns=auto"},
+	} {
+		_, _, help := runCLI(cmd, "-h")
+		flags := map[string]string{}
+		for _, entry := range strings.Split(help, "\n  -")[1:] {
+			name, _, _ := strings.Cut(entry, " ")
+			if i := strings.LastIndex(entry, "(default "); i >= 0 {
+				flags[strings.TrimSpace(name)] = strings.Trim(strings.TrimSuffix(strings.TrimSpace(entry[i+len("(default "):]), ")"), `"`)
+			}
+		}
+		for _, w := range want {
+			name, value, _ := strings.Cut(w, "=")
+			if flags[name] != value {
+				t.Errorf("%s -%s defaults to %q, want %q", cmd, name, flags[name], value)
+			}
+		}
+	}
+}
+
 // Each flag reaches the options it names, and the closing count says what
 // came of them.
 func TestSuggestFlagsReachTheirOptions(t *testing.T) {

@@ -484,6 +484,11 @@ func TestEntryPointOnlySeenFromCompletedPods(t *testing.T) {
 	if !hasGap(web, "ENTRY POINT WARNING: ingress on tcp/8080") || !hasGap(web, "only from edge/gateway-x") || !hasGap(web, "SHUTS THEM OUT") {
 		t.Fatalf("gaps = %v", web.Gaps)
 	}
+	// It comes first, ahead of gaps found earlier (here --dns never's): the
+	// skill relays the gaps in order, this one above all.
+	if g := find(t, Suggest(r, Options{DNS: DNSNever}), "Deployment/web").Gaps; len(g) < 2 || !strings.HasPrefix(g[0], "ENTRY POINT WARNING") {
+		t.Errorf("the entry-point warning is not the first of the gaps: %q", g)
+	}
 	// A running client on the same port means real traffic was seen: no warning.
 	r.Pods[1].Phase = "Running"
 	if web := find(t, Suggest(r, Options{}), "Deployment/web"); hasGap(web, "ENTRY POINT WARNING") {
@@ -548,7 +553,19 @@ func TestClientSideIngress(t *testing.T) {
 		udp("shop/web-a", svcPeer("shop", "stats"), 8125, false),                                              // through a Service
 		udp("edge/gateway-x", graph.Peer{Kind: graph.PeerPod, Namespace: "shop", Name: "api-1"}, 9999, false), // straight at a pod
 		udp("shop/web-b", graph.Peer{Kind: graph.PeerPod, Namespace: "shop", Name: "api-1"}, 7777, true))      // attempted only
+	// api's unconnected UDP sockets: 8125, whose client was captured, and
+	// 5353, whose clients were not.
+	r.Pods[0].Listening = append(r.Pods[0].Listening,
+		graph.Listener{Protocol: "udp", Address: "0.0.0.0", Port: 8125}, graph.Listener{Protocol: "udp", Address: "0.0.0.0", Port: 5353})
 	api := find(t, Suggest(r, Options{}), "Deployment/api")
+	for _, g := range api.Gaps {
+		if strings.Contains(g, "an unconnected UDP socket records no peer") && (!strings.Contains(g, "udp/5353") || strings.Contains(g, "udp/8125")) {
+			t.Errorf("only the listener none of whose clients was captured should be named: %q", g)
+		}
+	}
+	if !hasGap(api, "udp/5353") {
+		t.Errorf("the listener with no captured client is not named: %v", api.Gaps)
+	}
 	got := map[string]bool{}
 	for _, in := range api.Policy.Spec.Ingress {
 		for _, p := range in.Ports {

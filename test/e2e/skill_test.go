@@ -185,6 +185,14 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		if regexp.MustCompile(`(?m)^(new|lost|blocked|preexisting)\s+\d+\.\d+\.\d+\.\d+`).MatchString(r.stdout) {
 			t.Fatal("a replaced pod resolved as a bare IP in the diff")
 		}
+		// The restart also replaces the baseline's debug containers (SKILL.md):
+		// each running pod carries only verify's own.
+		for _, pod := range strings.Fields(kubectl(t, "get", "pods", "-n", helmNS, "-l", "app.kubernetes.io/instance=shop",
+			"--field-selector=status.phase=Running", "-o", "jsonpath={.items[*].metadata.name}")) {
+			if got := ephemeral(t, helmNS, pod); len(got) > 1 {
+				t.Errorf("%s still carries an earlier capture's debug container: %v", pod, got)
+			}
+		}
 	})
 
 	t.Run("verify --no-apply checks the policy already in the cluster", func(t *testing.T) {

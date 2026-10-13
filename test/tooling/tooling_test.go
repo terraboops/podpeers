@@ -196,6 +196,10 @@ func TestClusterScriptUpAndDown(t *testing.T) {
 		if own := "k3d sees KUBECONFIG=" + filepath.Join(root, ".e2e", "k3d-default-kubeconfig") + "\n"; strings.Count(read(calls), "k3d sees") != strings.Count(read(calls), own) {
 			t.Errorf("up ran k3d with a kubeconfig other than the script's own:\n%s", read(calls))
 		}
+		// An empty kubeconfig k3d can load, not a missing file.
+		if b, _ := os.ReadFile(filepath.Join(root, ".e2e", "k3d-default-kubeconfig")); string(b) != "apiVersion: v1\nkind: Config\n" {
+			t.Errorf("k3d's scratch kubeconfig holds %q", b)
+		}
 	}
 	root, script := copyScript(t, "e2e-cluster.sh")
 	bin, calls := shims(t, root)

@@ -115,7 +115,7 @@ flowchart LR
   cli["podpeers<br/>(your kubectl credentials)"]
   subgraph target["each selected pod (one network namespace)"]
     app["app container"]
-    sampler["podpeers sampler<br/>reads /proc/net/tcp* every few seconds"]
+    sampler["podpeers sampler<br/>reads /proc/net/tcp* and udp* each interval (default 1s)"]
   end
   peermap[("peer map<br/>peers.json")]
   views["text · HTML graph · DOT"]
@@ -236,7 +236,7 @@ podpeers diff before.json after.json   # exit 0 OK · 4 BROKEN · 5 INCONCLUSIVE
 | `preexisting` | only seen on connections opened *before* the policy, which the CNI never re-checks. **Proves nothing**, so the verdict is INCONCLUSIVE |
 | `unverifiable` | the pod that saw it was not observed the second time. **Proves nothing**, so the verdict is INCONCLUSIVE |
 | `new` | not seen before |
-| `glimpsed` | absent after, but seen so rarely before that missing it in every sample after is likely by chance (more than 1%; a DNS lookup seen in 2 of 31 samples goes unseen in 31 more 13% of the time); the line states the odds. Sampling noise, not breakage |
+| `glimpsed` | absent after, but seen so rarely before that missing it in every sample after is likely by chance (1% or more; a DNS lookup seen in 2 of 31 samples goes unseen in 31 more 13% of the time); the line states the odds. Sampling noise, not breakage |
 
 **INCONCLUSIVE** exists because of something we hit for real while building
 this: a policy that blocked every new connection verified "OK", because the
@@ -533,6 +533,15 @@ Silence is not a pass, so these are written down:
   versions were not tested.
 - **Whether a model heeds** the MCP server's note that cluster strings are
   data. That is model behaviour; the note's presence is tested.
+- **That a correct policy can drop a brand-new pod's first connection** (the
+  CNI programs a new pod's allow-list after it starts). That was observed on
+  k3s while building the skill; as a race, it does not happen on demand, so
+  the suite does not reproduce it. The skill's advice (retry with a bounded
+  timeout, re-run once) is what it leads to.
+- **The shell recipes in the skill's SKILL.md** (the enforcement check, the
+  race probe, the spec comparison for a chart hand-off) are instructions for
+  an agent to adapt, not run as written by any test; the script they sit
+  beside is.
 
 ## Limits, honestly
 
@@ -564,8 +573,8 @@ And the smaller ones:
 - hostNetwork pods are skipped: their sockets are the node's.
 - Peers in namespaces you can't list resolve as plain addresses.
 - CronJob pods are grouped under their CronJob by looking up their Job's owner;
-  without permission to list Jobs they are grouped per run (`Job/<name>`) and
-  the capture says so.
+  without permission to list Jobs they are grouped per run (`Job/<name>`), and
+  `capture` says so as it runs.
 - Assumes little-endian nodes (amd64/arm64).
 - Enforcement details (kubelet probes, new-pod timing, REJECT vs DROP) vary by
   CNI. Verify on the CNI you run.
