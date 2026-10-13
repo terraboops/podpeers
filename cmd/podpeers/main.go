@@ -324,9 +324,17 @@ func writeJSON(path string, stdout io.Writer, v any) error {
 	return os.WriteFile(path, b, 0o644)
 }
 
-func loadArg(fs *flag.FlagSet, stderr io.Writer) (graph.Result, bool) {
+// loadArg loads the capture file named by the first argument. Only query
+// (more) takes anything after it: elsewhere that is refused, because a flag
+// written after the file is not parsed (the flag package stops at the first
+// argument), and "suggest c.json -n shop" would suggest for every namespace.
+func loadArg(fs *flag.FlagSet, stderr io.Writer, more bool) (graph.Result, bool) {
 	if fs.NArg() < 1 {
 		fmt.Fprintln(stderr, "podpeers: missing capture file argument")
+		return graph.Result{}, false
+	}
+	if !more && fs.NArg() > 1 {
+		fmt.Fprintf(stderr, "podpeers: unexpected argument %q after the capture file (flags go before it)\n", fs.Arg(1))
 		return graph.Result{}, false
 	}
 	res, err := graph.LoadFile(fs.Arg(0))
@@ -345,7 +353,19 @@ func cmdRender(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return exitError
 	}
-	res, ok := loadArg(fs, stderr)
+	views := map[string]func(io.Writer, graph.Result) error{
+		"text": render.Text,
+		"dot":  render.DOT,
+		"html": func(w io.Writer, r graph.Result) error { return render.HTML(w, r, "") },
+		"json": func(w io.Writer, r graph.Result) error { return writeJSON("-", w, r) },
+	}
+	// Before -o is created: an unknown format must not truncate the file.
+	view, ok := views[*format]
+	if !ok {
+		fmt.Fprintf(stderr, "podpeers: unknown format %q\n", *format)
+		return exitError
+	}
+	res, ok := loadArg(fs, stderr, false)
 	if !ok {
 		return exitError
 	}
@@ -359,21 +379,7 @@ func cmdRender(args []string, stdout, stderr io.Writer) int {
 		defer f.Close()
 		w = f
 	}
-	var err error
-	switch *format {
-	case "text":
-		err = render.Text(w, res)
-	case "dot":
-		err = render.DOT(w, res)
-	case "html":
-		err = render.HTML(w, res, "")
-	case "json":
-		err = writeJSON("-", w, res)
-	default:
-		fmt.Fprintf(stderr, "podpeers: unknown format %q\n", *format)
-		return exitError
-	}
-	if err != nil {
+	if err := view(w, res); err != nil {
 		fmt.Fprintf(stderr, "podpeers: %v\n", err)
 		return exitError
 	}
@@ -387,7 +393,7 @@ func cmdQuery(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return exitError
 	}
-	res, ok := loadArg(fs, stderr)
+	res, ok := loadArg(fs, stderr, true)
 	if !ok {
 		return exitError
 	}
@@ -490,7 +496,7 @@ func cmdServe(ctx context.Context, args []string, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return exitError
 	}
-	res, ok := loadArg(fs, stderr)
+	res, ok := loadArg(fs, stderr, false)
 	if !ok {
 		return exitError
 	}
@@ -533,7 +539,7 @@ func cmdSuggest(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "podpeers: -dns must be auto, always or never")
 		return exitError
 	}
-	res, ok := loadArg(fs, stderr)
+	res, ok := loadArg(fs, stderr, false)
 	if !ok {
 		return exitError
 	}

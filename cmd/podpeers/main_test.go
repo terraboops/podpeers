@@ -313,7 +313,12 @@ func TestCaptureTargetsTheContextNamespace(t *testing.T) {
 	}))
 	defer srv.Close()
 	kc := kubeconfig(t, "k3d-dev", srv.URL)
-	runCLI("capture", "--kubeconfig", kc, "-l", "app", "--duration", "1s", "--interval", "1s", "-o", filepath.Join(t.TempDir(), "x.json"))
+	// The selector matches nothing here: a failed capture, which writes no file.
+	x := filepath.Join(t.TempDir(), "x.json")
+	code, _, stderr := runCLI("capture", "--kubeconfig", kc, "-l", "app", "--duration", "1s", "--interval", "1s", "-o", x)
+	if _, err := os.Stat(x); code != exitError || !strings.Contains(stderr, "capture failed: ") || !strings.Contains(stderr, "matched no pods") || err == nil {
+		t.Errorf("a capture of nothing: exit %d, file written: %v, stderr %s", code, err == nil, stderr)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	listed := ""
@@ -325,6 +330,32 @@ func TestCaptureTargetsTheContextNamespace(t *testing.T) {
 	}
 	if listed != "/api/v1/namespaces/shop/pods" {
 		t.Fatalf("capture without -n listed its targets at %q, want the context namespace shop (requests: %v)", listed, paths)
+	}
+}
+
+// A flag written after the capture file is not parsed, so it is refused
+// rather than ignored: "suggest c.json -n shop" would otherwise suggest for
+// every namespace. diff and mcp take an exact count of files.
+func TestStrayArgumentsAreRefused(t *testing.T) {
+	after := "after the capture file (flags go before it)"
+	for _, c := range []struct {
+		args []string
+		says string
+	}{
+		{[]string{"render", fixture, "-format", "dot"}, after},
+		{[]string{"suggest", fixture, "-n", "shop"}, after},
+		{[]string{"serve", "-addr", "127.0.0.1:0", fixture, "extra"}, after},
+		{[]string{"diff", fixture, fixture, fixture}, "diff needs two capture files"},
+		{[]string{"mcp", fixture, fixture}, "mcp needs the capture file"},
+	} {
+		code, out, stderr := runCLI(c.args...)
+		if code != exitError || out != "" || !strings.Contains(stderr, c.says) {
+			t.Errorf("%v: exit %d, stdout %.80q, stderr %.200q", c.args, code, out, stderr)
+		}
+	}
+	// query alone takes the rest of the line: it is the query.
+	if code, out, stderr := runCLI("query", fixture, "{", "window", "{", "interval", "}", "}"); code != exitOK || !strings.Contains(out, "interval") {
+		t.Errorf("a query in several arguments: exit %d, stdout %q, stderr %s", code, out, stderr)
 	}
 }
 
@@ -386,6 +417,15 @@ func TestRender(t *testing.T) {
 	}
 	if code, _, _ := runCLI("render", "-format", "pdf", fixture); code != exitError {
 		t.Error("unknown format should fail")
+	}
+	// ... before -o is opened: the file there is left as it was.
+	kept := filepath.Join(t.TempDir(), "view.html")
+	os.WriteFile(kept, []byte("an earlier view"), 0o600)
+	if code, _, stderr := runCLI("render", "-format", "pdf", "-o", kept, fixture); code != exitError || !strings.Contains(stderr, `unknown format "pdf"`) {
+		t.Errorf("unknown format with -o: exit %d stderr %s", code, stderr)
+	}
+	if b, _ := os.ReadFile(kept); string(b) != "an earlier view" {
+		t.Errorf("an unknown format truncated -o's file to %q", b)
 	}
 	if code, _, _ := runCLI("render", "/does/not/exist.json"); code != exitError {
 		t.Error("missing file should fail")
@@ -481,6 +521,12 @@ func TestServeHandler(t *testing.T) {
 	if r, _ := http.Post(srv.URL+"/graphql", "application/json", strings.NewReader("{")); r.StatusCode != http.StatusBadRequest {
 		t.Errorf("bad body = %d", r.StatusCode)
 	}
+	// A body is read up to 1 MiB, not into memory whole: a well-formed query
+	// padded past that is refused.
+	padded := `{"query":"{ window { interval } }","pad":"` + strings.Repeat("x", 2<<20) + `"}`
+	if r, _ := http.Post(srv.URL+"/graphql", "application/json", strings.NewReader(padded)); r.StatusCode != http.StatusBadRequest {
+		t.Errorf("a 2 MiB body = %d, want %d", r.StatusCode, http.StatusBadRequest)
+	}
 }
 
 // serve binds to loopback, which keeps other machines out but not other web
@@ -508,6 +554,9 @@ func TestServeRefusesRebindingAndCrossSite(t *testing.T) {
 		{"GET", "127.0.0.1:8080", nil, 200},
 		{"GET", "localhost:8080", map[string]string{"Origin": "http://localhost:8080", "Sec-Fetch-Site": "same-origin"}, 200},
 		{"GET", "[::1]:8080", nil, 200},
+		{"GET", "web.localhost:8080", nil, 200}, // *.localhost is loopback by definition (RFC 6761)
+		{"GET", "localhost.rebind.example.test:8080", nil, http.StatusMisdirectedRequest},
+		{"GET", "rebind-localhost:8080", nil, http.StatusMisdirectedRequest},
 		{"GET", "192.0.2.5:8080", nil, 200}, // an operator who chose -addr on a LAN address
 		{"GET", "rebind.example.test:8080", nil, http.StatusMisdirectedRequest},
 		{"GET", "rebind.example.test:8080", map[string]string{"Origin": "http://rebind.example.test:8080"}, http.StatusMisdirectedRequest},
