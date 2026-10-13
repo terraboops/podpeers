@@ -384,6 +384,24 @@ func TestStrayArgumentsAreRefused(t *testing.T) {
 			t.Errorf("%v: exit %d, stdout %.80q, stderr %.200q", c.args, code, out, stderr)
 		}
 	}
+	// Too few arguments get the usage line, not whatever reading "" says.
+	for _, c := range []struct {
+		args []string
+		says string
+	}{
+		{[]string{"render"}, "missing capture file argument"},
+		{[]string{"suggest"}, "missing capture file argument"},
+		{[]string{"serve"}, "missing capture file argument"},
+		{[]string{"query"}, "missing capture file argument"},
+		{[]string{"query", fixture}, "missing GraphQL query argument"},
+		{[]string{"diff", fixture}, "diff needs two capture files: before.json after.json"},
+		{[]string{"mcp"}, "mcp needs the capture file to serve"},
+	} {
+		code, out, stderr := runCLI(c.args...)
+		if code != exitError || out != "" || stderr != "podpeers: "+c.says+"\n" {
+			t.Errorf("%v: exit %d, stdout %.80q, stderr %.200q", c.args, code, out, stderr)
+		}
+	}
 	// query alone takes the rest of the line: it is the query.
 	if code, out, stderr := runCLI("query", fixture, "{", "window", "{", "interval", "}", "}"); code != exitOK || !strings.Contains(out, "interval") {
 		t.Errorf("a query in several arguments: exit %d, stdout %q, stderr %s", code, out, stderr)
