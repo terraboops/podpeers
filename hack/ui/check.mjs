@@ -25,6 +25,13 @@ try {
   await page.setViewport({ width: 1400, height: 900 });
   await page.goto(url, { waitUntil: "networkidle0" });
 
+  // Laid out and fitted, the graph is drawn at a readable scale: no smaller
+  // than the zoom's own floor (a layout that flies apart is framed at a few
+  // percent).
+  const fitted = await page.$eval("#graph > g", g => +/scale\(([-\d.e]+)\)/.exec(g.getAttribute("transform"))[1]);
+  if (fitted >= 0.2) ok(`the fitted graph is drawn at a readable scale (${fitted.toFixed(2)})`);
+  else fail(`the fitted graph is drawn at scale ${fitted}: laid out far too wide to read`);
+
   // What the detail panel says about the first match for a search.
   const lookup = async q => {
     await page.click("#find", { clickCount: 3 });
@@ -170,6 +177,8 @@ try {
         const s = g.querySelector(".shape"), r = s.tagName === "rect" ? +s.getAttribute("width") / 2 : +s.getAttribute("r");
         return { t: g.textContent.slice(0, 20), x: +m[1], y: +m[2], r };
       });
+      const lost = ns.find(n => !Number.isFinite(n.x) || !Number.isFinite(n.y));
+      if (lost) return `${lost.t} has no position (${lost.x}, ${lost.y})`;
       for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {
         const a = ns[i], b = ns[j];
         if (Math.hypot(a.x - b.x, a.y - b.y) < a.r + b.r) return `${a.t} and ${b.t}`;
