@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -321,5 +322,23 @@ func TestRequestLineLimit(t *testing.T) {
 	err := s.Serve(strings.NewReader(`{"pad":"`+strings.Repeat("x", 16<<20)+"\"}\n"), &out)
 	if !errors.Is(err, bufio.ErrTooLong) || out.Len() != 0 {
 		t.Fatalf("a line past 16 MiB: err %v, output %q", err, out.String())
+	}
+}
+
+// The MCP server stays read-only: nothing it is built from can reach a
+// cluster (client-go), run a capture, or start a process (kubectl).
+func TestNothingItIsBuiltFromCanTouchACluster(t *testing.T) {
+	out, err := exec.Command("go", "list", "-deps", ".").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := strings.Fields(string(out))
+	if len(deps) < 10 || deps[len(deps)-1] != "github.com/terraboops/podpeers/internal/mcp" {
+		t.Fatalf("go list -deps listed %d package(s), ending %q", len(deps), deps[len(deps)-1])
+	}
+	for _, d := range deps {
+		if strings.HasPrefix(d, "k8s.io/client-go/") || d == "github.com/terraboops/podpeers/internal/capture" || d == "os/exec" {
+			t.Errorf("the MCP server is built from %s", d)
+		}
 	}
 }
