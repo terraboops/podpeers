@@ -188,10 +188,11 @@ func clusterState(t *testing.T) map[string]string {
 	return m
 }
 
-// unmodified fails if a pod in before changed or went (a restart marks it
-// deleted, and it leaves the list), or a NetworkPolicy changed, went or was
-// added. New pods alone are not flagged: a rollout already under way adds them.
-func unmodified(t *testing.T, before map[string]string) {
+// changes lists what differs from before: a pod in before that changed or
+// went (a restart marks it deleted, and it leaves the list), or a
+// NetworkPolicy changed, gone or added. New pods alone are not listed: a
+// rollout already under way adds them.
+func changes(t *testing.T, before map[string]string) []string {
 	t.Helper()
 	if len(before) == 0 {
 		t.Fatal("nothing listed before the run: the comparison would be vacuous")
@@ -199,24 +200,33 @@ func unmodified(t *testing.T, before map[string]string) {
 	after := clusterState(t)
 	// Earlier tests' cleanups delete namespaces without waiting; their pods
 	// go on their own.
+	gone := map[string]bool{}
 	for _, ns := range strings.Fields(kubectl(t, "get", "namespaces", "-o",
 		`jsonpath={range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name}{" "}{end}`)) {
-		for k := range before {
-			if strings.HasPrefix(k, "pod "+ns+"/") {
-				delete(before, k)
-			}
-		}
+		gone[ns] = true
 	}
+	var out []string
 	for k, v := range after {
 		was, ok := before[k]
 		if (ok && was != v) || (!ok && strings.HasPrefix(k, "networkpolicy ")) {
-			t.Errorf("refused run changed %s: now %q, before %q", k, v, was)
+			out = append(out, k)
 		}
 	}
 	for k := range before {
-		if _, ok := after[k]; !ok {
-			t.Errorf("refused run removed %s", k)
+		ns, _, _ := strings.Cut(strings.TrimPrefix(k, "pod "), "/")
+		if _, ok := after[k]; !ok && !(strings.HasPrefix(k, "pod ") && gone[ns]) {
+			out = append(out, k)
 		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// unmodified fails if anything changed since before was taken.
+func unmodified(t *testing.T, before map[string]string) {
+	t.Helper()
+	if c := changes(t, before); len(c) != 0 {
+		t.Errorf("refused run changed the cluster: %s", strings.Join(c, ", "))
 	}
 }
 
@@ -404,6 +414,7 @@ func TestE2E(t *testing.T) {
 
 	t.Run("capture matches the workloads that were built", func(t *testing.T) {
 		out := filepath.Join(outDir, "e2e-capture.json")
+		before := clusterState(t)
 		done := make(chan result, 1)
 		go func() {
 			done <- podpeers(ctx, t, "capture", "-A", "-l", "podpeers-e2e=target",
@@ -453,6 +464,11 @@ func TestE2E(t *testing.T) {
 		}
 		if touched != 5 {
 			t.Errorf("this run modified %d pods; want exactly the 5 running targets", touched)
+		}
+		// Control for every refusal's "unmodified": the same comparison sees
+		// this run's writes, and only them.
+		if c := strings.Join(changes(t, before), " "); c != "pod pp-app/api pod pp-app/brief pod pp-app/loner pod pp-app/web pod pp-edge/gateway" {
+			t.Errorf("the cluster comparison saw %q; want exactly the 5 targets", c)
 		}
 		if r.code != 0 {
 			t.Fatalf("capture exit %d", r.code)
