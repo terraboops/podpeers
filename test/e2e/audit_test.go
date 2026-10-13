@@ -460,6 +460,9 @@ spec:
 			t.Fatalf("the e2e cluster's server is %s, not on 127.0.0.1", cl.Server)
 		}
 		cl.Server = strings.Replace(cl.Server, "://127.0.0.1:", "://0.0.0.0:", 1)
+		// This cluster's certificate names 127.0.0.1, not 0.0.0.0 (k3d adds
+		// 0.0.0.0 only when it binds there): verify it as the address it is.
+		cl.TLSServerName = "127.0.0.1"
 		unspecified := filepath.Join(t.TempDir(), "kubeconfig")
 		if err := clientcmd.WriteToFile(*cfg, unspecified); err != nil {
 			t.Fatal(err)
