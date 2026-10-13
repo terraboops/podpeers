@@ -43,8 +43,10 @@ exit 0`,
 exit 0`,
 		"kubectl": `echo "kubectl $*" >> "$CALLS"
 case " $* " in
+  *" --dry-run=server "*) exit "${FAKE_DRYRUN:-0}" ;;
   *" --dry-run=client "*) [ -n "${FAKE_UNPARSABLE:-}" ] && exit 1; printf '%b' "${FAKE_OBJS-networkpolicy.networking.k8s.io/podpeers-web\n}"; exit 0 ;;
   *" get deployment "*) printf '%b' "${FAKE_DEPLOYS:-}"; exit 0 ;;
+  *" get pods -A "*) [ -n "${FAKE_NO_LIST_ALL:-}" ] && exit 1; echo "shop/web-1"; exit 0 ;;
   *" get pods "*) echo "shop/web-1"; exit 0 ;;
 esac
 exit 0`,
@@ -97,6 +99,7 @@ func TestVerifyVerdicts(t *testing.T) {
 		{"flows not exercised", []string{"FAKE_DIFF=5"}, 7, "verdict: INCONCLUSIVE: helm test passed, but some flows were never exercised"},
 		{"a pod not observed, diff clean", []string{"FAKE_CAPTURE=3"}, 7, "verdict: INCONCLUSIVE: helm test passed, but some pods could not be observed"},
 		{"helm test failure outranks the diff", []string{"FAKE_HELM_TEST=1", "FAKE_DIFF=4"}, 5, "verdict: BROKEN: helm test failed"},
+		{"blocked traffic outranks an unobserved pod", []string{"FAKE_DIFF=4", "FAKE_CAPTURE=3"}, 4, "verdict: BROKEN: helm test passed, but traffic"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFake(t)
@@ -129,6 +132,7 @@ func TestVerifyFailuresStopTheScript(t *testing.T) {
 		{"policy holds something else", "contains objects that are not NetworkPolicies", []string{`FAKE_OBJS=networkpolicy.networking.k8s.io/a\nconfigmap/b\n`}},
 		{"policy holds nothing", "contains no NetworkPolicy", []string{"FAKE_OBJS="}},
 		{"policy does not parse", "cannot parse", []string{"FAKE_UNPARSABLE=1"}},
+		{"the API server refuses it", "in a server-side dry run (above); nothing was applied", []string{"FAKE_DRYRUN=1"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFake(t)
@@ -139,6 +143,9 @@ func TestVerifyFailuresStopTheScript(t *testing.T) {
 			}
 			if strings.Contains(c.name, "policy") && strings.Contains(calls, "--dry-run=server") {
 				t.Fatal("a refused policy file reached the server-side dry run")
+			}
+			if c.name == "the API server refuses it" && strings.Contains(calls, "apply -n shop -f "+policy) {
+				t.Fatalf("a refused policy was applied:\n%s", calls)
 			}
 		})
 	}
@@ -263,6 +270,13 @@ func TestBaselineStopsWhenHelmTestAlreadyFails(t *testing.T) {
 	if code != 0 || !strings.Contains(calls, "podpeers suggest -n shop -o "+filepath.Join(out, "policy.yaml")) {
 		t.Fatalf("exit %d; a passing baseline should suggest policies:\n%s", code, calls)
 	}
+	// A partial baseline still suggests (unobserved workloads get a refusal,
+	// not a policy), and says it is partial.
+	f = newFake(t)
+	code, text, calls = f.run(t, []string{"FAKE_CAPTURE=3"}, append([]string{"baseline", "--out", out}, common...)...)
+	if code != 0 || !strings.Contains(calls, "podpeers suggest") || !strings.Contains(text, "capture is partial (some pods could not be observed)") {
+		t.Fatalf("exit %d; a partial baseline should say so and still suggest:\n%s\n%s", code, calls, text)
+	}
 }
 
 func TestArgumentsReachTheTools(t *testing.T) {
@@ -281,6 +295,29 @@ func TestArgumentsReachTheTools(t *testing.T) {
 	} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("calls lack %q:\n%s", want, calls)
+		}
+	}
+}
+
+// A list of kubeconfig files in KUBECONFIG is left to the tools to merge,
+// not passed as one path none of them could open.
+func TestKubeconfigListIsLeftToTheTools(t *testing.T) {
+	f := newFake(t)
+	baseline, policy := f.files(t)
+	_, _, calls := f.run(t, []string{"KUBECONFIG=/a/kubeconfig:/b/kubeconfig"}, append([]string{"verify", "--policy", policy, "--baseline", baseline}, common...)...)
+	if strings.Contains(calls, "--kubeconfig") || !strings.Contains(calls, "podpeers check-context --context k3d-dev\n") {
+		t.Fatalf("KUBECONFIG should reach the tools as itself, not as --kubeconfig:\n%s", calls)
+	}
+}
+
+// A refusal and a failure to check are told apart; either way nothing runs.
+func TestContextCheckFailureIsNotCalledARefusal(t *testing.T) {
+	for check, says := range map[string]string{"2": "podpeers refused context 'k3d-dev'", "1": "podpeers could not check context 'k3d-dev' (exit 1, see above)"} {
+		f := newFake(t)
+		baseline, policy := f.files(t)
+		code, out, calls := f.run(t, []string{"FAKE_CHECK=" + check}, append([]string{"verify", "--policy", policy, "--baseline", baseline}, common...)...)
+		if code != 2 || !strings.Contains(out, says+"; nothing was touched.") || strings.TrimSpace(calls) != "podpeers check-context --context k3d-dev" {
+			t.Errorf("check-context exit %s: exit %d\n%s\n%s", check, code, out, calls)
 		}
 	}
 }
@@ -314,5 +351,17 @@ func TestHelmOverridesRefuseBeforeTouchingAnything(t *testing.T) {
 		if code != 2 || !strings.Contains(out, v+" is set") || strings.Contains(calls, "helm ") || strings.Contains(calls, "kubectl ") {
 			t.Errorf("%s set: exit %d, want 2 before any helm or kubectl call\n%s\n%s", v, code, out, calls)
 		}
+	}
+}
+
+// An identity that may not list pods cluster-wide still records the pods in
+// force at the change, from the release's namespace.
+func TestVerifyListsPodsInTheNamespaceWhenNotAllowedClusterWide(t *testing.T) {
+	f := newFake(t)
+	baseline, policy := f.files(t)
+	code, out, calls := f.run(t, []string{"FAKE_NO_LIST_ALL=1"}, append([]string{"verify", "--policy", policy, "--baseline", baseline}, common...)...)
+	pods, _ := os.ReadFile(filepath.Join(filepath.Dir(baseline), "pods-at-change.txt"))
+	if code != 0 || !strings.Contains(calls, "get pods -n shop -o jsonpath=") || string(pods) != "shop/web-1\n" {
+		t.Fatalf("exit %d, pods-at-change %q:\n%s\n%s", code, pods, calls, out)
 	}
 }

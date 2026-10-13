@@ -21,7 +21,9 @@
 set -euo pipefail
 
 PODPEERS="${PODPEERS:-podpeers}"
-RELEASE="" NS="" CONTEXT="" KCFG="${KUBECONFIG:-}" SELECTOR="" ALLOW=""
+# KUBECONFIG is left to the tools, which all read it alike (client-go), a
+# list of files included; --kubeconfig names one file for all three.
+RELEASE="" NS="" CONTEXT="" KCFG="" SELECTOR="" ALLOW=""
 DURATION="40s" INTERVAL="1s" OUT="./podpeers-netpol" POLICY="" BASELINE=""
 SETTLE=8 WARMUP=8 ROLLBACK_ON_FAIL=0 RESTART=1 APPLY=1 OUT_SET=0 IMAGE=""
 
@@ -97,10 +99,13 @@ kc() { kubectl "${K[@]}" "$@"; }
 hl() { local sub="$1"; shift; helm "$sub" "${H[@]}" "$@"; }
 
 guard() {
-  if ! "$PODPEERS" check-context "${P[@]}" >/dev/null; then
-    say "podpeers refused context '$CONTEXT'; nothing was touched."
-    exit 2
-  fi
+  local code=0
+  "$PODPEERS" check-context "${P[@]}" >/dev/null || code=$?
+  case "$code" in
+    0) ;;
+    2) say "podpeers refused context '$CONTEXT'; nothing was touched."; exit 2 ;;
+    *) say "podpeers could not check context '$CONTEXT' (exit $code, see above); nothing was touched."; exit 2 ;;
+  esac
 }
 
 # Refuse first: before any other check, file read or cluster call, for every
@@ -168,7 +173,8 @@ case "$CMD" in
       [ -z "$OTHER" ] || die "$POLICY contains objects that are not NetworkPolicies; refusing to apply any of it: $(echo $OTHER)"
       [ -n "$OBJS" ] || die "$POLICY contains no NetworkPolicy"
       say "verify: server-side dry run of $POLICY"
-      kc apply -n "$NS" --dry-run=server -f "$POLICY" >/dev/null
+      kc apply -n "$NS" --dry-run=server -f "$POLICY" >/dev/null \
+        || die "the API server refused $POLICY in a server-side dry run (above); nothing was applied"
       kc apply -n "$NS" -f "$POLICY"
       say "waiting ${SETTLE}s for the CNI to program the policy"
       sleep "$SETTLE"
