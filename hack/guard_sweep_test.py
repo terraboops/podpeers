@@ -158,7 +158,7 @@ class ShellCases(unittest.TestCase):
         root = tree({"s.sh": script})
         with mock.patch.object(gs, "ROOT", root):
             got = [n for _, n, _ in gs.shell_guards("s.sh")]
-        self.assertEqual(got, [3, 4, 5, 9, 11, 12, 13, (18, 0), 23, (23, 0, "op"), 24])
+        self.assertEqual(got, [3, 4, 5, 9, 11, 12, 13, (18, 0), 23, (23, 0, "op"), 24, (24, 0, "shbound")])
 
     def test_nested_cases_count_their_depth(self):
         script = "\n".join(['case "$a" in', "  x)", '    case "$b" in', "      y) z ;;", "    esac", "    ;;",
@@ -403,6 +403,66 @@ class Mutate(unittest.TestCase):
             texts = [t for _, _, t in gs.py_guards("t.py")]
         self.assertEqual(texts[1], "x = a if b else (c if d else e) [condition forced false 2]")
         self.assertEqual(texts[2], "y = (f or g) and h [and/or flipped 1]")
+
+
+class Boundaries(unittest.TestCase):
+    """Each comparison's boundary moves one step, as hack/gocond moves Go's."""
+
+    mutated = Mutate.mutated
+
+    def test_python(self):
+        src = "if a < b:\n    pass\nok = 0 <= x > (y)  # x < z\nsame = a == b and c != d\n"
+        self.assertEqual([k for k, _ in gs.py_keyed(src) if k[1] == "bound"], [(1, "bound", 0), (3, "bound", 0), (3, "bound", 1)],
+                         "== and != are left to the condition mutations")
+        self.assertIn("if a <= b:", self.mutated("t.py", src, (1, "bound", 0)))
+        self.assertIn("ok = 0 < x > (y)  # x < z", self.mutated("t.py", src, (3, "bound", 0)))
+        self.assertIn("ok = 0 <= x >= (y)  # x < z", self.mutated("t.py", src, (3, "bound", 1)), "a chain: each link alone")
+        self.assertIn("if a < b:", self.mutated("t.py", src.replace("a < b", "a <= b"), (1, "bound", 0)), "and back")
+        self.assertEqual(self.mutated("t.py", "x = (a) >= (b)\n", (1, "bound", 0)), "x = (a) > (b)\n", "past a closing bracket")
+        root = tree({"t.py": src})
+        with mock.patch.object(gs, "ROOT", root):
+            texts = [t for _, k, t in gs.py_guards("t.py") if k[1] == "bound"]
+        self.assertEqual(texts[2], "ok = 0 <= x > (y)  # x < z [boundary moved 2]")
+
+    def test_javascript_comparisons_and_what_only_looks_like_one(self):
+        line = 'if (a < b && c >= 1) f(x => x >> 2, "<b>", /[<>]/, `${n > 0 ? "<" : ">"}`, y <= 3); // p < q'
+        self.assertEqual([line[a:b] for a, b in gs.js_bounds(line)], ["<", ">=", ">", "<="])
+        self.assertEqual(self.mutated("p.html", "<script>\nif (a < b) f();", (2, 0, "bound")), "<script>\nif (a <= b) f();")
+        self.assertEqual(self.mutated("p.html", "<script>\nx = a >= b ? 1 : 2;", (2, 0, "bound")), "<script>\nx = a > b ? 1 : 2;")
+
+    def test_javascript_only_inside_the_script(self):
+        page = "\n".join(["<style>a > b { }</style>", "<p>1 < 2</p>", "<script>", "const x = a < b;", "// c < d", "</script>", "<p>3 > 2</p>"])
+        root = tree({"p.html": page})
+        with mock.patch.object(gs, "ROOT", root):
+            got = [(k, t) for _, k, t in gs.js_guards("p.html") if isinstance(k, tuple) and k[-1] == "bound"]
+        self.assertEqual(got, [((4, 0, "bound"), "const x = a < b; [boundary moved]")])
+
+    def test_shell(self):
+        line = '[ $# -gt 0 ] && [ "$a" -le "$b" ] && echo "-lt is a word" # -ge in a comment'
+        self.assertEqual([line[a:b] for a, b in gs.sh_bounds(line)], ["-gt", "-le"])
+        self.assertEqual(gs.sh_bounds("echo 'x -gt y'"), [], "single quotes too")
+        self.assertEqual(gs.sh_bounds("echo \"x -gt y\""), [], "double quotes alone")
+        self.assertEqual(self.mutated("s.sh", "while [ $# -gt 0 ]; do", (1, 0, "shbound")), "while [ $# -ge 0 ]; do")
+        self.assertEqual(self.mutated("s.sh", "[ a -le b ] && [ c -lt d ]", (1, 1, "shbound")), "[ a -le b ] && [ c -le d ]")
+        for op, moved in gs.SH_BOUND_SWAP.items():
+            self.assertEqual(self.mutated("s.sh", f"[ a -{op} b ]", (1, 0, "shbound")), f"[ a -{moved} b ]")
+        root = tree({"s.sh": "[ $# -ge 1 ] || exit 1\n# [ a -lt b ]\n"})
+        with mock.patch.object(gs, "ROOT", root):
+            got = [(k, t) for _, k, t in gs.shell_guards("s.sh") if isinstance(k, tuple) and k[-1] == "shbound"]
+        self.assertEqual(got, [((1, 0, "shbound"), "[ $# -ge 1 ] || exit 1 [boundary moved]")])
+
+    def test_shell_inside_go(self):
+        code = "package p\n\nconst s = `\nif [ \"$f\" -lt 10 ]; then\n  :\nfi\n`\n\nfunc f(a, b int) bool { return a < b }\n"
+        root = tree({"p.go": code})
+        with mock.patch.object(gs, "ROOT", root):
+            got = [(k, t) for _, k, t in gs.embedded_guards("p.go") if k[-1] == "shbound"]
+        self.assertEqual(got, [((4, 0, "shbound"), 'if [ "$f" -lt 10 ]; then [boundary moved] [embedded shell]')])
+        self.assertIn('if [ "$f" -le 10 ]; then', self.mutated("p.go", code, (4, 0, "shbound")))
+        self.assertIn("return a < b", self.mutated("p.go", code, (4, 0, "shbound")), "the Go stays as it was")
+
+    def test_counts_label_like_go(self):
+        self.assertEqual(gs.bound_text("t", 0), "t [boundary moved]")
+        self.assertEqual(gs.bound_text("t", 1), "t [boundary moved 2]")
 
 
 class EmbeddedShell(unittest.TestCase):
@@ -734,6 +794,54 @@ class Headroom(unittest.TestCase):
         self.assertEqual(open(os.path.join(root, "x.sh")).read(), "a || b\n", "stopped before mutating")
 
 
+class HeadroomEdges(unittest.TestCase):
+    """Exactly at each limit is within it."""
+    T = 10000.0
+
+    def cache(self, free, size, checked_ago):
+        c = gs.Cache(tempfile.mkdtemp())
+        c.checked = self.T - checked_ago
+        got = {"measured": 0, "emptied": 0}
+        def dir_size(p):
+            got["measured"] += 1
+            return size
+        real_rmtree = gs.shutil.rmtree
+        def rmtree(p, **kw):
+            got["emptied"] += 1
+            real_rmtree(p, **kw)
+        patches = [mock.patch.object(gs, "MIN_FREE", 100), mock.patch.object(gs, "MAX_CACHE", 50),
+                   mock.patch.object(gs, "free_bytes", lambda p: free), mock.patch.object(gs, "dir_size", dir_size),
+                   mock.patch.object(gs.time, "time", lambda: self.T), mock.patch.object(gs.shutil, "rmtree", rmtree)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return c, got
+
+    def test_free_space_exactly_at_the_minimum_is_enough(self):
+        with mock.patch.object(gs, "MIN_FREE", 100), mock.patch.object(gs, "free_bytes", lambda p: 100):
+            self.assertEqual(gs.short_of_space(["/a"]), (None, 0))
+        with mock.patch.object(gs, "MIN_FREE", 100), mock.patch.object(gs, "free_bytes", lambda p: 99):
+            self.assertEqual(gs.short_of_space(["/a"]), ("/a", 99))
+
+    def test_a_recent_measurement_is_not_repeated(self):
+        c, got = self.cache(free=100, size=10, checked_ago=gs.CACHE_CHECK_EVERY - 1)
+        c.keep_in_bounds()
+        self.assertEqual(got, {"measured": 0, "emptied": 0}, "free space exactly at the minimum, measured just now")
+        c, got = self.cache(free=100, size=10, checked_ago=gs.CACHE_CHECK_EVERY)
+        c.keep_in_bounds()
+        self.assertEqual(got, {"measured": 1, "emptied": 0}, "measured exactly CACHE_CHECK_EVERY ago: measure again")
+
+    def test_a_cache_exactly_at_its_cap_with_exactly_enough_space_is_kept(self):
+        c, got = self.cache(free=100, size=50, checked_ago=gs.CACHE_CHECK_EVERY)
+        c.keep_in_bounds()
+        self.assertEqual(got, {"measured": 1, "emptied": 0})
+
+    def test_exactly_enough_space_after_emptying_goes_on(self):
+        c, got = self.cache(free=100, size=51, checked_ago=gs.CACHE_CHECK_EVERY)
+        c.keep_in_bounds()  # no NoHeadroom
+        self.assertEqual(got["emptied"], 1)
+
+
 class Main(unittest.TestCase):
     """main() sweeps what it is asked to, in the order it must."""
 
@@ -759,6 +867,7 @@ class Main(unittest.TestCase):
                 mock.patch.object(gs, "embedded_guards", found["emb"]), \
                 mock.patch.object(gs, "worktree", lambda: "/nonexistent"), mock.patch.object(gs.subprocess, "run", run), \
                 mock.patch.object(gs, "check", lambda left, b, o=False, go=None, scripts=None: ("checked", len(left), b, o, go, scripts)), \
+                mock.patch.object(gs, "short_of_space", lambda paths: (None, 0)), \
                 mock.patch.object(sys, "argv", ["guard-sweep.py"] + argv), \
                 contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
             try:

@@ -282,6 +282,7 @@ svg.addEventListener("pointermove", ev => {
 });
 svg.addEventListener("pointerup", () => { dragNode = null; panning = null; });
 svg.addEventListener("wheel", ev => {
+  if (!ev.deltaY) return; // a sideways scroll is not a zoom: leave it to the browser
   ev.preventDefault(); const r = svg.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
   const k = Math.max(0.2, Math.min(4, pan.k * (ev.deltaY < 0 ? 1.1 : 0.9)));
   pan.x = mx - (mx - pan.x) * k / pan.k; pan.y = my - (my - pan.y) * k / pan.k; pan.k = k; apply();

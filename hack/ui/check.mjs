@@ -180,6 +180,21 @@ try {
     else fail(`${view}: nodes overlap: ${clash}`);
   }
 
+  // The wheel zooms: up in, down out, and a sideways scroll not at all.
+  const zoom = async (dx, dy) => {
+    const box = await page.$eval("#graph", g => { const r = g.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+    await page.mouse.move(box.x, box.y);
+    const before = await page.$eval("#graph > g", g => g.getAttribute("transform"));
+    await page.mouse.wheel({ deltaX: dx, deltaY: dy });
+    await new Promise(r => setTimeout(r, 100));
+    const after = await page.$eval("#graph > g", g => g.getAttribute("transform"));
+    const k = t => +/scale\(([-\d.e]+)\)/.exec(t)[1];
+    return k(after) / k(before);
+  };
+  const [zin, zout, side] = [await zoom(0, -100), await zoom(0, 100), await zoom(100, 0)];
+  if (zin > 1 && zout < 1 && side === 1) ok("the wheel zooms in and out, and a sideways scroll leaves the zoom alone");
+  else fail(`wheel zoom factors: up ${zin}, down ${zout}, sideways ${side}`);
+
   // The GraphQL console answers from the same data as `podpeers query`.
   if (!(await page.$eval("#console", c => !c.hidden))) fail("GraphQL console is hidden on the served page");
   await page.$eval("#q", el => { el.value = ""; });

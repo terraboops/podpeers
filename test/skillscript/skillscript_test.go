@@ -110,3 +110,15 @@ func TestShimsRecordCallsWhenTheGuardAllows(t *testing.T) {
 		t.Fatalf("expected the kubectl shim to record a delete; exit %d calls %q\n%s", code, calls, out)
 	}
 }
+
+// A command alone is enough to get past the usage check: it then names
+// what it lacks. With no command at all, the usage is the answer.
+func TestACommandAloneIsNotAUsageError(t *testing.T) {
+	e := setup(t)
+	if code, out := e.run(t, "baseline"); code == 0 || strings.Contains(out, "Usage:") || !strings.Contains(out, "--context is required") {
+		t.Errorf("baseline alone: exit %d\n%s", code, out)
+	}
+	if code, out := e.run(t); code != 1 || !strings.Contains(out, "Usage:") {
+		t.Errorf("no command: exit %d\n%s", code, out)
+	}
+}

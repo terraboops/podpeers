@@ -72,6 +72,25 @@ import time
 
 ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
 OP = re.compile(r"&&|\|\|")
+# A comparison's boundary, moved by one step, as hack/gocond moves Go's: < and
+# <=, > and >= (in shell, -lt and -le, -gt and -ge). A guard one step off
+# must make some test fail too.
+BOUND = {"<": "<=", "<=": "<", ">": ">=", ">=": ">"}
+SH_BOUND = re.compile(r"(?<=\s)-(lt|le|gt|ge)(?=\s)")
+SH_BOUND_SWAP = {"lt": "le", "le": "lt", "gt": "ge", "ge": "gt"}
+
+
+def bound_text(t, k):
+    return f"{t} [boundary moved]" if k == 0 else f"{t} [boundary moved {k + 1}]"
+
+
+def sh_bounds(line):
+    """(start, end) of each -lt, -le, -gt and -ge in a shell line's code: not
+    quoted, not in a comment."""
+    end = re.search(r"(^|\s)#", line)
+    code = line[:end.start() if end else len(line)]
+    return [(m.start(), m.end()) for m in SH_BOUND.finditer(code)
+            if code[:m.start()].count('"') % 2 == 0 and code[:m.start()].count("'") % 2 == 0]
 
 # Go is read by its own parser (hack/gocond), built once per sweep.
 GO_DIRS = ("internal", "cmd", os.path.join("hack", "gocond"))
@@ -141,16 +160,28 @@ def embedded_guards(rel):
         t = l.strip()
         if SH_IF.match(l) or (split_list(l) is not None and not t.startswith(("trap ", "if ", "elif ", "|"))):
             out.append((rel, (i + 1, "sh"), f"{t} [embedded shell]"))
+        for k in range(len(sh_bounds(l))):
+            out.append((rel, (i + 1, k, "shbound"), bound_text(t, k) + " [embedded shell]"))
     return out
 
 # This tool itself: its tests import whichever copy sits beside them.
 PY_TESTS = {"hack/guard-sweep.py": ["python3", "hack/guard_sweep_test.py"]}
 
 
+class Bound:
+    """One <, <=, > or >= of a Python comparison: the span from where left
+    ends to where right starts, which holds the operator."""
+    def __init__(self, left, right):
+        self.left, self.right = left, right
+        self.lineno, self.col_offset = left.end_lineno, left.end_col_offset
+        self.end_lineno, self.end_col_offset = right.lineno, right.col_offset
+
+
 def py_nodes(src):
     """Every condition in a Python source, by the AST: (kind, node), where
     kind is "test" (an if, elif or while test, a conditional expression's
-    test, a comprehension filter) or "boolop" (an and / or expression)."""
+    test, a comprehension filter), "boolop" (an and / or expression) or
+    "bound" (one <, <=, > or >= of a comparison)."""
     out = []
     for node in ast.walk(ast.parse(src)):
         if isinstance(node, (ast.If, ast.While, ast.IfExp)):
@@ -159,6 +190,12 @@ def py_nodes(src):
             out.extend(("test", c) for c in node.ifs)
         elif isinstance(node, ast.BoolOp):
             out.append(("boolop", node))
+        if isinstance(node, ast.Compare):
+            prev = node.left
+            for op, right in zip(node.ops, node.comparators):
+                if isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+                    out.append(("bound", Bound(prev, right)))
+                prev = right
     return sorted(out, key=lambda x: (x[1].lineno, x[1].col_offset, x[0]))
 
 
@@ -175,18 +212,21 @@ def py_keyed(src):
 def py_guards(rel):
     src = open(os.path.join(ROOT, rel)).read()
     lines = src.split("\n")
-    names = {"test": "condition forced false", "boolop": "and/or flipped"}
+    names = {"test": "condition forced false", "boolop": "and/or flipped", "bound": "boundary moved"}
     return [(rel, key, f"{lines[key[0] - 1].strip()} [{names[key[1]]} {key[2] + 1}]") for key, _ in py_keyed(src)]
 
 
 def mutate_py(src, key):
     """src with the condition at key disabled: a test made False, an and/or
-    flipped."""
+    flipped, a comparison's boundary moved."""
     lines = src.split("\n")
     node = dict(py_keyed(src))[key]
     def at(line, col):  # AST columns count UTF-8 bytes
         return sum(len(l) + 1 for l in lines[:line - 1]) + len(lines[line - 1].encode()[:col].decode())
     a, b = at(node.lineno, node.col_offset), at(node.end_lineno, node.end_col_offset)
+    if key[1] == "bound":
+        m = re.search(r"<=|>=|<|>", src[a:b])
+        return src[:a + m.start()] + BOUND[m.group()] + src[a + m.end():]
     if key[1] == "test":
         new = "(False and (" + src[a:b] + "))"
     else:
@@ -343,9 +383,27 @@ def ternaries(line):
     return out
 
 
+JS_BOUND = re.compile(r"(?<![<>=!])(<=|>=|<|>)(?![<>=])")
+
+
+def js_bounds(line):
+    """(start, end) of each <, <=, > and >= in a JavaScript line's code: not
+    in a string, template text, regex literal or comment, and not part of
+    =>, << or >>."""
+    mask = js_code_mask(line)
+    end = next((i for i in range(len(line) - 1) if mask[i] and line.startswith("//", i)), len(line))
+    return [(m.start(), m.end()) for m in JS_BOUND.finditer(line[:end]) if mask[m.start()]]
+
+
 def js_guards(rel):
-    out = []
+    out, script = [], False
     for i, l in enumerate(open(os.path.join(ROOT, rel)).read().split("\n")):
+        # Comparisons only in the script: the page's HTML and CSS have < and >
+        # of their own.
+        script = (script or "<script>" in l) and "</script>" not in l
+        if script and "<script>" not in l and not l.lstrip().startswith(("//", "/*", "*")):
+            for k in range(len(js_bounds(l))):
+                out.append((rel, (i + 1, k, "bound"), bound_text(l.strip(), k)))
         if JS_IF.match(l) and js_cond(l):
             out.append((rel, i + 1, l.strip()))
             a, b = js_cond(l)
@@ -507,6 +565,8 @@ def shell_guards(rel):
         if m:
             for k in range(len(top_level_ops(m.group(2)))):
                 out.append((rel, (i + 1, k, "op"), f"{t} [operator {k + 1} flipped]"))
+        for k in range(len(sh_bounds(l))):
+            out.append((rel, (i + 1, k, "shbound"), bound_text(t, k)))
     return out
 
 
@@ -551,6 +611,13 @@ def mutate(path, n):
     if path.endswith(".yml"):
         n, k, kind = n
         mutated[n - 1] = mutate_wf(lines[n - 1], k, kind)
+        open(path, "w").write("\n".join(mutated))
+        return lines
+    if isinstance(n, tuple) and n[-1] in ("bound", "shbound"):  # a JavaScript or shell comparison, one step off
+        line, k, kind = n
+        l = lines[line - 1]
+        a, b = (sh_bounds(l) if kind == "shbound" else js_bounds(l))[k]
+        mutated[line - 1] = l[:a] + ("-" + SH_BOUND_SWAP[l[a + 1:b]] if kind == "shbound" else BOUND[l[a:b]]) + l[b:]
         open(path, "w").write("\n".join(mutated))
         return lines
     if path.endswith(".go") and isinstance(n, tuple) and n[-1] != "sh":

@@ -438,3 +438,25 @@ func TestRowFieldCountsAtTheEdges(t *testing.T) {
 		t.Errorf("ten fields: inode 4242: %+v %v", s, err)
 	}
 }
+
+// The sleep to the next tick is formatted seconds.centiseconds: 110cs is
+// 1.10, not 1.010. With a frozen clock every wait is a whole interval, and
+// a stand-in sleep records each one.
+func TestSamplerSleepsAreFormattedExactly(t *testing.T) {
+	dir := t.TempDir()
+	uptime := filepath.Join(dir, "uptime")
+	os.WriteFile(uptime, []byte("1000.00 0.00\n"), 0o644)
+	log := filepath.Join(dir, "sleeps")
+	bin := filepath.Join(dir, "bin")
+	os.MkdirAll(bin, 0o755)
+	os.WriteFile(filepath.Join(bin, "sleep"), []byte("#!/bin/sh\necho \"$1\" >> "+log+"\n"), 0o755)
+	cmd := exec.Command("sh", "-c", strings.ReplaceAll(SamplerScript(2200*time.Millisecond, 1100*time.Millisecond), "/proc/uptime", uptime))
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	got, _ := os.ReadFile(log)
+	if string(got) != "1.10\n2.20\n" {
+		t.Fatalf("sleeps:\n%s", got)
+	}
+}
