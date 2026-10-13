@@ -49,7 +49,7 @@ Options:
                           for verify, the --baseline file's directory)
   --settle SECONDS        wait after applying a policy before verifying (default 8)
   --allow-context NAME    pass through to podpeers for a deliberately approved non-local cluster
-  --rollback-on-fail      delete the policy again if verify says BROKEN
+  --rollback-on-fail      delete the policy again if verify says BROKEN (not INCONCLUSIVE)
   --no-apply              verify the policy that is ALREADY in the cluster (e.g. shipped by the
                           chart) instead of applying --policy; --policy is then not needed
   --no-restart            do not restart the release's workloads after applying the policy
@@ -223,9 +223,13 @@ case "$CMD" in
         echo "glimpsed line). helm test's failure is the signal; its log shows what failed: $OUT/after-helm-test.log"
       fi
     } | tee "$OUT/verdict.txt"
-    if [ "$CODE" != 0 ] && [ "$ROLLBACK_ON_FAIL" = 1 ]; then
-      say "rolling back $POLICY"
-      kc delete -n "$NS" -f "$POLICY" --ignore-not-found
+    if [ "$ROLLBACK_ON_FAIL" = 1 ]; then
+      case "$CODE" in
+        4|5)
+          say "rolling back $POLICY"
+          kc delete -n "$NS" -f "$POLICY" --ignore-not-found ;;
+        7) say "not rolling back: INCONCLUSIVE is not BROKEN; the policy stays in place" ;;
+      esac
     fi
     exit "$CODE"
     ;;

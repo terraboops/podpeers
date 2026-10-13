@@ -183,10 +183,15 @@ func TestVerifyRollsBackOnlyWhenAskedAndBroken(t *testing.T) {
 		env      []string
 		rollback bool
 		deleted  bool
+		code     int
 	}{
-		{[]string{"FAKE_DIFF=4"}, true, true},
-		{[]string{"FAKE_DIFF=4"}, false, false},
-		{nil, true, false},
+		{[]string{"FAKE_DIFF=4"}, true, true, 4},
+		{[]string{"FAKE_HELM_TEST=1"}, true, true, 5},
+		{[]string{"FAKE_DIFF=4"}, false, false, 4},
+		{nil, true, false, 0},
+		// INCONCLUSIVE is not BROKEN: the policy stays.
+		{[]string{"FAKE_DIFF=5"}, true, false, 7},
+		{[]string{"FAKE_CAPTURE=3"}, true, false, 7},
 	} {
 		f := newFake(t)
 		baseline, policy := f.files(t)
@@ -194,9 +199,15 @@ func TestVerifyRollsBackOnlyWhenAskedAndBroken(t *testing.T) {
 		if c.rollback {
 			args = append(args, "--rollback-on-fail")
 		}
-		_, _, calls := f.run(t, c.env, args...)
-		if got := strings.Contains(calls, "kubectl --context k3d-dev delete -n shop -f "+policy); got != c.deleted {
-			t.Errorf("%v rollback=%v: deleted=%v, want %v\n%s", c.env, c.rollback, got, c.deleted, calls)
+		code, out, calls := f.run(t, c.env, args...)
+		if got := strings.Contains(calls, " delete "); got != c.deleted || code != c.code {
+			t.Errorf("%v rollback=%v: exit %d deleted=%v, want exit %d deleted=%v\n%s", c.env, c.rollback, code, got, c.code, c.deleted, calls)
+		}
+		if kept := strings.Contains(out, "not rolling back: INCONCLUSIVE is not BROKEN"); kept != (c.rollback && c.code == 7) {
+			t.Errorf("%v rollback=%v: saying the policy stays = %v\n%s", c.env, c.rollback, kept, out)
+		}
+		if c.deleted && !strings.Contains(calls, "kubectl --context k3d-dev delete -n shop -f "+policy) {
+			t.Errorf("%v: the rollback should delete the applied policy\n%s", c.env, calls)
 		}
 	}
 }
