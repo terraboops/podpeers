@@ -152,7 +152,9 @@ gates before any pod is touched:
 1. **Pre-flight, from the kubeconfig alone, with zero network traffic.** The
    context name must be one a local tool writes (`kind-*`, `k3d-*`,
    `minikube`, `docker-desktop`, …) **and** the API server must be on
-   loopback, reached directly rather than through a `proxy-url`.
+   loopback, reached directly rather than through a `proxy-url` or a proxy
+   from the environment (Go sends `0.0.0.0`, which k3d writes, through
+   `HTTPS_PROXY`; `NO_PROXY=0.0.0.0` sends it direct).
 2. **After connecting, read-only.** Every node must be a node of the cluster
    the context names: a `k3d-NAME` context only `k3d-NAME-server-N` /
    `k3d-NAME-agent-N` nodes, a `kind-NAME` context only `NAME-control-plane` /
@@ -376,6 +378,7 @@ Named cases:
 | a hostile page in a real browser (`make ui`, headless Chrome): DNS rebinding (the attacker's name resolved to 127.0.0.1) and a cross-site POST | Chrome 155 as shipped blocks both itself (Local Network Access); the older Chrome that CI's puppeteer downloads does not, delivers both, and podpeers refuses them. With those checks off, standing in for a browser without them, both reach podpeers: rebinding gets 421, the POST 403, and the page reads no capture data; the server's own page still reads it. With the guard removed, the rebinding page reads the capture |
 | `serve` as a pod under a 256 MiB cgroup memory limit, sent the same cyclic query | refused with one error in under a second; the container never restarts, its memory peak stays under the cap (about 152 MiB); with the bound removed (mutant), the container is OOM-killed |
 | a local context whose loopback API server is reached through a `proxy-url` | refused, exit 2, nothing modified |
+| the cluster's API server named `0.0.0.0`, as k3d writes it, with `HTTPS_PROXY` set | refused, exit 2, nothing modified, nothing sent to the proxy; with `NO_PROXY=0.0.0.0` the same server is reached directly and allowed |
 
 CI runs both suites on every push. The e2e suite runs on a k3d cluster on the
 runner.

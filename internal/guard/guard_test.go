@@ -15,24 +15,26 @@ func TestCheckDefaultsToRefusal(t *testing.T) {
 		optIn   bool
 		reason  string
 	}{
-		{"kind on loopback", Target{"kind-dev", "https://127.0.0.1:6443", ""}, "", true, false, "local cluster"},
-		{"k3d on loopback v6", Target{"k3d-dev", "https://[::1]:6443", ""}, "", true, false, "local cluster"},
-		{"k3d on unspecified", Target{"k3d-dev", "https://0.0.0.0:6550", ""}, "", true, false, "local cluster"},
-		{"minikube on localhost", Target{"minikube", "https://localhost:8443", ""}, "", true, false, "local cluster"},
-		{"remote name remote server", Target{"prod-eu", "https://cluster.example.invalid", ""}, "", false, false, "not a recognised local cluster"},
-		{"remote name loopback server", Target{"prod-eu", "https://127.0.0.1:6443", ""}, "", false, false, "not a recognised local cluster"},
-		{"local name remote server", Target{"kind-dev", "https://cluster.example.invalid:6443", ""}, "", false, false, "not on loopback"},
-		{"local name private ip", Target{"k3d-dev", "https://192.0.2.10:6443", ""}, "", false, false, "not on loopback"},
-		{"bare prefix is not a name", Target{"kind-", "https://127.0.0.1:6443", ""}, "", false, false, "not a recognised"},
-		{"prefix must be a prefix", Target{"mykind-dev", "https://127.0.0.1:6443", ""}, "", false, false, "not a recognised"},
-		{"no context", Target{"", "https://127.0.0.1", ""}, "", false, false, "no kubeconfig context"},
-		{"unparseable server", Target{"kind-dev", "::not a url", ""}, "", false, false, "not on loopback"},
-		{"local name loopback server via proxy", Target{"k3d-dev", "https://127.0.0.1:6443", "socks5://127.0.0.1:1080"}, "", false, false, "proxy-url"},
-		{"opt-in still allows a proxied context", Target{"k3d-dev", "https://127.0.0.1:6443", "socks5://127.0.0.1:1080"}, "k3d-dev", true, true, "explicitly allowed"},
-		{"opt-in names the context", Target{"prod-eu", "https://cluster.example.invalid", ""}, "prod-eu", true, true, "explicitly allowed"},
-		{"opt-in for other context refuses", Target{"prod-eu", "https://cluster.example.invalid", ""}, "staging", false, false, "does not match"},
-		{"opt-in mismatch refuses even local", Target{"kind-dev", "https://127.0.0.1:6443", ""}, "kind-other", false, false, "does not match"},
-		{"opt-in is case sensitive", Target{"Prod", "https://cluster.example.invalid", ""}, "prod", false, false, "does not match"},
+		{"kind on loopback", Target{"kind-dev", "https://127.0.0.1:6443", "", false}, "", true, false, "local cluster"},
+		{"k3d on loopback v6", Target{"k3d-dev", "https://[::1]:6443", "", false}, "", true, false, "local cluster"},
+		{"k3d on unspecified", Target{"k3d-dev", "https://0.0.0.0:6550", "", false}, "", true, false, "local cluster"},
+		{"minikube on localhost", Target{"minikube", "https://localhost:8443", "", false}, "", true, false, "local cluster"},
+		{"remote name remote server", Target{"prod-eu", "https://cluster.example.invalid", "", false}, "", false, false, "not a recognised local cluster"},
+		{"remote name loopback server", Target{"prod-eu", "https://127.0.0.1:6443", "", false}, "", false, false, "not a recognised local cluster"},
+		{"local name remote server", Target{"kind-dev", "https://cluster.example.invalid:6443", "", false}, "", false, false, "not on loopback"},
+		{"local name private ip", Target{"k3d-dev", "https://192.0.2.10:6443", "", false}, "", false, false, "not on loopback"},
+		{"bare prefix is not a name", Target{"kind-", "https://127.0.0.1:6443", "", false}, "", false, false, "not a recognised"},
+		{"prefix must be a prefix", Target{"mykind-dev", "https://127.0.0.1:6443", "", false}, "", false, false, "not a recognised"},
+		{"no context", Target{"", "https://127.0.0.1", "", false}, "", false, false, "no kubeconfig context"},
+		{"unparseable server", Target{"kind-dev", "::not a url", "", false}, "", false, false, "not on loopback"},
+		{"local name loopback server via proxy", Target{"k3d-dev", "https://127.0.0.1:6443", "socks5://127.0.0.1:1080", false}, "", false, false, "proxy-url"},
+		{"local name loopback server via the environment's proxy", Target{"k3d-dev", "https://0.0.0.0:6550", "http://198.51.100.9:3128", true}, "", false, false, "set in the environment"},
+		{"opt-in still allows an environment-proxied context", Target{"k3d-dev", "https://0.0.0.0:6550", "http://198.51.100.9:3128", true}, "k3d-dev", true, true, "explicitly allowed"},
+		{"opt-in still allows a proxied context", Target{"k3d-dev", "https://127.0.0.1:6443", "socks5://127.0.0.1:1080", false}, "k3d-dev", true, true, "explicitly allowed"},
+		{"opt-in names the context", Target{"prod-eu", "https://cluster.example.invalid", "", false}, "prod-eu", true, true, "explicitly allowed"},
+		{"opt-in for other context refuses", Target{"prod-eu", "https://cluster.example.invalid", "", false}, "staging", false, false, "does not match"},
+		{"opt-in mismatch refuses even local", Target{"kind-dev", "https://127.0.0.1:6443", "", false}, "kind-other", false, false, "does not match"},
+		{"opt-in is case sensitive", Target{"Prod", "https://cluster.example.invalid", "", false}, "prod", false, false, "does not match"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -48,21 +50,40 @@ func TestCheckDefaultsToRefusal(t *testing.T) {
 }
 
 func TestRefusalTellsOperatorHowToOptIn(t *testing.T) {
-	d := Check(Target{"prod-eu", "https://cluster.example.invalid", ""}, "")
+	d := Check(Target{"prod-eu", "https://cluster.example.invalid", "", false}, "")
 	if !strings.Contains(d.Reason, "--allow-context=prod-eu") {
 		t.Fatalf("refusal should show the exact opt-in flag, got %q", d.Reason)
 	}
 }
 
+func TestProxyRefusalsShowNoCredentials(t *testing.T) {
+	for _, c := range []struct {
+		proxy   string
+		fromEnv bool
+		shown   string
+	}{
+		{"http://alice:hunter2@198.51.100.9:3128/path", true, `"http://198.51.100.9:3128"`},
+		{"socks5://alice:hunter2@127.0.0.1:1080", false, `proxy-url "socks5://127.0.0.1:1080"`},
+		{"alice:hunter2@198.51.100.9:3128", false, `proxy-url "(unparseable)"`},
+		{"::hunter2", true, `"(unparseable)" set in the environment`},
+		{"http:", false, `proxy-url "(unparseable)"`},
+	} {
+		d := Check(Target{"k3d-dev", "https://127.0.0.1:6443", c.proxy, c.fromEnv}, "")
+		if d.Allowed || !strings.Contains(d.Reason, c.shown) || strings.Contains(d.Reason, "hunter2") || strings.Contains(d.Reason, "alice") {
+			t.Errorf("proxy %q: %+v; want a refusal showing %s and no credentials", c.proxy, d, c.shown)
+		}
+	}
+}
+
 func TestCheckNodes(t *testing.T) {
-	local := Check(Target{"k3d-dev", "https://127.0.0.1:6550", ""}, "")
-	optIn := Check(Target{"prod-eu", "https://cluster.example.invalid", ""}, "prod-eu")
-	refused := Check(Target{"prod-eu", "https://cluster.example.invalid", ""}, "")
-	localKind := Check(Target{"kind-dev", "https://127.0.0.1:6443", ""}, "")
-	localColima := Check(Target{"colima", "https://127.0.0.1:6443", ""}, "")
-	localRancher := Check(Target{"rancher-desktop", "https://127.0.0.1:6443", ""}, "")
-	localDD := Check(Target{"docker-desktop", "https://127.0.0.1:6443", ""}, "")
-	localMinikube := Check(Target{"minikube", "https://127.0.0.1:8443", ""}, "")
+	local := Check(Target{"k3d-dev", "https://127.0.0.1:6550", "", false}, "")
+	optIn := Check(Target{"prod-eu", "https://cluster.example.invalid", "", false}, "prod-eu")
+	refused := Check(Target{"prod-eu", "https://cluster.example.invalid", "", false}, "")
+	localKind := Check(Target{"kind-dev", "https://127.0.0.1:6443", "", false}, "")
+	localColima := Check(Target{"colima", "https://127.0.0.1:6443", "", false}, "")
+	localRancher := Check(Target{"rancher-desktop", "https://127.0.0.1:6443", "", false}, "")
+	localDD := Check(Target{"docker-desktop", "https://127.0.0.1:6443", "", false}, "")
+	localMinikube := Check(Target{"minikube", "https://127.0.0.1:8443", "", false}, "")
 
 	cases := []struct {
 		name    string
@@ -109,7 +130,7 @@ func TestCheckNodes(t *testing.T) {
 }
 
 func TestRefusalDoesNotEchoProviderDetails(t *testing.T) {
-	local := Check(Target{"k3d-dev", "https://127.0.0.1:6550", ""}, "")
+	local := Check(Target{"k3d-dev", "https://127.0.0.1:6550", "", false}, "")
 	d := CheckNodes(local, []string{"aws:///zone-a/i-0123456789abcdef0"}, nil)
 	if strings.Contains(d.Reason, "i-0123456789abcdef0") {
 		t.Fatalf("refusal leaked instance id: %q", d.Reason)

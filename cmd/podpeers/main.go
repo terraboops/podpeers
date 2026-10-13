@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -22,6 +23,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -162,6 +164,10 @@ func connect(ctx context.Context, cf clusterFlags, stderr io.Writer) (*connectio
 		if cl, ok := raw.Clusters[kc.Cluster]; ok {
 			target.Server = cl.Server
 			target.Proxy = cl.ProxyURL
+			if target.Proxy == "" {
+				target.Proxy = envProxy(cl.Server)
+				target.ProxyFromEnv = target.Proxy != ""
+			}
 		}
 	} else if target.Context != "" {
 		fmt.Fprintf(stderr, "podpeers: context %q not found in kubeconfig\n", target.Context)
@@ -204,6 +210,22 @@ func connect(ctx context.Context, cf clusterFlags, stderr io.Writer) (*connectio
 	fmt.Fprintf(stderr, "podpeers: %s\n", dec.Reason)
 	ns, _, _ := cc.Namespace()
 	return &connection{cs: cs, namespace: ns, nodes: nodeList}, exitOK
+}
+
+// envProxy is the proxy client-go will send requests for server through when
+// the kubeconfig names none, resolved as its transport resolves it:
+// HTTPS_PROXY or HTTP_PROXY, less NO_PROXY's names and CIDRs.
+func envProxy(server string) string {
+	u, err := url.Parse(server)
+	if err != nil {
+		return ""
+	}
+	// An unparseable proxy setting makes every request fail: nothing to judge.
+	p, _ := utilnet.NewProxierWithNoProxyCIDR(http.ProxyFromEnvironment)(&http.Request{URL: u})
+	if p == nil {
+		return ""
+	}
+	return p.String()
 }
 
 func cmdCheckContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {

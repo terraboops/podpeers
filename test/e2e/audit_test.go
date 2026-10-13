@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode"
@@ -444,6 +445,59 @@ spec:
 		}
 		if after := len(ephemeral(t, "pp-xa", "web")); after != before {
 			t.Fatalf("pp-xa/web gained %d debug container(s) despite the refusal", after-before)
+		}
+	})
+
+	t.Run("a 0.0.0.0 API server the environment's proxy would reach is refused before anything is touched", func(t *testing.T) {
+		// k3d's own kubeconfig names https://0.0.0.0:PORT, and Go sends 0.0.0.0
+		// through HTTPS_PROXY: the proxy would pick the cluster.
+		cfg, err := clientcmd.LoadFromFile(kubeconfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl := cfg.Clusters[cfg.Contexts[kubeCtx].Cluster]
+		if !strings.Contains(cl.Server, "://127.0.0.1:") {
+			t.Fatalf("the e2e cluster's server is %s, not on 127.0.0.1", cl.Server)
+		}
+		cl.Server = strings.Replace(cl.Server, "://127.0.0.1:", "://0.0.0.0:", 1)
+		unspecified := filepath.Join(t.TempDir(), "kubeconfig")
+		if err := clientcmd.WriteToFile(*cfg, unspecified); err != nil {
+			t.Fatal(err)
+		}
+		proxy, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var proxied atomic.Int64
+		go func() {
+			for {
+				c, err := proxy.Accept()
+				if err != nil {
+					return
+				}
+				proxied.Add(1)
+				c.Close()
+			}
+		}()
+		t.Cleanup(func() { proxy.Close() })
+		t.Setenv("HTTPS_PROXY", "http://"+proxy.Addr().String())
+
+		before := len(ephemeral(t, "pp-xa", "web"))
+		r := podpeers(ctx, t, "capture", "--kubeconfig", unspecified, "-n", "pp-xa", "-l", "podpeers-e2e=audit", "--duration", "5s", "--interval", "1s",
+			"-o", filepath.Join(t.TempDir(), "x.json"))
+		t.Logf("exit=%d stderr=%s", r.code, r.stderr)
+		if r.code != 2 || !strings.Contains(r.stderr, "set in the environment") || proxied.Load() != 0 {
+			t.Fatalf("want refusal (exit 2) naming the environment's proxy, with nothing sent to it; got %d, %d connection(s)", r.code, proxied.Load())
+		}
+		if after := len(ephemeral(t, "pp-xa", "web")); after != before {
+			t.Fatalf("pp-xa/web gained %d debug container(s) despite the refusal", after-before)
+		}
+
+		// Exempted by NO_PROXY, 0.0.0.0 reaches this cluster directly and its nodes pass.
+		t.Setenv("NO_PROXY", "0.0.0.0")
+		r = podpeers(ctx, t, "check-context", "--kubeconfig", unspecified)
+		if r.code != 0 || proxied.Load() != 0 {
+			t.Fatalf("NO_PROXY exempted: exit %d, %d connection(s) to the proxy; stderr %s", r.code, proxied.Load(), r.stderr)
 		}
 	})
 }

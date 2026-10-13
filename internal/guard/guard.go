@@ -22,7 +22,9 @@ import (
 type Target struct {
 	Context string // resolved context name
 	Server  string // API server URL of that context's cluster
-	Proxy   string // that cluster's proxy-url, if any
+	Proxy   string // that cluster's proxy-url, or else the proxy the environment sends its requests to
+	// ProxyFromEnv says Proxy came from HTTPS_PROXY/HTTP_PROXY, not the kubeconfig.
+	ProxyFromEnv bool
 }
 
 // Decision is the guard's verdict.
@@ -92,10 +94,16 @@ func Check(t Target, allowContext string) Decision {
 	switch {
 	case name && loop && t.Proxy != "":
 		// Requests go to the proxy, which can forward them anywhere: the
-		// loopback server URL no longer says which cluster answers.
+		// loopback server URL no longer says which cluster answers. Go sends
+		// 0.0.0.0 and [::] (k3d's default) through HTTPS_PROXY; only
+		// 127.0.0.0/8, ::1 and localhost go direct.
+		via := fmt.Sprintf("proxy-url %q", proxyHost(t.Proxy))
+		if t.ProxyFromEnv {
+			via = fmt.Sprintf("the proxy %q set in the environment (HTTPS_PROXY or HTTP_PROXY; NO_PROXY can exempt the server)", proxyHost(t.Proxy))
+		}
 		return Decision{Reason: fmt.Sprintf(
-			"context %q has a loopback API server but sends requests through proxy-url %q, which can lead to any cluster; refusing. Re-run with --allow-context=%s only if you mean to modify that cluster",
-			t.Context, t.Proxy, t.Context)}
+			"context %q has a loopback API server but sends requests through %s, which can lead to any cluster; refusing. Re-run with --allow-context=%s only if you mean to modify that cluster",
+			t.Context, via, t.Context)}
 	case name && loop:
 		return Decision{Allowed: true, Context: t.Context, Reason: fmt.Sprintf(
 			"context %q is a local cluster (local tool name, loopback API server)", t.Context)}
@@ -108,6 +116,16 @@ func Check(t Target, allowContext string) Decision {
 			"context %q has a local-looking name but its API server is not on loopback; refusing. Re-run with --allow-context=%s only if you mean to modify that cluster",
 			t.Context, t.Context)}
 	}
+}
+
+// proxyHost cuts a proxy URL to its scheme and host: one carrying a user and
+// password would otherwise put them in terminals and CI logs.
+func proxyHost(proxy string) string {
+	u, err := url.Parse(proxy)
+	if err != nil || u.Host == "" {
+		return "(unparseable)"
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // exactNameNodes are the node identities each exact-name local tool gives

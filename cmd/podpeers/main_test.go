@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -111,6 +113,86 @@ func TestCaptureRefusesLoopbackServerBehindAProxy(t *testing.T) {
 	}
 	if n := atomic.LoadInt64(hits); n != 0 {
 		t.Fatalf("refusal made %d API request(s); want 0", n)
+	}
+}
+
+// runCLIFresh runs the CLI in a new process with env added, and no proxy
+// setting of its own: Go reads the proxy environment once per process, so in
+// this one it may already be fixed.
+func runCLIFresh(t *testing.T, env []string, args ...string) (int, string, string) {
+	t.Helper()
+	a, _ := json.Marshal(args)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIInAFreshProcess$")
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); !strings.HasSuffix(strings.ToUpper(name), "_PROXY") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env, append(env, "PODPEERS_TEST_CLI_ARGS="+string(a))...)
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	var exit *exec.ExitError
+	if err := cmd.Run(); errors.As(err, &exit) {
+		return exit.ExitCode(), out.String(), errb.String()
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	return exitOK, out.String(), errb.String()
+}
+
+func TestCLIInAFreshProcess(t *testing.T) {
+	a := os.Getenv("PODPEERS_TEST_CLI_ARGS")
+	if a == "" {
+		t.Skip("runs only as runCLIFresh's child")
+	}
+	var args []string
+	if err := json.Unmarshal([]byte(a), &args); err != nil {
+		t.Fatal(err)
+	}
+	os.Exit(run(context.Background(), args, os.Stdout, os.Stderr))
+}
+
+func TestLoopbackServerBehindTheEnvironmentsProxyIsRefused(t *testing.T) {
+	// k3d writes https://0.0.0.0:PORT, and Go sends 0.0.0.0 through
+	// HTTPS_PROXY (only 127/8, ::1 and localhost go direct): the proxy, not
+	// this machine, would pick the cluster. The refusal comes before any
+	// request, and does not show the proxy's password.
+	srv, hits := apiServer(t, "k3s://k3d-dev-server-0")
+	var proxied int64
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&proxied, 1)
+		http.Error(w, "not a proxy", http.StatusBadGateway)
+	}))
+	t.Cleanup(proxy.Close)
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "https://"))
+	kc := kubeconfig(t, "k3d-dev", "https://0.0.0.0:"+port)
+	env := []string{"HTTPS_PROXY=" + strings.Replace(proxy.URL, "http://", "http://alice:hunter2@", 1)}
+
+	code, _, stderr := runCLIFresh(t, env, "check-context", "--kubeconfig", kc)
+	if code != exitRefused || !strings.Contains(stderr, "set in the environment") || strings.Contains(stderr, "hunter2") {
+		t.Fatalf("exit %d stderr %s", code, stderr)
+	}
+	if n, p := atomic.LoadInt64(hits), atomic.LoadInt64(&proxied); n != 0 || p != 0 {
+		t.Fatalf("refusal made %d API request(s), %d through the proxy; want 0", n, p)
+	}
+
+	// Exempted by NO_PROXY it goes direct, and is judged by its nodes.
+	code, out, stderr := runCLIFresh(t, append(env, "NO_PROXY=0.0.0.0"), "check-context", "--kubeconfig", kc)
+	if code != exitOK || strings.TrimSpace(out) != "allowed" || atomic.LoadInt64(&proxied) != 0 {
+		t.Fatalf("NO_PROXY exempted: exit %d out %q stderr %s", code, out, stderr)
+	}
+	// 127.0.0.1 is never proxied, so the same environment is no reason to refuse it.
+	code, out, stderr = runCLIFresh(t, env, "check-context", "--kubeconfig", kubeconfig(t, "k3d-dev", srv.URL))
+	if code != exitOK || strings.TrimSpace(out) != "allowed" || atomic.LoadInt64(&proxied) != 0 {
+		t.Fatalf("127.0.0.1: exit %d out %q stderr %s", code, out, stderr)
+	}
+}
+
+func TestUnparseableServerIsRefused(t *testing.T) {
+	kc := kubeconfig(t, "k3d-dev", "::not a url")
+	code, _, stderr := runCLI("check-context", "--kubeconfig", kc)
+	if code != exitRefused || !strings.Contains(stderr, "not on loopback") {
+		t.Fatalf("exit %d stderr %s", code, stderr)
 	}
 }
 
