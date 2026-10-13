@@ -507,7 +507,10 @@ untrue (a decode that fails partway keeps the schema it already read; a
 missing client certificate provokes the client-config error offline; the
 argument-count checks never panicked; the log-stream fallbacks, and three
 guards claimed for the cluster, are reachable with a fake log). Each is now
-tested, and the entries are gone.
+tested, and the entries are gone. Testing the log fallbacks without a
+cluster also let the race detector see a data race: the log stream read
+the pod's name while the poll loop replaced the pod (now read once, before
+the stream starts).
 
 ### What the tests do not prove on a cluster, and why
 
