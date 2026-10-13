@@ -319,7 +319,8 @@ the release and `helm test` keeps guarding it:
    ```
 4. Upgrade the release with the policy enabled, then **remove the
    kubectl-applied copies**, or you are left with duplicates (rollback deletes
-   only the `podpeers-*` objects in that file):
+   only the `podpeers-*` NetworkPolicies in that file, and refuses a file
+   holding anything else):
    ```bash
    helm upgrade <rel> <chart> -n <ns> --kube-context <ctx> [--kubeconfig <path>] --reuse-values \
      --set networkPolicy.enabled=true --wait

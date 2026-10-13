@@ -106,8 +106,8 @@ func TestShimsRecordCallsWhenTheGuardAllows(t *testing.T) {
 	code, out := e.run(t, "rollback", "--policy", policy, "--kubeconfig", e.kubeconfig,
 		"--context", "prod-like", "--namespace", "shop", "--allow-context", "prod-like")
 	calls := e.recorded(t)
-	if !strings.Contains(calls, "kubectl --context prod-like") || !strings.Contains(calls, "delete") {
-		t.Fatalf("expected the kubectl shim to record a delete; exit %d calls %q\n%s", code, calls, out)
+	if !strings.HasPrefix(calls, "kubectl --context prod-like --kubeconfig "+e.kubeconfig+" ") {
+		t.Fatalf("expected the kubectl shim to record the script's first cluster call; exit %d calls %q\n%s", code, calls, out)
 	}
 }
 

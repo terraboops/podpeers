@@ -237,9 +237,13 @@ func TestVerifyRestartsWorkloadsUnlessTold(t *testing.T) {
 func TestVerifyNoApplyAppliesNothing(t *testing.T) {
 	f := newFake(t)
 	baseline, _ := f.files(t)
-	code, out, calls := f.run(t, nil, append([]string{"verify", "--no-apply", "--baseline", baseline}, common...)...)
+	code, out, calls := f.run(t, []string{`FAKE_DEPLOYS=deployment.apps/web\n`}, append([]string{"verify", "--no-apply", "--baseline", baseline}, common...)...)
 	if code != 0 || strings.Contains(calls, " apply ") || !strings.Contains(out, "policy:  already in the cluster (--no-apply)") {
 		t.Fatalf("exit %d; --no-apply must apply nothing:\n%s\n%s", code, calls, out)
+	}
+	// ... and still restarts, so every connection is made under that policy.
+	if !strings.Contains(calls, "rollout restart -n shop deployment.apps/web") {
+		t.Fatalf("--no-apply should still restart the workloads:\n%s", calls)
 	}
 }
 
@@ -269,6 +273,12 @@ func TestBaselineStopsWhenHelmTestAlreadyFails(t *testing.T) {
 	code, _, calls = f.run(t, nil, append([]string{"baseline", "--out", out}, common...)...)
 	if code != 0 || !strings.Contains(calls, "podpeers suggest -n shop -o "+filepath.Join(out, "policy.yaml")) {
 		t.Fatalf("exit %d; a passing baseline should suggest policies:\n%s", code, calls)
+	}
+	// It keeps the capture's log and helm test's, as SKILL.md says.
+	for _, kept := range []string{"baseline.json", "baseline.json.log", "baseline-helm-test.log"} {
+		if _, err := os.Stat(filepath.Join(out, kept)); err != nil {
+			t.Errorf("baseline did not leave %s: %v", kept, err)
+		}
 	}
 	// A partial baseline still suggests (unobserved workloads get a refusal,
 	// not a policy), and says it is partial.
@@ -329,6 +339,19 @@ func TestRollbackDeletesThePolicy(t *testing.T) {
 	if code != 0 || !strings.Contains(calls, "kubectl --context k3d-dev delete -n shop -f "+policy) {
 		t.Fatalf("exit %d:\n%s", code, calls)
 	}
+	// Only podpeers' NetworkPolicies: a file holding anything else deletes nothing.
+	for objs, says := range map[string]string{
+		`networkpolicy.networking.k8s.io/podpeers-web\nconfigmap/settings\n`: "refusing to delete any of it: configmap/settings",
+		`networkpolicy.networking.k8s.io/release-own\n`:                      "refusing to delete any of it: networkpolicy.networking.k8s.io/release-own",
+		``: "contains no NetworkPolicy",
+	} {
+		f := newFake(t)
+		_, policy := f.files(t)
+		code, out, calls := f.run(t, []string{"FAKE_OBJS=" + objs}, "rollback", "--namespace", "shop", "--context", "k3d-dev", "--policy", policy)
+		if code != 1 || !strings.Contains(out, says) || strings.Contains(calls, " delete ") {
+			t.Errorf("objects %q: exit %d\n%s\n%s", objs, code, out, calls)
+		}
+	}
 }
 
 // The default selector is the release's instance label.
@@ -363,5 +386,23 @@ func TestVerifyListsPodsInTheNamespaceWhenNotAllowedClusterWide(t *testing.T) {
 	pods, _ := os.ReadFile(filepath.Join(filepath.Dir(baseline), "pods-at-change.txt"))
 	if code != 0 || !strings.Contains(calls, "get pods -n shop -o jsonpath=") || string(pods) != "shop/web-1\n" {
 		t.Fatalf("exit %d, pods-at-change %q:\n%s\n%s", code, pods, calls, out)
+	}
+}
+
+// The defaults SKILL.md states: a 40s window sampled each second, and
+// podpeers from PATH when $PODPEERS is not set.
+func TestSkillDefaults(t *testing.T) {
+	f := newFake(t)
+	baseline, policy := f.files(t)
+	var env []string
+	for _, kv := range f.env {
+		if !strings.HasPrefix(kv, "PODPEERS=") {
+			env = append(env, kv)
+		}
+	}
+	f.env = env
+	code, out, calls := f.run(t, nil, append([]string{"verify", "--policy", policy, "--baseline", baseline}, common...)...)
+	if code != 0 || !strings.Contains(calls, "podpeers check-context") || !strings.Contains(calls, " --duration 40s --interval 1s ") {
+		t.Fatalf("exit %d; want the shim on PATH run with --duration 40s --interval 1s:\n%s\n%s", code, calls, out)
 	}
 }

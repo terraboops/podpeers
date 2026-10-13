@@ -242,6 +242,12 @@ case "$CMD" in
 
   rollback)
     [ -f "$POLICY" ] || die "--policy file not found: $POLICY"
+    # Delete podpeers' NetworkPolicies and nothing else, whoever has edited
+    # the file since: the release's own policies may sit beside them.
+    OBJS="$(kc apply -n "$NS" --dry-run=client -o name -f "$POLICY")" || die "cannot parse $POLICY"
+    OTHER="$(printf '%s\n' "$OBJS" | grep -v '^networkpolicy\.networking\.k8s\.io/podpeers-' || true)"
+    [ -z "$OTHER" ] || die "$POLICY holds objects that are not podpeers' NetworkPolicies; refusing to delete any of it: $(echo $OTHER)"
+    [ -n "$OBJS" ] || die "$POLICY contains no NetworkPolicy"
     kc delete -n "$NS" -f "$POLICY" --ignore-not-found
     ;;
 
