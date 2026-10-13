@@ -173,9 +173,22 @@ func TestReportGaps(t *testing.T) {
 			t.Errorf("report gaps missing %q:\n%s", want, joined)
 		}
 	}
+	if strings.Contains(joined, "No targeted workload is in scope") {
+		t.Error("a capture with workloads in scope should not say there are none")
+	}
 	rep = Suggest(shop(), Options{MinWindow: time.Minute})
 	if strings.Contains(strings.Join(rep.Gaps, "\n"), "The window (") {
 		t.Error("long enough window should not warn")
+	}
+	// A -workload that names nothing captured: no suggestion, and it says so.
+	rep = Suggest(shop(), Options{Workload: "Deployment/nope"})
+	if len(rep.Suggestions) != 0 || !strings.Contains(strings.Join(rep.Gaps, "\n"), "No targeted workload is in scope, so there is nothing to suggest.") {
+		t.Errorf("an unknown workload: %d suggestion(s), gaps %q", len(rep.Suggestions), rep.Gaps)
+	}
+	// Each policy says what else its podSelector would catch, and how to look.
+	web := find(t, Suggest(shop(), Options{}), "Deployment/web")
+	if g := strings.Join(web.Gaps, "\n"); !strings.Contains(g, "also selects any other pod in shop carrying these labels; check with: kubectl get pods -n shop -l ") {
+		t.Errorf("web's gaps do not warn about other pods its selector matches:\n%s", g)
 	}
 }
 
