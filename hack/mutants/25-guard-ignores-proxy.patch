@@ -10,12 +10,12 @@
 # e2e-expect: naming the proxy-url
 --- a/internal/guard/guard.go
 +++ b/internal/guard/guard.go
-@@ -88,7 +88,7 @@ func Check(t Target, allowContext string) Decision {
+@@ -92,7 +92,7 @@ func Check(t Target, allowContext string) Decision {
  	}
  	name, loop := LooksLocalName(t.Context), IsLoopbackServer(t.Server)
  	switch {
 -	case name && loop && t.Proxy != "":
 +	case false && name && loop && t.Proxy != "":
  		// Requests go to the proxy, which can forward them anywhere: the
- 		// loopback server URL no longer says which cluster answers.
- 		return Decision{Reason: fmt.Sprintf(
+ 		// loopback server URL no longer says which cluster answers. Go sends
+ 		// 0.0.0.0 and [::] (k3d's default) through HTTPS_PROXY; only

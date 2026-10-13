@@ -1,0 +1,21 @@
+# Mutant 44-guard-ignores-environment-proxy: breaks the protection for "a 0.0.0.0 API server the environment's proxy would reach is refused".
+# Bug introduced: the pre-flight guard sees only the kubeconfig's proxy-url, so a k3d context (server 0.0.0.0) whose requests HTTPS_PROXY sends to a proxy, which picks the cluster, is allowed.
+# hack/mutants.sh applies this in a scratch worktree and requires the tests
+# below to FAIL, with output matching the expect pattern (so they fail for the
+# right reason, not just any reason).
+# unit-pkg: ./cmd/podpeers/
+# unit-run: TestLoopbackServerBehindTheEnvironmentsProxyIsRefused
+# unit-expect: Bad Gateway
+# e2e-run: TestAuditFixes/a_0.0.0.0_API_server
+# e2e-expect: naming the environment's proxy
+--- a/cmd/podpeers/main.go
++++ b/cmd/podpeers/main.go
+@@ -165,7 +165,7 @@ func connect(ctx context.Context, cf clusterFlags, stderr io.Writer) (*connectio
+ 			target.Server = cl.Server
+ 			target.Proxy = cl.ProxyURL
+ 			if target.Proxy == "" {
+-				target.Proxy = envProxy(cl.Server)
++				target.Proxy = ""
+ 				target.ProxyFromEnv = target.Proxy != ""
+ 			}
+ 		}

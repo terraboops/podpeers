@@ -299,7 +299,8 @@ func Run(ctx context.Context, cs kubernetes.Interface, nodes []corev1.Node, opts
 	for _, t := range targets {
 		if !t.done {
 			t.streamDone = make(chan struct{})
-			go follow(streamCtx, cs, t, name, opts)
+			// The pod's name, read here: wait replaces t.pod on every poll.
+			go follow(streamCtx, cs, t, t.pod.Namespace, t.pod.Name, name, opts)
 		}
 	}
 	if err := wait(ctx, cs, targets, name, opts, hardDeadline); err != nil {
@@ -443,10 +444,10 @@ func wait(ctx context.Context, cs kubernetes.Interface, targets []*target, name 
 // follow streams the sampler's log as it is written and parses it. It retries
 // until the debug container has started, and returns when the container
 // exits (the stream ends) or ctx is done.
-func follow(ctx context.Context, cs kubernetes.Interface, t *target, name string, opts Options) {
+func follow(ctx context.Context, cs kubernetes.Interface, t *target, ns, pod, name string, opts Options) {
 	defer close(t.streamDone)
 	for {
-		rc, err := cs.CoreV1().Pods(t.pod.Namespace).GetLogs(t.pod.Name, &corev1.PodLogOptions{Container: name, Follow: true}).Stream(ctx)
+		rc, err := cs.CoreV1().Pods(ns).GetLogs(pod, &corev1.PodLogOptions{Container: name, Follow: true}).Stream(ctx)
 		if err == nil {
 			t.streamed, t.streamErr = procnet.ParseSamplerOutput(rc)
 			rc.Close()

@@ -491,6 +491,24 @@ when one step off), and the skill script given exactly one argument. In the
 web UI it found a bug: a sideways scroll, which has no vertical part, zoomed
 out. It is now left to the browser, and the browser check scrolls sideways.
 
+A re-audit against everything the docs and messages promise, rather than
+against the conditions, found what no mutant could: Go sends `0.0.0.0`
+(k3d's own server address) through `HTTPS_PROXY`, so a proxy in the
+environment chose the cluster behind a "local" context (now refused, as
+`proxy-url` was); a proxy URL's password was printed in refusals; the CLI
+tests that never connect would, had a check regressed, have read the
+developer's own kubeconfig (they now run under a tripwire kubeconfig whose
+stand-in server fails the run if reached); `suggest c.json -n shop`
+silently dropped `-n` (flags after the file are now refused); `render
+-format <unknown> -o FILE` emptied FILE; an unwritable `-o` was found only
+after every pod had a debug container; `--rollback-on-fail` rolled back on
+INCONCLUSIVE, not only BROKEN; and 20 accepted survivors' reasons were
+untrue (a decode that fails partway keeps the schema it already read; a
+missing client certificate provokes the client-config error offline; the
+argument-count checks never panicked; the log-stream fallbacks, and three
+guards claimed for the cluster, are reachable with a fake log). Each is now
+tested, and the entries are gone.
+
 ### What the tests do not prove on a cluster, and why
 
 Silence is not a pass, so these are written down:
