@@ -215,8 +215,10 @@ mismatched name is a refusal, not a fallback. Captures also *require* a label
 selector, so there is no accidental "probe everything".
 
 These aren't README promises. Tests prove a refusal makes **0 API requests**,
-and the e2e suite proves on a real cluster that a refused run modifies **no
-pods**.
+and the e2e suite proves on a real cluster that a refused run modifies
+**nothing**: every pod in every namespace keeps its identity and debug
+containers, and every NetworkPolicy its version, compared before and after
+each refusal (podpeers', the skill script's, and a forbidden namespace's).
 
 The sampler runs as `nobody` with every capability dropped, a read-only root
 filesystem and the RuntimeDefault seccomp profile, so it's admitted under the
@@ -350,7 +352,7 @@ Named cases:
 | connection closed mid-window | `closed` on both ends |
 | pod outside the selector | never touched, still resolved as a peer |
 | pending pod | skipped, never touched |
-| debug container can't start | fails fast with `ErrImagePull`, exit 3 |
+| debug container can't start | reported as failed with the kubelet's reason (`ErrImagePull`) once `--start-timeout` runs out, not at the window's end; exit 3 |
 | namespace you may read but not modify | per-pod `forbidden` naming the missing permission |
 | namespace you may not read | clean failure, exit 1 |
 | StatefulSet, DaemonSet and CronJob targets | each captured under its controller (`StatefulSet/db`, `DaemonSet/node-agent` on both nodes, `CronJob/report` rather than its per-run Job); headless DNS peers resolve to the pod; one policy per workload, no per-pod or per-run labels in any selector; all formats render |

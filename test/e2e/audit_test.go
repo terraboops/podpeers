@@ -436,16 +436,14 @@ spec:
 		if err := clientcmd.WriteToFile(*cfg, proxied); err != nil {
 			t.Fatal(err)
 		}
-		before := len(ephemeral(t, "pp-xa", "web"))
+		before := clusterState(t)
 		r := podpeers(ctx, t, "capture", "--kubeconfig", proxied, "-n", "pp-xa", "-l", "podpeers-e2e=audit", "--duration", "5s", "--interval", "1s",
 			"-o", filepath.Join(t.TempDir(), "x.json"))
 		t.Logf("exit=%d stderr=%s", r.code, r.stderr)
 		if r.code != 2 || !strings.Contains(r.stderr, "proxy-url") {
 			t.Fatalf("want refusal (exit 2) naming the proxy-url, got %d", r.code)
 		}
-		if after := len(ephemeral(t, "pp-xa", "web")); after != before {
-			t.Fatalf("pp-xa/web gained %d debug container(s) despite the refusal", after-before)
-		}
+		unmodified(t, before)
 	})
 
 	t.Run("a 0.0.0.0 API server the environment's proxy would reach is refused before anything is touched", func(t *testing.T) {
@@ -485,16 +483,14 @@ spec:
 		t.Cleanup(func() { proxy.Close() })
 		t.Setenv("HTTPS_PROXY", "http://"+proxy.Addr().String())
 
-		before := len(ephemeral(t, "pp-xa", "web"))
+		before := clusterState(t)
 		r := podpeers(ctx, t, "capture", "--kubeconfig", unspecified, "-n", "pp-xa", "-l", "podpeers-e2e=audit", "--duration", "5s", "--interval", "1s",
 			"-o", filepath.Join(t.TempDir(), "x.json"))
 		t.Logf("exit=%d stderr=%s", r.code, r.stderr)
 		if r.code != 2 || !strings.Contains(r.stderr, "set in the environment") || proxied.Load() != 0 {
 			t.Fatalf("want refusal (exit 2) naming the environment's proxy, with nothing sent to it; got %d, %d connection(s)", r.code, proxied.Load())
 		}
-		if after := len(ephemeral(t, "pp-xa", "web")); after != before {
-			t.Fatalf("pp-xa/web gained %d debug container(s) despite the refusal", after-before)
-		}
+		unmodified(t, before)
 
 		// Exempted by NO_PROXY, 0.0.0.0 reaches this cluster directly and its nodes pass.
 		t.Setenv("NO_PROXY", "0.0.0.0")

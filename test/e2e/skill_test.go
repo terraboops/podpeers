@@ -280,6 +280,7 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		cmd := exec.CommandContext(context.Background(), script, "verify", "--release", "shop", "--namespace", helmNS,
 			"--kubeconfig", cfg, "--context", "prod-like", "--policy", suggested, "--baseline", baseline)
 		cmd.Env = append(os.Environ(), "PODPEERS="+binary)
+		before := clusterState(t)
 		out, err := cmd.CombinedOutput()
 		code := 0
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -292,6 +293,7 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		if code != 2 {
 			t.Fatalf("want refusal (exit 2) before any apply, got %d", code)
 		}
+		unmodified(t, before)
 	})
 
 	t.Run("the skill script refuses a helm API-server override check-context never saw", func(t *testing.T) {
@@ -299,6 +301,7 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		cmd := exec.CommandContext(context.Background(), script, "verify", "--release", "shop", "--namespace", helmNS,
 			"--kubeconfig", kubeconfig, "--context", kubeCtx, "--policy", suggested, "--baseline", baseline)
 		cmd.Env = append(os.Environ(), "PODPEERS="+binary, "HELM_KUBEAPISERVER=https://192.0.2.1:6443")
+		before := clusterState(t)
 		out, err := cmd.CombinedOutput()
 		code := 0
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -308,6 +311,7 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		if code != 2 || !strings.Contains(string(out), "HELM_KUBEAPISERVER is set") || strings.Contains(string(out), "dry run") {
 			t.Fatalf("want refusal (exit 2) naming HELM_KUBEAPISERVER before any apply, got %d", code)
 		}
+		unmodified(t, before)
 	})
 
 	t.Run("the skill script applies NetworkPolicies and nothing else", func(t *testing.T) {
@@ -318,6 +322,7 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		cmd := exec.CommandContext(context.Background(), script, "verify", "--release", "shop", "--namespace", helmNS,
 			"--kubeconfig", kubeconfig, "--context", kubeCtx, "--policy", smuggled, "--baseline", baseline)
 		cmd.Env = append(os.Environ(), "PODPEERS="+binary)
+		before := clusterState(t)
 		out, err := cmd.CombinedOutput()
 		code := 0
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -330,6 +335,7 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		if got := kubectl(t, "get", "configmap", "-n", helmNS, "-o", "name"); strings.Contains(got, "e2e-smuggled") || strings.Contains(string(out), "dry run") {
 			t.Fatalf("something was applied despite the refusal: %s", got)
 		}
+		unmodified(t, before)
 	})
 
 	t.Run("verify says INCONCLUSIVE when a pod was not observed under the policy, even with a clean diff", func(t *testing.T) {

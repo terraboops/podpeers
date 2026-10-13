@@ -160,6 +160,66 @@ func ephemeral(t *testing.T, ns, pod string) []string {
 	return strings.Fields(out)
 }
 
+// clusterState records what a refused run must leave alone, cluster-wide:
+// each pod's identity (a restart replaces it) and debug containers (adding
+// one is the only write podpeers itself makes), and each NetworkPolicy's
+// version (the skill script's writes). Pods a Job owns, or that are already
+// being deleted, come and go on their own and are left out.
+func clusterState(t *testing.T) map[string]string {
+	t.Helper()
+	m := map[string]string{}
+	pods := kubectl(t, "get", "pods", "-A", "-o",
+		`jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name} {.metadata.ownerReferences[*].kind} {.metadata.deletionTimestamp} {.metadata.uid} {.spec.ephemeralContainers[*].name}{"\n"}{end}`)
+	for _, line := range strings.Split(strings.TrimSpace(pods), "\n") {
+		if strings.Contains(line, " Job ") || regexp.MustCompile(`\d{4}-\d\d-\d\dT`).MatchString(line) {
+			continue
+		}
+		if f := strings.Fields(line); len(f) > 0 {
+			m["pod "+f[0]] = strings.Join(f[1:], " ")
+		}
+	}
+	pols := kubectl(t, "get", "networkpolicies", "-A", "-o",
+		`jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name} {.metadata.resourceVersion}{"\n"}{end}`)
+	for _, line := range strings.Split(strings.TrimSpace(pols), "\n") {
+		if f := strings.Fields(line); len(f) > 0 {
+			m["networkpolicy "+f[0]] = strings.Join(f[1:], " ")
+		}
+	}
+	return m
+}
+
+// unmodified fails if a pod in before changed or went (a restart marks it
+// deleted, and it leaves the list), or a NetworkPolicy changed, went or was
+// added. New pods alone are not flagged: a rollout already under way adds them.
+func unmodified(t *testing.T, before map[string]string) {
+	t.Helper()
+	if len(before) == 0 {
+		t.Fatal("nothing listed before the run: the comparison would be vacuous")
+	}
+	after := clusterState(t)
+	// Earlier tests' cleanups delete namespaces without waiting; their pods
+	// go on their own.
+	for _, ns := range strings.Fields(kubectl(t, "get", "namespaces", "-o",
+		`jsonpath={range .items[?(@.metadata.deletionTimestamp)]}{.metadata.name}{" "}{end}`)) {
+		for k := range before {
+			if strings.HasPrefix(k, "pod "+ns+"/") {
+				delete(before, k)
+			}
+		}
+	}
+	for k, v := range after {
+		was, ok := before[k]
+		if (ok && was != v) || (!ok && strings.HasPrefix(k, "networkpolicy ")) {
+			t.Errorf("refused run changed %s: now %q, before %q", k, v, was)
+		}
+	}
+	for k := range before {
+		if _, ok := after[k]; !ok {
+			t.Errorf("refused run removed %s", k)
+		}
+	}
+}
+
 // edgeSet renders a pod's edges as sorted "dir peer proto/port open|closed" lines.
 // DNS lookups are sub-second UDP exchanges that a sample catches only by
 // luck, so edges to the cluster DNS service are left out of exact comparisons.
@@ -283,14 +343,13 @@ func TestE2E(t *testing.T) {
 		if err := clientcmd.WriteToFile(*cfg, renamed); err != nil {
 			t.Fatal(err)
 		}
+		before := clusterState(t)
 		r := podpeers(ctx, t, "capture", "--kubeconfig", renamed, "-A", "-l", "podpeers-e2e=target", "--duration", "5s", "--interval", "1s", "-o", filepath.Join(t.TempDir(), "x.json"))
 		t.Logf("exit=%d stderr:\n%s", r.code, r.stderr)
 		if r.code != 2 || !strings.Contains(r.stderr, "nodes of a different cluster") || strings.Contains(r.stderr, "k3s://") {
 			t.Fatalf("want refusal exit 2 by the node gate, without naming the nodes, got %d", r.code)
 		}
-		if got := ephemeral(t, "pp-app", "api"); len(got) != 0 {
-			t.Fatalf("refused run modified a pod: %v", got)
-		}
+		unmodified(t, before)
 		// The same for every exact-name local tool: a foreign k3s cluster behind
 		// a loopback port does not become colima's (or anyone's) by its name.
 		for _, name := range []string{"colima", "rancher-desktop", "orbstack", "docker-desktop", "minikube"} {
@@ -326,6 +385,7 @@ func TestE2E(t *testing.T) {
 		if err := clientcmd.WriteToFile(*cfg, renamed); err != nil {
 			t.Fatal(err)
 		}
+		before := clusterState(t)
 		r := podpeers(ctx, t, "capture", "--kubeconfig", renamed, "-A", "-l", "podpeers-e2e=target", "--duration", "5s", "--interval", "1s", "-o", filepath.Join(t.TempDir(), "x.json"))
 		t.Logf("exit=%d stderr:\n%s", r.code, r.stderr)
 		// Refused by the pre-flight, from the kubeconfig alone, before any
@@ -333,9 +393,7 @@ func TestE2E(t *testing.T) {
 		if r.code != 2 || !strings.Contains(r.stderr, "is not a recognised local cluster") {
 			t.Fatalf("want the pre-flight refusal (exit 2, before any API request), got %d", r.code)
 		}
-		if got := ephemeral(t, "pp-app", "api"); len(got) != 0 {
-			t.Fatalf("refused run modified a pod: %v", got)
-		}
+		unmodified(t, before)
 		// The deliberate opt-in naming that exact context is accepted.
 		r = podpeers(ctx, t, "check-context", "--kubeconfig", renamed, "--allow-context", "staging-cluster")
 		t.Logf("opt-in: exit=%d stdout=%q stderr=%s", r.code, r.stdout, r.stderr)
@@ -991,9 +1049,16 @@ spec:
 		start := time.Now()
 		r := podpeers(ctx, t, "capture", "-n", "pp-app", "-l", "app=loner", "--image", "registry.example.invalid/podpeers/no-such-image:0",
 			"--start-timeout", "20s", "--duration", "10s", "--interval", "2s", "-o", out)
-		t.Logf("exit=%d after %s\n%s", r.code, time.Since(start).Round(time.Second), r.stderr)
+		took := time.Since(start)
+		t.Logf("exit=%d after %s\n%s", r.code, took.Round(time.Second), r.stderr)
 		if r.code != 3 {
 			t.Fatalf("want partial-failure exit 3, got %d", r.code)
+		}
+		// Given the start timeout to recover (kubelet retries a pull), then
+		// reported: before the 10s window after it would have ended, let alone
+		// the run's hard deadline.
+		if took < 20*time.Second || took >= 30*time.Second {
+			t.Fatalf("the failure should be reported once the 20s start timeout runs out; took %s", took)
 		}
 		p, _ := probeOf(load(t, out), "pp-app/loner")
 		if p.Status != graph.ProbeFailed || !strings.Contains(p.Reason, "did not start within 20s") ||
@@ -1124,6 +1189,7 @@ subjects: [{kind: ServiceAccount, name: pp-observer, namespace: pp-app}]
 
 		// May read pods in pp-locked but not add ephemeral containers there.
 		out := filepath.Join(t.TempDir(), "locked.json")
+		before := clusterState(t)
 		r := podpeers(ctx, t, "capture", "--kubeconfig", lk, "-n", "pp-locked", "-l", "podpeers-e2e=locked", "--duration", "5s", "--interval", "1s", "-o", out)
 		t.Logf("pp-locked: exit=%d\n%s", r.code, r.stderr)
 		if r.code != 3 {
@@ -1141,6 +1207,7 @@ subjects: [{kind: ServiceAccount, name: pp-observer, namespace: pp-app}]
 		if got := ephemeral(t, "pp-locked", "vault"); len(got) != 0 {
 			t.Fatalf("forbidden run modified vault: %v", got)
 		}
+		unmodified(t, before)
 
 		// No access at all to pp-sealed: the capture fails cleanly at listing.
 		r = podpeers(ctx, t, "capture", "--kubeconfig", lk, "-n", "pp-sealed", "-l", "app", "--duration", "5s", "--interval", "1s", "-o", filepath.Join(t.TempDir(), "sealed.json"))
