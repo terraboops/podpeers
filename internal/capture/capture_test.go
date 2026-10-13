@@ -363,6 +363,9 @@ func TestBestPicksTheMoreCompleteLog(t *testing.T) {
 	if o, err := best(partialMore, nil, complete, nil); err != nil || !o.Complete {
 		t.Error("complete beats partial")
 	}
+	if o, err := best(complete, nil, partialMore, nil); err != nil || !o.Complete {
+		t.Error("complete beats partial, either way round")
+	}
 	if o, _ := best(partialLess, nil, partialMore, nil); len(o.Samples) != 5 {
 		t.Error("more samples beats fewer when neither is complete")
 	}
@@ -504,8 +507,8 @@ func TestInventoryKeepsWhatItLists(t *testing.T) {
 // A sampler that finished is read: its log is fetched and parsed. (The fake
 // clientset's log is "fake logs", which does not parse.)
 // finishedSamplers answers the capture's polling with every debug container
-// already terminated, as samplers that ran to the end.
-func finishedSamplers(cs *fake.Clientset) {
+// already terminated with exit, as samplers that ran to the end.
+func finishedSamplers(cs *fake.Clientset, exit int32, reason string) {
 	podsGVR := schema.GroupVersionResource{Version: "v1", Resource: "pods"}
 	podsGVK := schema.GroupVersionKind{Version: "v1", Kind: "Pod"}
 	cs.PrependReactor("list", "pods", func(a k8stesting.Action) (bool, runtime.Object, error) {
@@ -518,7 +521,7 @@ func finishedSamplers(cs *fake.Clientset) {
 			p := &list.Items[i]
 			for _, c := range p.Spec.EphemeralContainers {
 				p.Status.EphemeralContainerStatuses = append(p.Status.EphemeralContainerStatuses, corev1.ContainerStatus{
-					Name: c.Name, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}})
+					Name: c.Name, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: exit, Reason: reason}}})
 			}
 		}
 		return true, list, nil
@@ -528,7 +531,7 @@ func finishedSamplers(cs *fake.Clientset) {
 func TestFinishedSamplerIsRead(t *testing.T) {
 	sel := map[string]string{"pp": "target"}
 	cs := fake.NewSimpleClientset(pod("shop", "api", corev1.PodRunning, sel))
-	finishedSamplers(cs)
+	finishedSamplers(cs, 0, "")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	res, err := Run(ctx, cs, nil, Options{Namespace: "shop", LabelSelector: "pp=target", Duration: time.Second, Interval: time.Second,
@@ -614,7 +617,7 @@ func TestSamplerLogFallbacks(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cs := fake.NewSimpleClientset(pod("shop", "api", corev1.PodRunning, map[string]string{"pp": "target"}))
-			finishedSamplers(cs)
+			finishedSamplers(cs, 0, "")
 			var plainReads atomic.Int64
 			lc := logs{cs, func(follow bool) (string, error) {
 				if follow {
@@ -680,7 +683,7 @@ func TestPollingFailureEndsTheCapture(t *testing.T) {
 // costs.
 func TestServicesThatCannotBeListedAreANote(t *testing.T) {
 	cs := fake.NewSimpleClientset(pod("shop", "api", corev1.PodRunning, map[string]string{"pp": "target"}))
-	finishedSamplers(cs)
+	finishedSamplers(cs, 0, "")
 	cs.PrependReactor("list", "services", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "services"}, "", errors.New("denied"))
 	})
@@ -711,5 +714,22 @@ func TestInterruptedCaptureFails(t *testing.T) {
 		StartTimeout: time.Minute, PollInterval: 10 * time.Millisecond, Logf: func(string, ...any) {}})
 	if !errors.Is(err, context.Canceled) || len(res.Pods) != 0 {
 		t.Fatalf("err %v, %d pod(s)", err, len(res.Pods))
+	}
+}
+
+// A sampler that ended badly and left no readable log fails with how it ended.
+func TestASamplersExitIsNamedWhenItsLogFails(t *testing.T) {
+	cs := fake.NewSimpleClientset(pod("shop", "api", corev1.PodRunning, map[string]string{"pp": "target"}))
+	finishedSamplers(cs, 137, "OOMKilled")
+	lc := logs{cs, func(bool) (string, error) { return "", nil }}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	res, err := Run(ctx, lc, nil, Options{Namespace: "shop", LabelSelector: "pp=target", Duration: time.Second, Interval: time.Second,
+		StartTimeout: time.Second, PollInterval: 10 * time.Millisecond, Logf: func(string, ...any) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := res.Pods[0].Probe; p.Status != graph.ProbeFailed || p.Reason != "parsing sampler log: procnet: no podpeers header in sampler output (sampler exited 137 (OOMKilled))" {
+		t.Fatalf("probe %+v", p)
 	}
 }
