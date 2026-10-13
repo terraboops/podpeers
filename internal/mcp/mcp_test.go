@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,5 +305,21 @@ func TestMalformedCallParamsAreInvalid(t *testing.T) {
 	e, _ := rs[0]["error"].(map[string]any)
 	if e == nil || e["code"] != float64(-32602) || !strings.Contains(e["message"].(string), "invalid params") {
 		t.Fatalf("response: %v", rs[0])
+	}
+}
+
+// A request is read whole up to 16 MiB (a query argument can be long);
+// past that the server stops with bufio's error rather than misreading it.
+func TestRequestLineLimit(t *testing.T) {
+	s := &Server{CapturePath: fixture, Version: "test"}
+	long := call(1, "query", map[string]any{"query": "{ window { interval } }" + strings.Repeat(" ", 1<<20)})
+	rs := session(t, s, long)
+	if got, isErr := text(t, rs[0]); len(rs) != 1 || isErr || !strings.Contains(got, "interval") {
+		t.Fatalf("a 1 MiB request: %v", rs)
+	}
+	var out bytes.Buffer
+	err := s.Serve(strings.NewReader(`{"pad":"`+strings.Repeat("x", 16<<20)+"\"}\n"), &out)
+	if !errors.Is(err, bufio.ErrTooLong) || out.Len() != 0 {
+		t.Fatalf("a line past 16 MiB: err %v, output %q", err, out.String())
 	}
 }

@@ -390,11 +390,12 @@ func TestSuggestFailsWhenItCannotWrite(t *testing.T) {
 func TestCaptureFlagValidationHappensFirst(t *testing.T) {
 	cases := [][]string{
 		{"capture"}, // no selector
-		{"capture", "-l", "app", "-n", "x", "-A"},    // -n with -A
-		{"capture", "-l", "app", "--duration", "0s"}, // empty window
-		{"capture", "-l", "app", "--interval", "6m"}, // interval > window
-		{"capture", "-l", "app", "stray-positional"}, // typo guard
-		{"capture", "--no-such-flag"},                // unknown flag
+		{"capture", "-l", "app", "-n", "x", "-A"},     // -n with -A
+		{"capture", "-l", "app", "--duration", "0s"},  // empty window
+		{"capture", "-l", "app", "--interval", "6m"},  // interval > window
+		{"capture", "-l", "app", "stray-positional"},  // typo guard
+		{"capture", "--no-such-flag"},                 // unknown flag
+		{"capture", "-l", "app", "--summary", "json"}, // a summary format there is not
 	}
 	for _, c := range cases {
 		if code, _, _ := runCLI(c...); code != exitError {
@@ -592,6 +593,26 @@ func mustLoad(t *testing.T) graph.Result {
 		t.Fatal(err)
 	}
 	return r
+}
+
+// Each flag reaches the options it names, and the closing count says what
+// came of them.
+func TestSuggestFlagsReachTheirOptions(t *testing.T) {
+	for _, c := range []struct {
+		args    []string
+		count   string
+		shorter bool
+	}{
+		{[]string{"-min-samples", "1"}, "3 policy suggestion(s), 2 workload(s) refused for thin evidence", true},
+		{[]string{"-min-samples", "1000"}, "0 policy suggestion(s), 5 workload(s) refused for thin evidence", true},
+		{[]string{"-min-samples", "1", "-allow-empty"}, "4 policy suggestion(s), 1 workload(s) refused for thin evidence", true},
+		{[]string{"-min-samples", "1", "-min-window", "1m"}, "3 policy suggestion(s), 2 workload(s) refused for thin evidence", false},
+	} {
+		code, out, stderr := runCLI(append(append([]string{"suggest"}, c.args...), fixture)...)
+		if code != exitOK || stderr != "podpeers: "+c.count+"\n" || strings.Contains(out, "is shorter than") != c.shorter {
+			t.Errorf("%v: exit %d, stderr %q, window warning %v", c.args, code, stderr, !c.shorter)
+		}
+	}
 }
 
 func TestSuggestCLI(t *testing.T) {

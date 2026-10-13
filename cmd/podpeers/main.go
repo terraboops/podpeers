@@ -270,6 +270,10 @@ func cmdCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintln(stderr, "podpeers: -n and -A are mutually exclusive")
 		return exitError
 	}
+	if format != "text" && format != "none" {
+		fmt.Fprintf(stderr, "podpeers: --summary must be text or none, not %q\n", format)
+		return exitError
+	}
 	if err := opts.Validate(); err != nil {
 		fmt.Fprintf(stderr, "podpeers: %v\n", err)
 		return exitError
