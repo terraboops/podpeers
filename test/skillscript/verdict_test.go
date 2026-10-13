@@ -352,6 +352,13 @@ func TestRollbackDeletesThePolicy(t *testing.T) {
 			t.Errorf("objects %q: exit %d\n%s\n%s", objs, code, out, calls)
 		}
 	}
+	// A file kubectl cannot parse deletes nothing either, and says why.
+	f = newFake(t)
+	_, policy = f.files(t)
+	code, out, calls := f.run(t, []string{"FAKE_UNPARSABLE=1"}, "rollback", "--namespace", "shop", "--context", "k3d-dev", "--policy", policy)
+	if code != 1 || !strings.Contains(out, "cannot parse "+policy) || strings.Contains(calls, " delete ") {
+		t.Errorf("an unparsable file: exit %d\n%s\n%s", code, out, calls)
+	}
 }
 
 // The default selector is the release's instance label.
