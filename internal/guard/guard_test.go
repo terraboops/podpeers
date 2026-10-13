@@ -83,6 +83,7 @@ func TestCheckNodes(t *testing.T) {
 	localColima := Check(Target{"colima", "https://127.0.0.1:6443", "", false}, "")
 	localRancher := Check(Target{"rancher-desktop", "https://127.0.0.1:6443", "", false}, "")
 	localDD := Check(Target{"docker-desktop", "https://127.0.0.1:6443", "", false}, "")
+	localOrb := Check(Target{"orbstack", "https://127.0.0.1:26443", "", false}, "")
 	localMinikube := Check(Target{"minikube", "https://127.0.0.1:8443", "", false}, "")
 
 	cases := []struct {
@@ -109,6 +110,8 @@ func TestCheckNodes(t *testing.T) {
 		{"remote k3s named like colima's VM", localColima, []string{"k3s://colima-2"}, nil, false, "different cluster"},
 		{"rancher desktop's own node", localRancher, []string{"k3s://lima-rancher-desktop"}, nil, true, "kind/k3d"},
 		{"tunnel under rancher-desktop", localRancher, []string{"k3s://edge-node-1"}, nil, false, "different cluster"},
+		{"orbstack's own node", localOrb, []string{"k3s://orbstack"}, nil, true, "kind/k3d"},
+		{"tunnel under orbstack", localOrb, []string{"k3s://lima-rancher-desktop"}, nil, false, "different cluster"},
 		{"docker desktop's kind nodes", localDD, []string{"kind://docker/desktop/desktop-control-plane", "kind://docker/desktop/desktop-worker"}, nil, true, "kind/k3d"},
 		{"another kind cluster under docker-desktop", localDD, []string{"kind://docker/kind/kind-control-plane"}, nil, false, "different cluster"},
 		{"any k3s under minikube", localMinikube, []string{"k3s://minikube"}, nil, false, "different cluster"},
