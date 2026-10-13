@@ -24,6 +24,48 @@ import (
 
 const fixture = "../../internal/testdata/capture.json"
 
+// TestMain points KUBECONFIG at a tripwire, so a test that reaches connect()
+// without --kubeconfig never reads the developer's own (whose default context
+// may be production). Its context looks local and its stand-in API server is
+// on loopback, so such a test gets past the pre-flight gate and is counted:
+// any request fails the run.
+func TestMain(m *testing.M) {
+	var tripped int64
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&tripped, 1)
+		http.Error(w, "tripwire", http.StatusTeapot)
+	}))
+	dir, err := os.MkdirTemp("", "podpeers-tripwire")
+	if err != nil {
+		panic(err)
+	}
+	kc := filepath.Join(dir, "kubeconfig")
+	if err := os.WriteFile(kc, []byte(fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: c
+  cluster: {server: %s, insecure-skip-tls-verify: true}
+users:
+- name: u
+  user: {token: not-a-real-token}
+contexts:
+- name: k3d-tripwire
+  context: {cluster: c, user: u}
+current-context: k3d-tripwire
+`, srv.URL)), 0o600); err != nil {
+		panic(err)
+	}
+	os.Setenv("KUBECONFIG", kc)
+	code := m.Run()
+	srv.Close()
+	os.RemoveAll(dir)
+	if n := atomic.LoadInt64(&tripped); n != 0 {
+		fmt.Fprintf(os.Stderr, "FAIL: %d request(s) reached a cluster through the default kubeconfig: a test ran connect() without --kubeconfig\n", n)
+		code = 1
+	}
+	os.Exit(code)
+}
+
 // kubeconfig writes a kubeconfig whose single context points at server.
 func kubeconfig(t *testing.T, context, server string) string {
 	t.Helper()
@@ -709,7 +751,7 @@ func TestMCPCommandAnswers(t *testing.T) {
 func TestUnknownFlagsAreRefused(t *testing.T) {
 	for _, cmd := range []string{"capture", "check-context", "render", "query", "serve", "suggest", "diff", "mcp"} {
 		code, out, stderr := runCLI(cmd, "--no-such-flag")
-		if code == 0 || out != "" || !strings.Contains(stderr, "no-such-flag") {
+		if code != exitError || out != "" || !strings.Contains(stderr, "no-such-flag") {
 			t.Errorf("%s --no-such-flag: exit %d, stdout %q, stderr %q", cmd, code, out, stderr)
 		}
 	}
