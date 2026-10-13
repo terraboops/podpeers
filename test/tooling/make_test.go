@@ -128,7 +128,7 @@ func TestWorkflowDeclaresEveryGate(t *testing.T) {
 		"guards-scripts": {`^PODPEERS_REQUIRE_OCR=1 GUARD_SWEEP_LOG=\S+ python3 hack/guard-sweep.py --check --scripts-only$`},
 		"guards-browser": {`^python3 hack/guard-sweep.py --check --browser-only$`},
 		"docs":           {`^./hack/check-docs.sh$`, `^./hack/check-ui.sh$`},
-		"e2e":            {`^make e2e$`, `^PODPEERS_REQUIRE_OCR=1 ./hack/mutants.sh --e2e$`},
+		"e2e":            {`^make e2e$`, `^PODPEERS_REQUIRE_OCR=1 ./hack/mutants.sh --e2e$`, `^GUARD_SWEEP_LOG=\S+ python3 hack/guard-sweep.py --cluster$`},
 	}
 	// A shallow clone would let the history checks see less and pass.
 	fullHistory := map[string]bool{"unit": true, "guards-scripts": true, "e2e": true}

@@ -56,6 +56,7 @@ make mutants-e2e        # after changing a protection or its test: each mutant m
 make mutants-ui         # after changing serve or the browser checks: the same, in a real browser
 make guards             # after adding a guard (Go, shell): some test must notice its removal (slow)
 make guards-browser     # the same for the web UI's JavaScript, in a real browser (slow)
+make guards-cluster     # after accepting a guard as "cluster", or changing what catches one: re-measured on the local cluster
 ```
 
 Trunk-based: commit to `main`; branch only to carry a pull request. A change

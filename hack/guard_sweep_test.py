@@ -827,6 +827,11 @@ class Main(unittest.TestCase):
             both = {f for files, _, _ in self.sweep(["--browser", split])[0] for f in files}
             self.assertNotIn("internal/render/page.html", both, f"--browser {split}: the browser guards are a job of their own")
 
+    def test_cluster_mode_measures_the_cluster_claims_and_nothing_else(self):
+        with mock.patch.object(gs, "cluster", lambda: 7):
+            calls, code, *_ = self.sweep(["--cluster"])
+        self.assertEqual((calls, code), ([], 7))
+
     def test_a_dirty_tree_is_refused(self):
         calls, code, run, out, err = self.sweep(["--check"], dirty=" M Makefile\n")
         self.assertEqual((calls, code), ([], 2))
@@ -838,37 +843,128 @@ class Main(unittest.TestCase):
         self.assertEqual((calls, code), ([], 1))
         self.assertIn("fails unmutated; nothing swept", err)
 
-    def test_e2e_mode_runs_each_listed_survivor_on_the_cluster(self):
-        f = os.path.join(tempfile.mkdtemp(), "list")
-        with open(f, "w") as fh:
-            fh.write("internal/x.go:12: if a {\n")
-        got = {}
-        def run(items, cmd, env):
-            got.update(items=items, cmd=cmd("internal/x.go"), env=env("/wt"))
-            return [(False, "internal/x.go", 12, "if a {")]
-        clean = mock.Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
-        with mock.patch.object(gs, "run", run), mock.patch.object(sys, "argv", ["g", "--e2e", f]), \
-                mock.patch.object(gs.subprocess, "run", clean), contextlib.redirect_stdout(io.StringIO()) as out:
-            gs.main()
-        self.assertEqual(got["items"], [("internal/x.go", 12, "if a {")])
-        self.assertIn("^TestE2E$", got["cmd"])
-        self.assertEqual(got["env"]["PODPEERS_E2E_OUT"], "/wt/.e2e-out")
-        self.assertIn("cluster-killed internal/x.go:12: if a {", out.getvalue())
-        with mock.patch.object(gs, "run", lambda items, cmd, env: [(True, "internal/x.go", 12, "if a {")]), \
-                mock.patch.object(gs.subprocess, "run", clean), \
-                mock.patch.object(sys, "argv", ["g", "--e2e", f]), contextlib.redirect_stdout(io.StringIO()) as out:
-            gs.main()
-        self.assertIn("cluster-SURVIVED internal/x.go:12: if a {", out.getvalue())
-
     def test_run_as_a_script_it_runs(self):
-        # Imported, nothing runs; run as CI runs it, main must.
-        r = subprocess.run([sys.executable, os.path.join(HERE, "guard-sweep.py"), "--e2e", "/nonexistent/list"],
-                           capture_output=True, text=True)
-        # It refuses a dirty tree, or fails to read the list: either way main
-        # ran. Not running at all would exit 0, silently.
-        self.assertNotEqual(r.returncode, 0)
-        self.assertTrue("/nonexistent/list" in r.stderr or "commit first" in r.stderr, r.stderr)
+        # Imported, nothing runs; run as CI runs it, main must. An impossible
+        # headroom makes it stop at once, so this never reaches a cluster.
+        r = subprocess.run([sys.executable, os.path.join(HERE, "guard-sweep.py"), "--cluster"], capture_output=True, text=True,
+                           env=dict(os.environ, GUARD_SWEEP_MIN_FREE_GB="1000000"))
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn("refusing to start", r.stderr)
 
+
+class Cluster(unittest.TestCase):
+    """--cluster re-measures each guard accepted as caught on the cluster."""
+
+    ACCEPTED = "\n".join(["# header",
+                          "internal/c.go | if !ok { | cluster | pods; e2e-run: TestE2E/pods",
+                          "internal/c.go | if !ok { | cluster | services; e2e-run: TestE2E/(services|where)",
+                          "internal/c.go | if x { | error | not a cluster claim"]) + "\n"
+    FOUND = [("internal/c.go", (3, "if", 0), "if !ok {"), ("internal/c.go", (7, "if", 0), "if x {"),
+             ("internal/c.go", (9, "if", 0), "if !ok {"), ("internal/c.go", (12, "if", 0), "if !ok {")]
+
+    def root(self, accepted=None, cluster=True):
+        files = {"hack/guard-sweep-accepted.txt": self.ACCEPTED if accepted is None else accepted}
+        if cluster:
+            files[".e2e/kubeconfig"] = "stand-in\n"
+        return tree(files)
+
+    def measure(self, root, unit_caught=(), cluster_caught=None, baseline=(0, "--- PASS: TestE2E/pods (1s)\n")):
+        """cluster() with guards, the unit tests, the baseline and the cluster
+        stood in for; returns its exit, stderr and what it ran."""
+        got = {"parallel": [], "baseline": [], "runs": []}
+        def parallel(items, cmd, workers=6):
+            got["parallel"].append(([n for _, n, _ in items], cmd(items[0][0]) if items else None))
+            return [((f, n, t) not in unit_caught and n not in unit_caught, f, n, t) for f, n, t in items]
+        def base(args, **kw):
+            if args[:2] == ["git", "-C"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            got["baseline"].append((args, kw["env"]))
+            return subprocess.CompletedProcess(args, baseline[0], baseline[1], "")
+        def run(items, cmd, env):
+            [(f, n, t)] = items
+            got["runs"].append((n, cmd(f), env("/wt")))
+            return [(cluster_caught is not None and n not in cluster_caught, f, n, t)]
+        with mock.patch.object(gs, "ROOT", root), mock.patch.object(gs, "guards", lambda: self.FOUND), \
+                mock.patch.object(gs, "parallel", parallel), mock.patch.object(gs, "run", run), \
+                mock.patch.object(gs, "worktree", lambda: "/nonexistent"), mock.patch.object(gs.subprocess, "run", base), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = gs.cluster()
+        return code, err.getvalue(), got
+
+    def test_each_claim_is_measured_on_the_local_cluster_by_its_named_test(self):
+        root = self.root()
+        code, err, got = self.measure(root, cluster_caught=None)
+        self.assertEqual(code, 0, err)
+        ns = [n for n, _, _ in got["runs"]]
+        self.assertEqual(ns, [(3, "if", 0), (9, "if", 0)], "identical guards pair with claims in order")
+        (_, cmd, env), (_, cmd2, _) = got["runs"]
+        self.assertEqual(cmd[-3:], ["-run", "TestE2E/pods", "./test/e2e/"])
+        self.assertIn("-tags", cmd)
+        self.assertEqual(cmd2[-2], "TestE2E/(services|where)")
+        self.assertEqual(env["PODPEERS_E2E_KUBECONFIG"], os.path.join(root, ".e2e", "kubeconfig"))
+        self.assertEqual(env["PODPEERS_E2E_CONTEXT"], "k3d-podpeers-e2e")
+        self.assertEqual(env["PODPEERS_E2E_OUT"], "/wt/.e2e-out")
+        self.assertIn("cluster-killed", err)
+        self.assertIn("2 guards accepted as caught on the cluster; 0 not caught there", err)
+
+    def test_a_claim_pairs_with_its_own_file_and_text(self):
+        found = [("internal/c.go", (1, "if", 0), "if x {"), ("internal/d.go", (2, "if", 0), "if !ok {"),
+                 ("internal/c.go", (5, "if", 0), "if !ok {"), ("internal/c.go", (6, "if", 0), "if !ok {")]
+        with mock.patch.object(gs, "ROOT", self.root()):
+            claims, wrong = gs.cluster_claims(found)
+        self.assertEqual(wrong, [])
+        self.assertEqual([(g[1], p) for g, p in claims], [((5, "if", 0), "TestE2E/pods"), ((6, "if", 0), "TestE2E/(services|where)")])
+
+    def test_a_claim_the_cluster_no_longer_backs_fails(self):
+        code, err, _ = self.measure(self.root(), cluster_caught={(3, "if", 0)})
+        self.assertEqual(code, 1)
+        self.assertIn("CLUSTER-SURVIVED internal/c.go:9: if !ok {  (TestE2E/(services|where))", err)
+
+    def test_only_unit_survivors_are_claimed(self):
+        # The first `if !ok {` is caught by a unit test: the claims pair with
+        # the two that are not.
+        code, err, got = self.measure(self.root(), unit_caught={(3, "if", 0)})
+        self.assertEqual(code, 0, err)
+        self.assertEqual([n for n, _, _ in got["runs"]], [(9, "if", 0), (12, "if", 0)])
+        self.assertEqual(sorted(got["parallel"][0][0]), [(3, "if", 0), (9, "if", 0), (12, "if", 0)],
+                         "only guards with a claimed text face the unit tests")
+        self.assertEqual(got["parallel"][0][1], ["go", "test", "-count=1", "./internal/"])
+
+    def test_a_claim_nothing_can_back_is_unmeasurable(self):
+        code, err, got = self.measure(self.root(), unit_caught={(3, "if", 0), (9, "if", 0)})
+        self.assertEqual((code, got["runs"]), (1, []))
+        self.assertIn("UNMEASURABLE internal/c.go: if !ok {", err)
+        self.assertIn("no such guard survives the unit tests", err)
+        code, err, got = self.measure(self.root(self.ACCEPTED + "internal/c.go | if x { | cluster | no test named\n"))
+        self.assertEqual((code, got["runs"]), (1, []))
+        self.assertIn("names no e2e test", err)
+        code, err, got = self.measure(self.root("# no claims\n"))
+        self.assertEqual((code, got["runs"]), (1, []), "nothing to measure is not a pass")
+
+    def test_the_named_tests_must_pass_unmutated_first(self):
+        for baseline, why in [((1, "--- FAIL: TestE2E/pods\n"), "fails"), ((0, "testing: warning: no tests to run\nPASS\n"), "runs no subtest")]:
+            code, err, got = self.measure(self.root(), baseline=baseline)
+            self.assertEqual((code, got["runs"]), (1, []), baseline)
+            self.assertIn(f"TestE2E/(services|where) {why} unmutated; nothing measured", err)
+        code, err, got = self.measure(self.root())
+        self.assertEqual(sorted(a[a.index("-run") + 1] for a, _ in got["baseline"]), ["TestE2E/(services|where)", "TestE2E/pods"])
+        self.assertEqual(got["baseline"][0][1]["PODPEERS_E2E_CONTEXT"], "k3d-podpeers-e2e")
+
+    def test_without_the_local_cluster_nothing_runs(self):
+        code, err, got = self.measure(self.root(cluster=False))
+        self.assertEqual((code, got["parallel"], got["runs"]), (1, [], []))
+        self.assertIn("make e2e-cluster", err)
+
+    def test_the_real_claims_name_a_test_and_a_guard(self):
+        # No cluster needed: every claim in the real file names an e2e test,
+        # and its guard text is still in the code, often enough.
+        found = gs.guards()
+        claims = [(f, t, r) for f, t, c, r in gs.accepted_entries() if c == "cluster"]
+        self.assertTrue(claims)
+        for f, t, r in claims:
+            self.assertRegex(r, r"\be2e-run: TestE2E/\S+", f"{f}: {t}")
+            want = sum(1 for g, u, _ in claims if (g, u) == (f, t))
+            self.assertGreaterEqual(sum(1 for g in found if (g[0], g[2]) == (f, t)), want, f"{f}: {t}")
 
 if __name__ == "__main__":
     unittest.main()

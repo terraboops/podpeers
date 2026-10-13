@@ -418,7 +418,9 @@ tests that should notice:
 A guard whose removal no test notices fails the build unless it is accounted
 for, with its reason, in
 [`hack/guard-sweep-accepted.txt`](hack/guard-sweep-accepted.txt): caught on
-the real cluster (measured with `--e2e`, not assumed), equivalent (removing it
+the real cluster (each such entry names the e2e test that catches it, and CI
+re-measures every one on its cluster with `--cluster`: the guard removed, that
+test must fail), equivalent (removing it
 changes nothing observable), a sort tie-break, a default the CLI always sets,
 wording or layout only, a usage check, an error path no test provokes, or a
 fallback for a log stream that never broke. CI runs all three on every push,

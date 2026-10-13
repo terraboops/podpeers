@@ -1,4 +1,4 @@
-.PHONY: build test vet docs ui mutants mutants-e2e mutants-ui guards guards-browser e2e e2e-cluster e2e-down clean
+.PHONY: build test vet docs ui mutants mutants-e2e mutants-ui guards guards-browser guards-cluster e2e e2e-cluster e2e-down clean
 
 build:
 	go build -o bin/podpeers ./cmd/podpeers
@@ -28,6 +28,11 @@ mutants-ui:
 # (slow: about 90 min).
 guards:
 	python3 hack/guard-sweep.py --check
+
+# Each guard accepted as caught on the real cluster, removed, and the e2e test
+# its entry names run against the local e2e cluster: that test must fail.
+guards-cluster: e2e-cluster
+	python3 hack/guard-sweep.py --cluster
 
 # The web UI's JavaScript and the browser checks' own guards, against the
 # browser checks (needs node and Chrome; about 90 min). CI runs both.

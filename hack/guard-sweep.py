@@ -34,7 +34,7 @@ Go guards run that package's tests (fast), then, for survivors, the whole
 unit suite. A shell guard runs the tests that drive that script (SHELL_TESTS).
 What survives is a guard whose removal no test notices; each must be
 accounted for in hack/guard-sweep-accepted.txt: caught on the real cluster
-(--e2e measures it), or why it is not a finding.
+(--cluster measures it), or why it is not a finding.
 
   hack/guard-sweep.py              unit sweep; prints survivors
   hack/guard-sweep.py --browser    also the web UI's JavaScript and the browser
@@ -48,9 +48,11 @@ accounted for in hack/guard-sweep-accepted.txt: caught on the real cluster
                                    hack/guard-sweep-accepted.txt: fails on a
                                    survivor nobody has accounted for, and on an
                                    accepted entry that no longer survives
-  hack/guard-sweep.py --e2e FILE   for each survivor listed in FILE (lines as
-                                   printed by the unit sweep), run the real-
-                                   cluster TestE2E instead (needs make e2e-cluster)
+  hack/guard-sweep.py --cluster    re-measure every entry accepted as caught on
+                                   the real cluster: remove its guard, run the
+                                   e2e test its reason names (e2e-run:) against
+                                   the local e2e cluster, and fail unless that
+                                   test fails (needs make e2e-cluster)
 
 Accepted entries are matched by file and guard text, not line number, so
 edits elsewhere in a file do not invalidate them.
@@ -795,18 +797,8 @@ def main():
 
 
 def sweep():
-    if len(sys.argv) == 3 and sys.argv[1] == "--e2e":
-        items = []
-        for l in open(sys.argv[2]):
-            loc, text = l.split(": ", 1)
-            f, n = loc.rsplit(":", 1)
-            items.append((f, int(n), text.strip()))
-        kc = os.path.join(ROOT, ".e2e", "kubeconfig")
-        cmd = lambda f: ["go", "test", "-tags", "e2e", "-count=1", "-timeout", "15m", "-run", "^TestE2E$", "./test/e2e/"]
-        env = lambda wt: dict(os.environ, PODPEERS_E2E_KUBECONFIG=kc, PODPEERS_E2E_OUT=os.path.join(wt, ".e2e-out"))
-        for survived, f, n, text in run(items, cmd, env):  # one cluster: one at a time
-            print(f"{'cluster-SURVIVED' if survived else 'cluster-killed'} {f}:{n}: {text}", flush=True)
-        return
+    if "--cluster" in sys.argv:
+        sys.exit(cluster())
     only = "--browser-only" in sys.argv
     browser = only or "--browser" in sys.argv
     # CI splits the rest in two jobs that run side by side.
@@ -825,10 +817,9 @@ def sweep():
                     sys.exit(1)
         finally:
             subprocess.run(["git", "-C", ROOT, "worktree", "remove", "--force", wt])
-    own = [] if no_go else parallel(guards(), lambda f: ["go", "test", "-count=1", "./" + os.path.dirname(f) + "/"])
+    own = [] if no_go else parallel(guards(), own_package)
     first = [(f, n, t) for survived, f, n, t in own if survived]
-    whole = parallel(first, lambda f: ["go", "test", "-count=1", "./internal/...", "./cmd/...", "./test/skillscript/", "./hack/gocond/"])
-    left = [(f, n, t) for survived, f, n, t in whole if survived]
+    left = unit_survivors(first)
     sh = [] if no_scripts else [g for rel in SHELL_TESTS if not rel.startswith("hack/check-") for g in shell_guards(rel)]
     sh += [] if no_scripts else [g for rel in WF_TESTS for g in wf_guards(rel)]
     sh += [] if no_scripts else [g for rel in PY_TESTS for g in py_guards(rel)]
@@ -849,6 +840,105 @@ def sweep():
         sys.exit(check(left, browser, only, go=not no_go, scripts=not no_scripts))
 
 
+def own_package(f):
+    return ["go", "test", "-count=1", "./" + os.path.dirname(f) + "/"]
+
+
+def unit_survivors(first):
+    """Of the Go guards that survived their own package's tests, those the
+    whole unit suite does not notice either."""
+    whole = parallel(first, lambda f: ["go", "test", "-count=1", "./internal/...", "./cmd/...", "./test/skillscript/", "./hack/gocond/"])
+    return [(f, n, t) for survived, f, n, t in whole if survived]
+
+
+def accepted_entries():
+    """hack/guard-sweep-accepted.txt as (file, guard, category, reason)."""
+    out = []
+    with open(os.path.join(ROOT, "hack", "guard-sweep-accepted.txt")) as f:
+        lines = f.read().split("\n")
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        # file | guard | category | reason: a guard may itself hold " | " (a
+        # shell pipe), so the file is the first field and the category and
+        # reason the last two.
+        f, rest = line.split(" | ", 1)
+        text, category, reason = [x.strip() for x in rest.rsplit(" | ", 2)]
+        out.append((f.strip(), text, category, reason))
+    return out
+
+
+# The real cluster. An entry accepted as "cluster" claims that the real-
+# cluster suite notices its guard's removal, and names the e2e test that does
+# (e2e-run: a go test -run pattern). Unit tests cannot see that, so --check
+# takes the claim on trust; --cluster measures it again, on the local e2e
+# cluster only.
+E2E_CONTEXT = "k3d-podpeers-e2e"
+
+
+def cluster_claims(found):
+    """Each cluster entry paired with the guard it names (by file and text, as
+    --check matches them; identical guards pair in order) and its e2e test;
+    and what cannot be measured: an entry naming no test, or no guard."""
+    pool, claims, wrong = list(found), [], []
+    for f, text, category, reason in accepted_entries():
+        if category != "cluster":
+            continue
+        m = re.search(r"\be2e-run: (\S+)", reason)
+        g = next((g for g in pool if g[0] == f and g[2] == text), None)
+        if not m:
+            wrong.append(f"{f}: {text}  (accepted as caught on the cluster, but names no e2e test: add e2e-run: <pattern>)")
+        elif g is None:
+            wrong.append(f"{f}: {text}  (accepted as caught on the cluster, but no such guard survives the unit tests: "
+                         "a unit test catches it now, or it is gone; remove the entry)")
+        else:
+            pool.remove(g)
+            claims.append((g, m.group(1)))
+    return claims, wrong
+
+
+def cluster():
+    kc = os.path.join(ROOT, ".e2e", "kubeconfig")
+    if not os.path.exists(kc):
+        print(f"guard-sweep: --cluster needs the local e2e cluster ({kc} is missing): make e2e-cluster", file=sys.stderr)
+        return 1
+    # A claim is about a guard the unit tests miss; the same text can hold
+    # elsewhere in the file, guarded by a unit test. So the guards that share
+    # a claimed text face the unit tests first, and the claims pair with what
+    # survives them.
+    named = {(f, t) for f, t, category, _ in accepted_entries() if category == "cluster"}
+    own = parallel([g for g in guards() if (g[0], g[2]) in named], own_package)
+    claims, wrong = cluster_claims(unit_survivors([(f, n, t) for survived, f, n, t in own if survived]))
+    for w in wrong:
+        print(f"UNMEASURABLE {w}", file=sys.stderr)
+    if wrong or not claims:
+        return 1
+    # The local cluster, named twice: by its own kubeconfig and its context.
+    env = lambda wt: dict(os.environ, PODPEERS_E2E_KUBECONFIG=kc, PODPEERS_E2E_CONTEXT=E2E_CONTEXT,
+                          PODPEERS_E2E_OUT=os.path.join(wt, ".e2e-out"))
+    test = lambda pattern: ["go", "test", "-tags", "e2e", "-count=1", "-v", "-timeout", "15m", "-run", pattern, "./test/e2e/"]
+    # Each named test must run, and pass, unmutated: on a broken cluster every
+    # mutant would fail it for the wrong reason, and a pattern that matches
+    # no test would pass with every guard removed.
+    wt = worktree()
+    try:
+        for pattern in sorted({p for _, p in claims}):
+            r = subprocess.run(test(pattern), cwd=wt, capture_output=True, text=True, env=env(wt))
+            if r.returncode != 0 or not re.search(r"--- PASS: \S+/", r.stdout):
+                print(f"baseline: {pattern} {'fails' if r.returncode else 'runs no subtest'} unmutated; nothing measured\n"
+                      f"{r.stdout[-3000:]}{r.stderr[-2000:]}", file=sys.stderr)
+                return 1
+    finally:
+        subprocess.run(["git", "-C", ROOT, "worktree", "remove", "--force", wt])
+    survived = 0
+    for (f, n, text), pattern in claims:  # one cluster: one at a time
+        [(s, *_)] = run([(f, n, text)], lambda _: test(pattern), env)
+        survived += s
+        print(f"{'CLUSTER-SURVIVED' if s else 'cluster-killed  '} {f}:{n[0]}: {text}  ({pattern})", file=sys.stderr, flush=True)
+    print(f"{len(claims)} guards accepted as caught on the cluster; {survived} not caught there", file=sys.stderr)
+    return 1 if survived else 0
+
+
 def check(left, browser, only=False, go=None, scripts=None):
     """Every survivor must be accepted with a reason, and every acceptance
     must still be a survivor. Only the entries for what was swept are
@@ -858,16 +948,7 @@ def check(left, browser, only=False, go=None, scripts=None):
     go = not only if go is None else go
     scripts = not only if scripts is None else scripts
     accepted = []
-    for line in open(os.path.join(ROOT, "hack", "guard-sweep-accepted.txt")):
-        line = line.rstrip("\n")
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        # file | guard | category | reason: a guard may itself hold " | " (a
-        # shell pipe), so the file is the first field and the category and
-        # reason the last two.
-        f, rest = line.split(" | ", 1)
-        text, category, reason = [x.strip() for x in rest.rsplit(" | ", 2)]
-        f = f.strip()
+    for f, text, category, reason in accepted_entries():
         in_browser = f.startswith("hack/check-") or f in JS_TESTS
         in_go = f.endswith(".go") and not text.endswith("[embedded shell]")
         if (in_browser and browser) or (in_go and go) or (not in_browser and not in_go and scripts):

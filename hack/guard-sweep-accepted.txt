@@ -1,7 +1,7 @@
 # Guards whose removal no test notices, each accounted for.
 # hack/guard-sweep.py --check fails on a survivor missing here and on an entry that
 # no longer survives. Format: file | guard | category | reason.
-# Categories: setup: a workflow step that installs or tears down; removing it turns the gates that need it red, never green; cluster: caught on the real cluster (measured: removing it fails the e2e suite); equivalent: removing it changes nothing observable; order: a sort tie-break: removing it only reorders entries whose earlier keys are equal; default: a library default the CLI always sets explicitly; error: an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way; usage: an argument-count check; removing it turns a usage message into an index panic; cosmetic: wording or formatting only; no decision depends on it; fallback: a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
+# Categories: setup: a workflow step that installs or tears down; removing it turns the gates that need it red, never green; cluster: caught on the real cluster: removing it fails the e2e test its reason names (e2e-run:), which hack/guard-sweep.py --cluster re-measures in CI; equivalent: removing it changes nothing observable; order: a sort tie-break: removing it only reorders entries whose earlier keys are equal; default: a library default the CLI always sets explicitly; error: an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way; usage: an argument-count check; removing it turns a usage message into an index panic; cosmetic: wording or formatting only; no decision depends on it; fallback: a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
 
 cmd/podpeers/main.go | if version != "dev" { | cosmetic | the version string
 cmd/podpeers/main.go | if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" { | cosmetic | the version string
@@ -10,12 +10,12 @@ cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provo
 cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 cmd/podpeers/main.go | if err := fs.Parse(args); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 cmd/podpeers/main.go | if err := fs.Parse(args); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
-cmd/podpeers/main.go | if opts.Interval < time.Second { | cluster | the sub-second cost warning; TestE2E sub-second interval
+cmd/podpeers/main.go | if opts.Interval < time.Second { | cluster | the sub-second cost warning; TestE2E sub-second interval; e2e-run: TestE2E/sub-second
 cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 cmd/podpeers/main.go | if err := writeJSON(out, stdout, res); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 cmd/podpeers/main.go | if format == "text" { | cosmetic | the summary format
 cmd/podpeers/main.go | if out != "-" { | cosmetic | the 'wrote' message
-cmd/podpeers/main.go | if p.Probe.Status == graph.ProbeFailed { | cluster | exit 3 for a partial capture; TestE2E debug container that cannot start
+cmd/podpeers/main.go | if p.Probe.Status == graph.ProbeFailed { | cluster | exit 3 for a partial capture; TestE2E debug container that cannot start; e2e-run: TestE2E/debug_container_that_cannot
 cmd/podpeers/main.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 cmd/podpeers/main.go | if fs.NArg() < 1 { | usage | an argument-count check; removing it turns a usage message into an index panic
 cmd/podpeers/main.go | if err := fs.Parse(args); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
@@ -38,22 +38,22 @@ internal/capture/capture.go | if o.Image == "" { | default | a library default t
 internal/capture/capture.go | if o.RunID == "" { | default | a library default the CLI always sets explicitly
 internal/capture/capture.go | if o.Logf == nil { | default | a library default the CLI always sets explicitly
 internal/capture/capture.go | if o.AllNamespaces { | equivalent | with -A the namespace is empty, which already means all namespaces
-internal/capture/capture.go | if !t.done { | cluster | TestE2E log rotation
+internal/capture/capture.go | if !t.done { | cluster | TestE2E log rotation; e2e-run: TestE2E/a_busy_pod
 internal/capture/capture.go | if err := wait(ctx, cs, targets, name, opts, hardDeadline); err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 internal/capture/capture.go | if o.AllNamespaces { | cosmetic | the namespace label in messages
 internal/capture/capture.go | if time.Since(lastLog) > 10*time.Second { | cosmetic | progress-log throttling
 internal/capture/capture.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
-internal/capture/capture.go | if !ok { | cluster | TestE2E pod deleted outright mid-window
+internal/capture/capture.go | if !ok { | cluster | TestE2E pod deleted outright mid-window; e2e-run: TestE2E/a_target_pod_deleted
 internal/capture/capture.go | if a.Complete { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
-internal/capture/capture.go | if t.streamDone != nil { | cluster | TestE2E log rotation
+internal/capture/capture.go | if t.streamDone != nil { | cluster | TestE2E log rotation; e2e-run: TestE2E/a_busy_pod
 internal/capture/capture.go | if err != nil || !out.Complete { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
 internal/capture/capture.go | if err == nil && len(out.Samples) == 0 { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
 internal/capture/capture.go | if err != nil { | error | an error the tests do not provoke (API, I/O or marshalling failure); removing it turns a clean error into a crash or a wrong value, which no test sees because nothing in a test fails that way
 internal/capture/capture.go | if t.note != "" { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
 internal/capture/capture.go | if out.Truncated { | fallback | a fallback for a log stream that breaks mid-window; no run, local or CI, has seen the stream break, so the path has no trigger
-internal/capture/capture.go | if err != nil && !opts.AllNamespaces { | cluster | TestE2E an identity confined to one namespace (pods), and the namespace where the credentials may not do this
-internal/capture/capture.go | if err == nil { | cluster | TestE2E capture matches the workloads
-internal/capture/capture.go | if err != nil && !opts.AllNamespaces { | cluster | TestE2E an identity confined to one namespace (Services)
+internal/capture/capture.go | if err != nil && !opts.AllNamespaces { | cluster | TestE2E an identity confined to one namespace (pods), and the namespace where the credentials may not do this; e2e-run: TestE2E/(an_identity_confined|namespace_where)
+internal/capture/capture.go | if err == nil { | cluster | TestE2E capture matches the workloads; e2e-run: TestE2E/capture_matches
+internal/capture/capture.go | if err != nil && !opts.AllNamespaces { | cluster | TestE2E an identity confined to one namespace (Services); e2e-run: TestE2E/an_identity_confined
 internal/capture/capture.go | if apierrors.IsForbidden(err) { | cosmetic | a short 'forbidden' instead of the API's full message, which says forbidden too
 internal/capture/capture.go | if !ok { | equivalent | a non-Job workload name falls through the Job lookup to the same answer, at the cost of one cached list
 internal/diff/diff.go | if a.From != b.From { | order | a sort tie-break: removing it only reorders entries whose earlier keys are equal

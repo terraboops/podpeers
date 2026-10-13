@@ -126,7 +126,7 @@ jobs:
     # cluster script writes to .e2e/, and refuses any other context.
     runs-on: ubuntu-latest
     needs: unit
-    timeout-minutes: 150 # the suite plus every mutant against the real cluster: ~80 min with 44 mutants, ten of which rerun the audit setup and its IPAM walk
+    timeout-minutes: 180 # the suite plus every mutant against the real cluster: ~80 min with 44 mutants, ten of which rerun the audit setup and its IPAM walk; then the 8 cluster-accepted guards
     steps:
       - uses: actions/checkout@v4
         with:
@@ -145,6 +145,8 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr ffmpeg >/dev/null
       - name: mutants against the real cluster (the e2e tests must fail when each protection is broken)
         run: PODPEERS_REQUIRE_OCR=1 ./hack/mutants.sh --e2e
+      - name: guards accepted as caught on the cluster, each removed and its named e2e test run there
+        run: GUARD_SWEEP_LOG=.e2e/guards-cluster python3 hack/guard-sweep.py --cluster
       - name: keep the observed output
         if: always()
         uses: actions/upload-artifact@v4
@@ -153,6 +155,7 @@ jobs:
           path: |
             .e2e/out/
             .e2e/mutants/
+            .e2e/guards-cluster/
       - name: tear down
         if: always()
         run: ./hack/e2e-cluster.sh down || true
