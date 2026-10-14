@@ -219,6 +219,9 @@ and the e2e suite proves on a real cluster that a refused run modifies
 **nothing**: every pod in every namespace keeps its identity and debug
 containers, and every NetworkPolicy its version, compared before and after
 each refusal (podpeers', the skill script's, and a forbidden namespace's).
+Pods a Job owns, and pods already being deleted, come and go on their own
+and are left out; a control shows the same comparison sees an allowed
+capture's writes, and only those.
 
 The sampler runs as `nobody` with every capability dropped, a read-only root
 filesystem and the RuntimeDefault seccomp profile, so it's admitted under the
@@ -420,6 +423,7 @@ tests that should notice:
 | the CI workflow | 34 | each `run:` step's command replaced by `true`, each `X=1` fail-don't-skip flag dropped, `fetch-depth: 0` made shallow, each trigger removed | what the workflow declares (`test/tooling`): GitHub Actions cannot run here |
 | the sweep tool itself (`hack/guard-sweep.py`) | 276 | by its AST: each `if`/`elif`/`while` test, conditional-expression test and comprehension filter made false, each `and`/`or` flipped; each `<`, `<=`, `>` and `>=` moved one step | its own tests (`hack/guard_sweep_test.py`) |
 | the web UI's JavaScript | 99 | as for Go, each ternary `c ? a : b` forced to its else branch, and each `for` loop's condition made false; each `<`, `<=`, `>` and `>=` in the script moved one step | the browser check (`--browser`) |
+| the browser and diagram checks themselves (`hack/check-ui.sh`, `hack/check-docs.sh`) | 4 | as for shell | the check itself, in a real browser (`--browser`) |
 
 A guard whose removal no test notices fails the build unless it is accounted
 for, with its reason, in
