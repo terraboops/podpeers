@@ -103,7 +103,9 @@ if [ "$E2E" = 1 ]; then
   tops="$(e2e_tops | sort -u | paste -sd'|' -)"
   if ! (cd "$base" && PODPEERS_E2E_KUBECONFIG="$ROOT/.e2e/kubeconfig" PODPEERS_E2E_OUT="$base/.e2e-out" \
         go test -tags e2e -count=1 -v -timeout 20m -run "^($tops)\$" ./test/e2e/) >"$LOGS/baseline-e2e.log" 2>&1; then
-    echo "baseline e2e FAILS; see $LOGS/baseline-e2e.log" >&2
+    # Keep what the failing tests wrote (captures, diffs): the worktree goes.
+    rm -rf "$LOGS/baseline-e2e-out"; cp -R "$base/.e2e-out" "$LOGS/baseline-e2e-out"
+    echo "baseline e2e FAILS; see $LOGS/baseline-e2e.log and $LOGS/baseline-e2e-out" >&2
     git worktree remove --force "$base"; exit 1
   fi
 fi
