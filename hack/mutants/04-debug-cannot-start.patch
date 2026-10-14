@@ -7,7 +7,7 @@
 # unit-run: TestProgress
 # unit-expect: Progress = 
 # e2e-run: TestE2E/debug_container
-# e2e-expect: loner probe = 
+# e2e-expect: loner probe =|reported once the 20s start timeout runs out
 diff --git a/internal/capture/capture.go b/internal/capture/capture.go
 index cc5b70b..8752558 100644
 --- a/internal/capture/capture.go
