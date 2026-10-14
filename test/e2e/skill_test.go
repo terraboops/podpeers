@@ -405,6 +405,17 @@ func TestSkillHelmWorkflow(t *testing.T) {
 		}
 		diff, _ := os.ReadFile(filepath.Join(work, "diff.txt"))
 		if !strings.Contains(string(diff), "VERDICT: OK") {
+			// Say where an unexpected peer came from: its address, whether it
+			// was found only by a node's pod range (a pod no inventory held,
+			// or the node's own pod-network interface), and what held it.
+			for _, f := range []string{"baseline.json", "after.json"} {
+				for _, e := range load(t, filepath.Join(work, f)).Edges {
+					if e.Peer.Kind == "node" {
+						t.Logf("%s: %s %s %s port %d: peer ip %s podRange=%v", f, e.Pod, e.Direction, e.Peer.ID(), e.Port, e.Peer.IP, e.Peer.PodRange)
+					}
+				}
+			}
+			t.Logf("pods now:\n%s", kubectl(t, "get", "pods", "-A", "-o", "wide"))
 			t.Fatalf("precondition: the diff should be clean, so only the partial capture can say INCONCLUSIVE:\n%s", diff)
 		}
 		if r.code != 7 || !strings.Contains(r.stdout, "verdict: INCONCLUSIVE: helm test passed, but some pods could not be observed under the policy") {
